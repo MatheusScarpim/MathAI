@@ -4,7 +4,8 @@ import { openai, EMBEDDING_MODEL, SQL_MODEL, SQL_MODEL_MINI, SUMMARY_MODEL } fro
 import { qdrant, ensureSchemaCollection } from "./qdrant.js";
 import { loadSchemaGraph } from "./schema.js";
 import { validateSql } from "./validation.js";
-import { getPool } from "./db.js";
+import { getDbClient } from "./db.js";
+import { config, type SqlDialect } from "./config.js";
 import { getHistoryCollection, getInstructionsCollection, type HistoryRecord } from "./mongo.js";
 import type { Filter } from "mongodb";
 import {
@@ -532,16 +533,29 @@ const buildPeriodHint = async (
   return null;
 };
 
-const buildSystemContent = (instructionText: string, language: "pt" | "en" | "es"): string => {
+const buildSystemContent = (
+  instructionText: string,
+  language: "pt" | "en" | "es",
+  dialect: SqlDialect
+): string => {
   const base =
-    language === "en"
-      ? "You are a SQL Server expert. Output only T-SQL SELECT, no markdown or comments. " +
-        "Rules: TOP (100); no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_."
-      : language === "es"
-        ? "Eres un experto en SQL Server. Devuelve solo T-SQL SELECT, sin markdown ni comentarios. " +
-          "Reglas: TOP (100); no SELECT *; prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_."
-        : "Voce e um especialista em SQL Server. Retorne apenas T-SQL SELECT, sem markdown ou comentarios. " +
-          "Regras: TOP (100); nao use SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_.";
+    dialect === "mysql"
+      ? language === "en"
+        ? "You are a MySQL expert. Output only MySQL SELECT, no markdown or comments. " +
+          "Rules: LIMIT 100; no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_."
+        : language === "es"
+          ? "Eres un experto en MySQL. Devuelve solo SELECT de MySQL, sin markdown ni comentarios. " +
+            "Reglas: LIMIT 100; no SELECT *; prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_."
+          : "Voce e um especialista em MySQL. Retorne apenas SELECT MySQL, sem markdown ou comentarios. " +
+            "Regras: LIMIT 100; nao use SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_."
+      : language === "en"
+        ? "You are a SQL Server expert. Output only T-SQL SELECT, no markdown or comments. " +
+          "Rules: TOP (100); no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_."
+        : language === "es"
+          ? "Eres un experto en SQL Server. Devuelve solo T-SQL SELECT, sin markdown ni comentarios. " +
+            "Reglas: TOP (100); no SELECT *; prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_."
+          : "Voce e um especialista em SQL Server. Retorne apenas T-SQL SELECT, sem markdown ou comentarios. " +
+            "Regras: TOP (100); nao use SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_.";
 
   const instructionsLabel =
     language === "en" ? "Additional instructions:" : language === "es" ? "Instrucciones adicionales:" : "Instrucoes adicionais:";
@@ -555,13 +569,14 @@ const generateSql = async (
   instructionText: string,
   language: "pt" | "en" | "es",
   model: string,
-  allowEscalation: boolean
+  allowEscalation: boolean,
+  dialect: SqlDialect
 ): Promise<{
   sql: string;
   escalated?: boolean;
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 }> => {
-  const baseSystem = buildSystemContent(instructionText, language);
+  const baseSystem = buildSystemContent(instructionText, language, dialect);
   const system = allowEscalation
     ? `${baseSystem}\nIf unsure you can produce a correct query, reply with only: ESCALATE`
     : baseSystem;
@@ -848,7 +863,7 @@ export const answerQuestion = async (
       }
     };
   }
-  const pool = await getPool();
+  const db = await getDbClient();
 
   const semanticMatch = await findSemanticSql(
     resolvedChatId,
@@ -861,24 +876,20 @@ export const answerQuestion = async (
     if (validation.ok) {
       try {
         const start = Date.now();
-        const result = await pool.request().query(semanticMatch.sql);
+        const result = await db.query(semanticMatch.sql);
         const elapsedMs = Date.now() - start;
-        const rowCount = result.recordset?.length ?? 0;
-        const columns = result.recordset?.columns
-          ? Object.keys(result.recordset.columns)
-          : result.recordset?.[0]
-            ? Object.keys(result.recordset[0])
-            : [];
-        let chart = inferChart(result.recordset ?? [], columns, question);
+        const rowCount = result.rows.length;
+        const columns = result.columns;
+        let chart = inferChart(result.rows, columns, question);
         try {
           chart = await inferChartWithLLM(
             question,
-            result.recordset ?? [],
+            result.rows,
             columns,
             language
           );
         } catch {
-          chart = inferChart(result.recordset ?? [], columns, question);
+          chart = inferChart(result.rows, columns, question);
         }
         let summary: string | undefined;
         let summaryUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } = {};
@@ -887,7 +898,7 @@ export const answerQuestion = async (
             question,
             semanticMatch.sql,
             columns,
-            result.recordset ?? [],
+            result.rows,
             language
           );
           summary = summaryResult.summary;
@@ -919,7 +930,7 @@ export const answerQuestion = async (
 
         const responseData: AskSuccessResponse = {
           sql: semanticMatch.sql,
-          rows: result.recordset ?? [],
+          rows: result.rows,
           columns,
           elapsedMs,
           chatId: resolvedChatId,
@@ -1029,7 +1040,8 @@ export const answerQuestion = async (
       instructionText,
       language,
       useMini ? SQL_MODEL_MINI : SQL_MODEL,
-      useMini
+      useMini,
+      config.sql.dialect
     );
     if (result.usage) {
       sqlUsage = {
@@ -1040,7 +1052,14 @@ export const answerQuestion = async (
     }
     if (useMini && result.escalated) {
       forceLargeModel = true;
-      result = await generateSql(promptWithPeriod, instructionText, language, SQL_MODEL, false);
+      result = await generateSql(
+        promptWithPeriod,
+        instructionText,
+        language,
+        SQL_MODEL,
+        false,
+        config.sql.dialect
+      );
       if (result.usage) {
         sqlUsage = {
           prompt_tokens: (sqlUsage.prompt_tokens ?? 0) + (result.usage.prompt_tokens ?? 0),
@@ -1053,7 +1072,14 @@ export const answerQuestion = async (
     let validation = validateSql(result.sql);
     if (!validation.ok && useMini && !result.escalated) {
       forceLargeModel = true;
-      const retry = await generateSql(promptWithPeriod, instructionText, language, SQL_MODEL, false);
+      const retry = await generateSql(
+        promptWithPeriod,
+        instructionText,
+        language,
+        SQL_MODEL,
+        false,
+        config.sql.dialect
+      );
       if (retry.usage) {
         sqlUsage = {
           prompt_tokens: (sqlUsage.prompt_tokens ?? 0) + (retry.usage.prompt_tokens ?? 0),
@@ -1072,24 +1098,20 @@ export const answerQuestion = async (
     const sql = result.sql;
     try {
       const start = Date.now();
-      const queryResult = await pool.request().query(sql);
+      const queryResult = await db.query(sql);
       const elapsedMs = Date.now() - start;
-      const rowCount = queryResult.recordset?.length ?? 0;
-      const columns = queryResult.recordset?.columns
-        ? Object.keys(queryResult.recordset.columns)
-        : queryResult.recordset?.[0]
-          ? Object.keys(queryResult.recordset[0])
-          : [];
-      let chart = inferChart(queryResult.recordset ?? [], columns, question);
+      const rowCount = queryResult.rows.length;
+      const columns = queryResult.columns;
+      let chart = inferChart(queryResult.rows, columns, question);
       try {
         chart = await inferChartWithLLM(
           question,
-          queryResult.recordset ?? [],
+          queryResult.rows,
           columns,
           language
         );
       } catch {
-        chart = inferChart(queryResult.recordset ?? [], columns, question);
+        chart = inferChart(queryResult.rows, columns, question);
       }
       let summary: string | undefined;
       try {
@@ -1097,7 +1119,7 @@ export const answerQuestion = async (
           question,
           sql,
           columns,
-          queryResult.recordset ?? [],
+          queryResult.rows,
           language
         );
         summary = summaryResult.summary;
@@ -1133,7 +1155,7 @@ export const answerQuestion = async (
 
       const responseData: AskSuccessResponse = {
         sql,
-        rows: queryResult.recordset ?? [],
+        rows: queryResult.rows,
         columns,
         elapsedMs,
         chatId: resolvedChatId,

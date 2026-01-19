@@ -1,4 +1,5 @@
 import type { AskErrorResponse } from "@auraia/shared";
+import { config, type SqlDialect } from "./config.js";
 
 const forbiddenKeywords = [
   "delete",
@@ -27,6 +28,19 @@ const extractTop = (sql: string): number | null => {
   const value = match?.[1] ?? match?.[2];
   return value ? Number.parseInt(value, 10) : null;
 };
+
+const extractLimit = (sql: string): number | null => {
+  const match = sql.match(/limit\s+(\d+)\s*(?:,\s*(\d+)|\s+offset\s+(\d+))?/i);
+  if (!match) return null;
+  const first = Number.parseInt(match[1] ?? "", 10);
+  const second = match[2] ? Number.parseInt(match[2], 10) : null;
+  if (Number.isNaN(first)) return null;
+  if (second !== null && !Number.isNaN(second)) return second;
+  return first;
+};
+
+const extractRowLimit = (sql: string, dialect: SqlDialect): number | null =>
+  dialect === "mysql" ? extractLimit(sql) : extractTop(sql);
 
 export const validateSql = (
   sql: string
@@ -66,18 +80,30 @@ export const validateSql = (
     };
   }
 
-  const topValue = extractTop(trimmed);
-  if (!topValue) {
+  const rowLimit = extractRowLimit(trimmed, config.sql.dialect);
+  if (!rowLimit) {
     return {
       ok: false,
-      error: { sql, errorMessage: "A query precisa ter TOP (100)." }
+      error: {
+        sql,
+        errorMessage:
+          config.sql.dialect === "mysql"
+            ? "A query precisa ter LIMIT 100."
+            : "A query precisa ter TOP (100)."
+      }
     };
   }
 
-  if (topValue > 500) {
+  if (rowLimit > 500) {
     return {
       ok: false,
-      error: { sql, errorMessage: "TOP maior que 500 nao eh permitido." }
+      error: {
+        sql,
+        errorMessage:
+          config.sql.dialect === "mysql"
+            ? "LIMIT maior que 500 nao eh permitido."
+            : "TOP maior que 500 nao eh permitido."
+      }
     };
   }
 

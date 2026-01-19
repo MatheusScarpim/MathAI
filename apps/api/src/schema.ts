@@ -1,8 +1,9 @@
 import type { ColumnInfo, ForeignKeyInfo, TableChunk } from "@auraia/shared";
-import sql from "mssql";
 import { openai, EMBEDDING_MODEL } from "./openai.js";
 import { qdrant, ensureSchemaCollection } from "./qdrant.js";
 import { createHash } from "crypto";
+import type { DbClient } from "./db.js";
+import { config } from "./config.js";
 
 type RawTableRow = {
   schema_name: string;
@@ -28,11 +29,38 @@ type RawFkRow = {
   referenced_column: string;
 };
 
+type RawMySqlTableRow = {
+  schema_name: string;
+  table_name: string;
+};
+
+type RawMySqlColumnRow = {
+  schema_name: string;
+  table_name: string;
+  column_name: string;
+  data_type: string;
+};
+
+type RawMySqlPkRow = {
+  schema_name: string;
+  table_name: string;
+  column_name: string;
+};
+
+type RawMySqlFkRow = {
+  schema_name: string;
+  table_name: string;
+  column_name: string;
+  referenced_schema: string;
+  referenced_table: string;
+  referenced_column: string;
+};
+
 type TableInfo = {
   schema: string;
   name: string;
   fullName: string;
-  objectId: number;
+  objectId?: number;
   columns: ColumnInfo[];
   primaryKey: string[];
   foreignKeys: ForeignKeyInfo[];
@@ -46,17 +74,17 @@ const tagForTable = (name: string): string[] => {
   return tags;
 };
 
-export const loadSchemaFromSqlServer = async (
-  pool: sql.ConnectionPool
-): Promise<TableInfo[]> => {
-  const tablesResult = await pool.request().query<RawTableRow>(`
+const escapeSqlLiteral = (value: string): string => value.replace(/'/g, "''");
+
+export const loadSchemaFromSqlServer = async (db: DbClient): Promise<TableInfo[]> => {
+  const tablesResult = await db.query(`
     SELECT s.name AS schema_name, t.name AS table_name, t.object_id
     FROM sys.tables t
     INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
   `);
 
   const tablesById = new Map<number, TableInfo>();
-  for (const row of tablesResult.recordset) {
+  for (const row of tablesResult.rows as RawTableRow[]) {
     const fullName = `${row.schema_name}.${row.table_name}`;
     tablesById.set(row.object_id, {
       schema: row.schema_name,
@@ -70,19 +98,19 @@ export const loadSchemaFromSqlServer = async (
     });
   }
 
-  const columnsResult = await pool.request().query<RawColumnRow>(`
+  const columnsResult = await db.query(`
     SELECT c.object_id, c.name AS column_name, ty.name AS data_type
     FROM sys.columns c
     INNER JOIN sys.types ty ON c.user_type_id = ty.user_type_id
   `);
 
-  for (const row of columnsResult.recordset) {
+  for (const row of columnsResult.rows as RawColumnRow[]) {
     const table = tablesById.get(row.object_id);
     if (!table) continue;
     table.columns.push({ name: row.column_name, type: row.data_type });
   }
 
-  const pkResult = await pool.request().query<RawPkRow>(`
+  const pkResult = await db.query(`
     SELECT ic.object_id, c.name AS column_name
     FROM sys.indexes i
     INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
@@ -90,13 +118,13 @@ export const loadSchemaFromSqlServer = async (
     WHERE i.is_primary_key = 1
   `);
 
-  for (const row of pkResult.recordset) {
+  for (const row of pkResult.rows as RawPkRow[]) {
     const table = tablesById.get(row.object_id);
     if (!table) continue;
     table.primaryKey.push(row.column_name);
   }
 
-  const fkResult = await pool.request().query<RawFkRow>(`
+  const fkResult = await db.query(`
     SELECT
       fkc.parent_object_id,
       fkc.referenced_object_id,
@@ -108,7 +136,7 @@ export const loadSchemaFromSqlServer = async (
     INNER JOIN sys.columns cr ON fkc.referenced_object_id = cr.object_id AND fkc.referenced_column_id = cr.column_id
   `);
 
-  for (const row of fkResult.recordset) {
+  for (const row of fkResult.rows as RawFkRow[]) {
     const parent = tablesById.get(row.parent_object_id);
     const referenced = tablesById.get(row.referenced_object_id);
     if (!parent || !referenced) continue;
@@ -123,6 +151,91 @@ export const loadSchemaFromSqlServer = async (
 
   return Array.from(tablesById.values());
 };
+
+export const loadSchemaFromMySql = async (db: DbClient): Promise<TableInfo[]> => {
+  const schemaName = escapeSqlLiteral(config.sql.database);
+  const tablesResult = await db.query(`
+    SELECT table_schema AS schema_name, table_name
+    FROM information_schema.tables
+    WHERE table_schema = '${schemaName}'
+      AND table_type = 'BASE TABLE'
+  `);
+
+  const tablesByName = new Map<string, TableInfo>();
+  for (const row of tablesResult.rows as RawMySqlTableRow[]) {
+    const fullName = `${row.schema_name}.${row.table_name}`;
+    tablesByName.set(fullName, {
+      schema: row.schema_name,
+      name: row.table_name,
+      fullName,
+      columns: [],
+      primaryKey: [],
+      foreignKeys: [],
+      tags: tagForTable(row.table_name)
+    });
+  }
+
+  const columnsResult = await db.query(`
+    SELECT table_schema AS schema_name, table_name, column_name, data_type
+    FROM information_schema.columns
+    WHERE table_schema = '${schemaName}'
+  `);
+
+  for (const row of columnsResult.rows as RawMySqlColumnRow[]) {
+    const fullName = `${row.schema_name}.${row.table_name}`;
+    const table = tablesByName.get(fullName);
+    if (!table) continue;
+    table.columns.push({ name: row.column_name, type: row.data_type });
+  }
+
+  const pkResult = await db.query(`
+    SELECT kcu.table_schema AS schema_name, kcu.table_name, kcu.column_name
+    FROM information_schema.table_constraints tc
+    INNER JOIN information_schema.key_column_usage kcu
+      ON tc.constraint_name = kcu.constraint_name
+      AND tc.table_schema = kcu.table_schema
+      AND tc.table_name = kcu.table_name
+    WHERE tc.constraint_type = 'PRIMARY KEY'
+      AND tc.table_schema = '${schemaName}'
+  `);
+
+  for (const row of pkResult.rows as RawMySqlPkRow[]) {
+    const fullName = `${row.schema_name}.${row.table_name}`;
+    const table = tablesByName.get(fullName);
+    if (!table) continue;
+    table.primaryKey.push(row.column_name);
+  }
+
+  const fkResult = await db.query(`
+    SELECT
+      kcu.table_schema AS schema_name,
+      kcu.table_name AS table_name,
+      kcu.column_name AS column_name,
+      kcu.referenced_table_schema AS referenced_schema,
+      kcu.referenced_table_name AS referenced_table,
+      kcu.referenced_column_name AS referenced_column
+    FROM information_schema.key_column_usage kcu
+    WHERE kcu.referenced_table_schema IS NOT NULL
+      AND kcu.table_schema = '${schemaName}'
+  `);
+
+  for (const row of fkResult.rows as RawMySqlFkRow[]) {
+    const parent = tablesByName.get(`${row.schema_name}.${row.table_name}`);
+    const referenced = tablesByName.get(`${row.referenced_schema}.${row.referenced_table}`);
+    if (!parent || !referenced) continue;
+    parent.foreignKeys.push({
+      fromTable: parent.fullName,
+      fromColumn: row.column_name,
+      toTable: referenced.fullName,
+      toColumn: row.referenced_column
+    });
+  }
+
+  return Array.from(tablesByName.values());
+};
+
+export const loadSchemaFromDatabase = async (db: DbClient): Promise<TableInfo[]> =>
+  db.dialect === "mysql" ? loadSchemaFromMySql(db) : loadSchemaFromSqlServer(db);
 
 const MAX_COLUMNS = 160;
 const MAX_FOREIGN_KEYS = 80;

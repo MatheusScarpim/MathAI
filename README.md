@@ -1,18 +1,18 @@
 # AuraIA SQL (MVP)
 
-Aplicacao completa para consultas em SQL Server usando IA com seguranca, RAG por tabela e expansao por Foreign Keys.
+Aplicacao completa para consultas em SQL Server ou MySQL usando IA com seguranca, RAG por tabela e expansao por Foreign Keys.
 
 ## Stack
 - Backend: Node.js + TypeScript + Fastify (`apps/api`)
 - Vector DB: Qdrant (Docker)
-- SQL Server: pacote `mssql`
+- SQL Server (mssql) ou MySQL (mysql2)
 - LLM: OpenAI API
 - MongoDB: armazenamento de instrucoes
 
 ## Requisitos
 - Node.js 20+
 - Docker (para Qdrant)
-- Acesso a um SQL Server externo
+- Acesso a SQL Server ou MySQL
 - Acesso a um MongoDB externo
 
 ## Subir tudo com Docker (API + Qdrant + Mongo)
@@ -33,17 +33,25 @@ copy .env.example .env
 
 Variaveis importantes:
 - `OPENAI_API_KEY`
+- `SQL_DIALECT` (`sqlserver` ou `mysql`)
 - `SQL_SERVER_HOST`
 - `SQL_SERVER_PORT` (padrao `1433`)
 - `SQL_SERVER_DB`
 - `SQL_SERVER_USER`
 - `SQL_SERVER_PASSWORD`
+- `MYSQL_HOST`
+- `MYSQL_PORT` (padrao `3306`)
+- `MYSQL_DB`
+- `MYSQL_USER`
+- `MYSQL_PASSWORD`
 - `QDRANT_URL` (padrao `http://localhost:6333`)
 - `MONGO_URL` (padrao `mongodb://localhost:27017`)
 - `MONGO_DB` (padrao `auraia`)
 - `REDIS_URL` (padrao `redis://localhost:6379`)
 - `REDIS_TTL_SECONDS` (padrao `900`)
 - `PORT` (API, padrao `3001`)
+
+Para MySQL, defina `SQL_DIALECT=mysql` e preencha as variaveis `MYSQL_*`.
 
 ## Rodar a API
 ```bash
@@ -58,6 +66,14 @@ CREATE LOGIN auraia_ro WITH PASSWORD = 'SenhaForteAqui!';
 CREATE USER auraia_ro FOR LOGIN auraia_ro;
 ALTER ROLE db_datareader ADD MEMBER auraia_ro;
 DENY INSERT, UPDATE, DELETE, ALTER, EXECUTE TO auraia_ro;
+```
+
+## Criar usuario read-only no MySQL
+Execute como admin no seu MySQL (ajuste nomes):
+```sql
+CREATE USER 'auraia_ro'@'%' IDENTIFIED BY 'SenhaForteAqui!';
+GRANT SELECT ON seu_banco.* TO 'auraia_ro'@'%';
+FLUSH PRIVILEGES;
 ```
 
 ## Indexar schema
@@ -105,7 +121,7 @@ O response inclui `historyId` para facilitar o like/dislike no frontend.
 ## Observacoes de seguranca
 - O usuario do SQL Server deve ser read-only.
 - A API valida SQL (apenas SELECT, sem keywords destrutivas).
-- Sempre exige TOP e limita a 500 linhas.
+- Sempre exige TOP (SQL Server) ou LIMIT (MySQL) e limita a 500 linhas.
 - Timeout de query configurado para 20s.
 - Rate limit simples em `/api/ask` por IP.
 

@@ -2,10 +2,10 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { config } from "./config.js";
-import { getPool } from "./db.js";
+import { getDbClient } from "./db.js";
 import {
   ingestSchemaToQdrant,
-  loadSchemaFromSqlServer,
+  loadSchemaFromDatabase,
   loadSchemaGraph,
   clearSchemaCache
 } from "./schema.js";
@@ -48,8 +48,8 @@ app.setErrorHandler((error, _request, reply) => {
 });
 
 app.post("/api/ingest/schema", async (_request, reply) => {
-  const pool = await getPool();
-  const tables = await loadSchemaFromSqlServer(pool);
+  const db = await getDbClient();
+  const tables = await loadSchemaFromDatabase(db);
   const tablesIndexed = await ingestSchemaToQdrant(tables);
   reply.send({ tablesIndexed });
 });
@@ -230,15 +230,11 @@ app.post("/api/run", async (request, reply) => {
     return;
   }
 
-  const pool = await getPool();
+  const db = await getDbClient();
   const start = Date.now();
-  const result = await pool.request().query(body.sql);
+  const result = await db.query(body.sql);
   const elapsedMs = Date.now() - start;
-  const columns = result.recordset?.columns
-    ? Object.keys(result.recordset.columns)
-    : result.recordset?.[0]
-      ? Object.keys(result.recordset[0])
-      : [];
+  const columns = result.columns;
   const [first, second] = columns;
   const xKey = first && first !== second ? first : undefined;
   const yKey = second ?? first;
@@ -247,7 +243,7 @@ app.post("/api/run", async (request, reply) => {
       ? {
           type: "bar" as const,
           data:
-            result.recordset?.map((row) => ({
+            result.rows.map((row) => ({
               category: String(row[xKey] ?? ""),
               value:
                 typeof row[yKey] === "number" && Number.isFinite(row[yKey])
@@ -262,7 +258,7 @@ app.post("/api/run", async (request, reply) => {
 
   reply.send({
     sql: body.sql,
-    rows: result.recordset ?? [],
+    rows: result.rows,
     columns,
     elapsedMs,
     chart
