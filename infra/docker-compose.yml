@@ -29,6 +29,14 @@ services:
       - qdrant
       - mongo
       - redis
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - api
 volumes:
   qdrant_data:
   mongo_data:

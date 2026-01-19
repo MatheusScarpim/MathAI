@@ -124,23 +124,42 @@ export const loadSchemaFromSqlServer = async (
   return Array.from(tablesById.values());
 };
 
+const MAX_COLUMNS = 160;
+const MAX_FOREIGN_KEYS = 80;
+const MAX_CHUNK_CHARS = 24000;
+
+const truncateText = (value: string, maxLength: number): string =>
+  value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+
 const buildChunkText = (table: TableInfo): string => {
-  const columns = table.columns.map((col) => `${col.name} (${col.type})`).join(", ");
+  const columnsList = table.columns
+    .slice(0, MAX_COLUMNS)
+    .map((col) => `${col.name} (${col.type})`);
+  const columnsSuffix =
+    table.columns.length > MAX_COLUMNS
+      ? ` ... +${table.columns.length - MAX_COLUMNS} more`
+      : "";
+  const columns = columnsList.join(", ") + columnsSuffix;
   const pk = table.primaryKey.length ? table.primaryKey.join(", ") : "none";
-  const fks = table.foreignKeys.length
-    ? table.foreignKeys
-        .map((fk) => `${fk.fromTable}.${fk.fromColumn} -> ${fk.toTable}.${fk.toColumn}`)
-        .join("; ")
-    : "none";
+  const fkList = table.foreignKeys
+    .slice(0, MAX_FOREIGN_KEYS)
+    .map((fk) => `${fk.fromTable}.${fk.fromColumn} -> ${fk.toTable}.${fk.toColumn}`);
+  const fkSuffix =
+    table.foreignKeys.length > MAX_FOREIGN_KEYS
+      ? ` ... +${table.foreignKeys.length - MAX_FOREIGN_KEYS} more`
+      : "";
+  const fks = fkList.length ? fkList.join("; ") + fkSuffix : "none";
   const tags = table.tags.length ? table.tags.join(", ") : "none";
 
-  return [
+  const text = [
     `Table: ${table.fullName}`,
     `Columns: ${columns}`,
     `Primary Key: ${pk}`,
     `Foreign Keys: ${fks}`,
     `Tags: ${tags}`
   ].join("\n");
+
+  return truncateText(text, MAX_CHUNK_CHARS);
 };
 
 export const ingestSchemaToQdrant = async (
@@ -188,6 +207,10 @@ export const ingestSchemaToQdrant = async (
 };
 
 let cachedSchema: { tables: TableChunk[]; loadedAt: number } | null = null;
+
+export const clearSchemaCache = (): void => {
+  cachedSchema = null;
+};
 
 export const loadSchemaGraph = async (): Promise<TableChunk[]> => {
   if (cachedSchema && Date.now() - cachedSchema.loadedAt < 5 * 60 * 1000) {

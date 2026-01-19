@@ -2,8 +2,9 @@ import { MongoClient, type Collection, type ObjectId } from "mongodb";
 import { config } from "./config.js";
 
 export type InstructionRecord = {
-  _id?: string;
+  _id?: ObjectId;
   text: string;
+  tableFullName?: string; // null/undefined = global instruction
   createdAt: Date;
 };
 

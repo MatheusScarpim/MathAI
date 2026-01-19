@@ -26,7 +26,7 @@ type ExpandedContext = {
 
 const SEMANTIC_SIMILARITY_THRESHOLD = 0.92;
 const FEW_SHOT_SIMILARITY_THRESHOLD = 0.86;
-const FEW_SHOT_MAX = 3;
+const FEW_SHOT_MAX = 2;
 
 type FewShotExample = {
   question: string;
@@ -176,8 +176,15 @@ const buildPrompt = (
     language === "en" ? "Prev SQL:" : language === "es" ? "SQL previo:" : "SQL anterior:";
   const questionLabel =
     language === "en" ? "Question:" : language === "es" ? "Pregunta:" : "Pergunta:";
+  const priorityRule =
+    language === "en"
+      ? "Rule: prioritize the current question. Use history only to fill missing context and never override the current question."
+      : language === "es"
+        ? "Regla: prioriza la pregunta actual. Usa el historial solo para completar contexto faltante y nunca sobrescribas la pregunta actual."
+        : "Regra: priorize a pergunta atual. Use o historico apenas para completar contexto faltante e nunca sobrescreva a pergunta atual.";
 
   const lines: Array<string | null> = [];
+  lines.push(priorityRule);
   if (historySnippet) {
     lines.push(historyLabel, historySnippet);
   }
@@ -207,6 +214,36 @@ const stripSql = (value: string): string => {
 
 const truncate = (value: string, max: number): string =>
   value.length > max ? `${value.slice(0, max)}...` : value;
+
+const buildEmbeddingInput = async (
+  question: string,
+  chatId: string | undefined,
+  language: "pt" | "en" | "es"
+): Promise<string> => {
+  const trimmed = question.trim();
+  if (!chatId) return trimmed;
+  const collection = await getHistoryCollection();
+  const items = await collection
+    .find({ chatId })
+    .sort({ createdAt: 1 })
+    .toArray();
+  if (!items.length) return trimmed;
+
+  const prevLabel =
+    language === "en"
+      ? "Previous question"
+      : language === "es"
+        ? "Pregunta anterior"
+        : "Pergunta anterior";
+  const currentLabel =
+    language === "en" ? "Current question" : language === "es" ? "Pregunta atual" : "Pergunta atual";
+
+  const historyLines = items
+    .map((item, index) => `${prevLabel} ${index + 1}: ${item.question}`)
+    .join("\n");
+
+  return `${historyLines}\n${currentLabel}: ${trimmed}`;
+};
 
 const cosineSimilarity = (a: number[], b: number[]): number => {
   const length = Math.min(a.length, b.length);
@@ -499,21 +536,12 @@ const buildSystemContent = (instructionText: string, language: "pt" | "en" | "es
   const base =
     language === "en"
       ? "You are a SQL Server expert. Output only T-SQL SELECT, no markdown or comments. " +
-        "Rules: TOP (100); no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_; " +
-        "avoid Dt_Transacao as event date; prefer Dt_Producao, Dt_PedidoVenda, or another fact date. " +
-        "If no period, filter last 30 days on the fact date. " +
-        "If chat history defines a period, keep it unless user changes it."
+        "Rules: TOP (100); no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_."
       : language === "es"
         ? "Eres un experto en SQL Server. Devuelve solo T-SQL SELECT, sin markdown ni comentarios. " +
-          "Reglas: TOP (100); no SELECT *; prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_; " +
-          "evita Dt_Transacao como fecha del evento; prefiere Dt_Producao, Dt_PedidoVenda u otra fecha del hecho. " +
-          "Si no hay periodo, filtra los ultimos 30 dias en la fecha del hecho. " +
-          "Si el historial define un periodo, mantenlo salvo cambio del usuario."
+          "Reglas: TOP (100); no SELECT *; prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_."
         : "Voce e um especialista em SQL Server. Retorne apenas T-SQL SELECT, sem markdown ou comentarios. " +
-          "Regras: TOP (100); nao use SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_; " +
-          "evite Dt_Transacao como data do evento; prefira Dt_Producao, Dt_PedidoVenda ou outra data do fato. " +
-          "Se nao houver periodo, filtre os ultimos 30 dias na data do fato. " +
-          "Se o historico definir periodo, mantenha salvo mudanca do usuario.";
+          "Regras: TOP (100); nao use SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_.";
 
   const instructionsLabel =
     language === "en" ? "Additional instructions:" : language === "es" ? "Instrucciones adicionales:" : "Instrucoes adicionais:";
@@ -789,9 +817,10 @@ export const answerQuestion = async (
     normalizedChatId ?? `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const cacheKey = getCacheKey(question, resolvedChatId, language);
   const cached = await getCachedValue<AskSuccessResponse>(cacheKey);
+  const embeddingInput = await buildEmbeddingInput(question, resolvedChatId, language);
   const embedding = await openai.embeddings.create({
     model: EMBEDDING_MODEL,
-    input: question
+    input: embeddingInput
   });
   const vector = embedding.data[0]?.embedding ?? [];
   if (cached) {
@@ -1040,26 +1069,27 @@ export const answerQuestion = async (
       continue;
     }
 
+    const sql = result.sql;
     try {
       const start = Date.now();
-      const result = await pool.request().query(sql);
+      const queryResult = await pool.request().query(sql);
       const elapsedMs = Date.now() - start;
-      const rowCount = result.recordset?.length ?? 0;
-      const columns = result.recordset?.columns
-        ? Object.keys(result.recordset.columns)
-        : result.recordset?.[0]
-          ? Object.keys(result.recordset[0])
+      const rowCount = queryResult.recordset?.length ?? 0;
+      const columns = queryResult.recordset?.columns
+        ? Object.keys(queryResult.recordset.columns)
+        : queryResult.recordset?.[0]
+          ? Object.keys(queryResult.recordset[0])
           : [];
-      let chart = inferChart(result.recordset ?? [], columns, question);
+      let chart = inferChart(queryResult.recordset ?? [], columns, question);
       try {
         chart = await inferChartWithLLM(
           question,
-          result.recordset ?? [],
+          queryResult.recordset ?? [],
           columns,
           language
         );
       } catch {
-        chart = inferChart(result.recordset ?? [], columns, question);
+        chart = inferChart(queryResult.recordset ?? [], columns, question);
       }
       let summary: string | undefined;
       try {
@@ -1067,7 +1097,7 @@ export const answerQuestion = async (
           question,
           sql,
           columns,
-          result.recordset ?? [],
+          queryResult.recordset ?? [],
           language
         );
         summary = summaryResult.summary;
@@ -1103,7 +1133,7 @@ export const answerQuestion = async (
 
       const responseData: AskSuccessResponse = {
         sql,
-        rows: result.recordset ?? [],
+        rows: queryResult.recordset ?? [],
         columns,
         elapsedMs,
         chatId: resolvedChatId,

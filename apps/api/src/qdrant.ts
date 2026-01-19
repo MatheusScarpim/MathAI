@@ -26,3 +26,10 @@ export const ensureSchemaCollection = async (): Promise<void> => {
     }
   });
 };
+
+export const clearSchemaCollection = async (): Promise<void> => {
+  const collections = await qdrant.getCollections();
+  const exists = collections.collections.some((c) => c.name === "schema_chunks");
+  if (!exists) return;
+  await qdrant.deleteCollection("schema_chunks");
+};

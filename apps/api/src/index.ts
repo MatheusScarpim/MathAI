@@ -3,7 +3,13 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { config } from "./config.js";
 import { getPool } from "./db.js";
-import { ingestSchemaToQdrant, loadSchemaFromSqlServer } from "./schema.js";
+import {
+  ingestSchemaToQdrant,
+  loadSchemaFromSqlServer,
+  loadSchemaGraph,
+  clearSchemaCache
+} from "./schema.js";
+import { clearSchemaCollection } from "./qdrant.js";
 import { answerQuestion } from "./ask.js";
 import { isNonEmptyString, sanitizeErrorMessage } from "@auraia/shared";
 import { validateSql } from "./validation.js";
@@ -48,13 +54,24 @@ app.post("/api/ingest/schema", async (_request, reply) => {
   reply.send({ tablesIndexed });
 });
 
+app.get("/api/schema/tables", async () => {
+  const tables = await loadSchemaGraph();
+  return { tables };
+});
+
+app.post("/api/schema/clear", async (_request, reply) => {
+  await clearSchemaCollection();
+  clearSchemaCache();
+  reply.send({ ok: true });
+});
+
 app.post("/api/instructions", async (request, reply) => {
-  const body = request.body as { text?: string };
+  const body = request.body as { text?: string; tableFullName?: string };
   if (!isNonEmptyString(body?.text)) {
     reply.status(400).send({ errorMessage: "Campo text obrigatorio." });
     return;
   }
-  const trimmed = body.text.trim();
+  const trimmed = body.text!.trim();
   if (trimmed.length > 2000) {
     reply.status(400).send({ errorMessage: "Instrucao muito longa (max 2000)." });
     return;
@@ -62,14 +79,18 @@ app.post("/api/instructions", async (request, reply) => {
 
   const collection = await getInstructionsCollection();
   const createdAt = new Date();
+  const tableFullName = body.tableFullName?.trim() || undefined;
+
   const result = await collection.insertOne({
     text: trimmed,
+    tableFullName,
     createdAt
   });
 
   reply.send({
     id: result.insertedId.toString(),
     text: trimmed,
+    tableFullName,
     createdAt: createdAt.toISOString()
   });
 });
@@ -86,9 +107,29 @@ app.get("/api/instructions", async (_request, reply) => {
     docs.map((doc) => ({
       id: doc._id?.toString() ?? "",
       text: doc.text,
+      tableFullName: doc.tableFullName,
       createdAt: doc.createdAt.toISOString()
     }))
   );
+});
+
+app.delete("/api/instructions/:id", async (request, reply) => {
+  const { id } = request.params as { id: string };
+
+  if (!id || !ObjectId.isValid(id)) {
+    reply.status(400).send({ errorMessage: "Id invalido." });
+    return;
+  }
+
+  const collection = await getInstructionsCollection();
+  const result = await collection.deleteOne({ _id: new ObjectId(id) });
+
+  if (result.deletedCount === 0) {
+    reply.status(404).send({ errorMessage: "Instrucao nao encontrada." });
+    return;
+  }
+
+  reply.send({ ok: true });
 });
 
 app.get("/api/history", async (_request, reply) => {
