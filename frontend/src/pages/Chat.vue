@@ -3,7 +3,7 @@
     <header class="page-header">
       <div>
         <h1>Perguntar</h1>
-        <p>Faca perguntas em linguagem natural sobre seus dados</p>
+        <p>Faça perguntas em linguagem natural sobre seus dados</p>
       </div>
       <div class="header-actions">
         <button class="ghost-btn" @click="resetConversation" :disabled="!entries.length">
@@ -28,7 +28,7 @@
             @focus="inputFocused = true"
             @blur="inputFocused = false"
           />
-          <select v-model="language" class="lang-select">
+          <select v-model="language" class="lang-select" title="Idioma da resposta">
             <option value="pt">PT</option>
             <option value="en">EN</option>
             <option value="es">ES</option>
@@ -42,8 +42,10 @@
           </button>
         </div>
         <div class="query-hint" v-if="entries.length">
-          <span class="hint-pill">Sessao ativa</span>
-          <span class="hint-text">{{ entries.length }} pergunta(s)</span>
+          <span class="hint-pill">Sessão ativa</span>
+          <span class="hint-text">
+            {{ entries.length }} {{ pluralize(entries.length, 'pergunta', 'perguntas') }}
+          </span>
         </div>
       </div>
 
@@ -56,7 +58,7 @@
               <path d="m21 21-4.35-4.35"/>
             </svg>
           </div>
-          <h3>Faca uma pergunta</h3>
+          <h3>Faça uma pergunta</h3>
           <p>Digite uma pergunta em linguagem natural e receba o SQL e os resultados.</p>
         </div>
 
@@ -73,6 +75,12 @@
           </div>
 
           <p class="entry-question">{{ entry.question }}</p>
+          <p
+            v-if="entry.result?.translatedQuestion && entry.result.translatedQuestion !== entry.question"
+            class="entry-translation"
+          >
+            Pergunta (db): {{ entry.result.translatedQuestion }}
+          </p>
 
           <div v-if="entry.loading" class="entry-loading">
             <span class="spinner small"></span>
@@ -147,7 +155,9 @@
                   Resultados
                 </div>
                 <span class="meta">
-                  {{ entry.result.rows.length }} linhas em {{ entry.result.elapsedMs }}ms
+                  {{ entry.result.rows.length }}
+                  {{ pluralize(entry.result.rows.length, 'linha', 'linhas') }}
+                  em {{ entry.result.elapsedMs }}ms
                 </span>
               </div>
               <div class="table-wrapper">
@@ -192,7 +202,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { api } from '../services/api'
 import type { AskResponse } from '../types'
 
@@ -212,10 +222,20 @@ type ChatEntry = {
 
 const question = ref('')
 const language = ref<'pt' | 'en' | 'es'>('pt')
+const schemaLanguage = ref<'pt' | 'en' | 'es'>('pt')
 const sending = ref(false)
 const inputFocused = ref(false)
 const entries = ref<ChatEntry[]>([])
 const chatId = ref(createChatId())
+
+onMounted(async () => {
+  try {
+    const res = await api.getSchemaLanguage()
+    schemaLanguage.value = res.schemaLanguage
+  } catch {
+    // keep default if settings API is unavailable
+  }
+})
 
 function createChatId(): string {
   return `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
@@ -247,7 +267,7 @@ async function ask() {
   sending.value = true
 
   try {
-    const res = await api.ask(trimmed, chatId.value, language.value)
+    const res = await api.ask(trimmed, chatId.value, language.value, schemaLanguage.value)
     if (res.ok && res.data) {
       entry.result = res.data
       entry.isFavorite = false
@@ -316,6 +336,10 @@ async function removeTag(entry: ChatEntry, tag: string) {
 
 function isNumber(val: any): boolean {
   return typeof val === 'number'
+}
+
+function pluralize(count: number, singular: string, plural: string): string {
+  return count === 1 ? singular : plural
 }
 
 function formatValue(val: any): string {
@@ -565,6 +589,12 @@ function formatTime(timestamp: number): string {
   font-size: 1.05rem;
   color: var(--color-gray-100);
   margin-bottom: 0.25rem;
+}
+
+.entry-translation {
+  font-size: 0.9rem;
+  color: var(--color-gray-400);
+  margin-bottom: 0.5rem;
 }
 
 .entry-loading {

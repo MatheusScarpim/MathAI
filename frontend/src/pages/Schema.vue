@@ -3,15 +3,23 @@
     <header class="page-header">
       <div>
         <h1>Tabelas Indexadas</h1>
-        <p>Visualize as tabelas, relacionamentos e adicione instrucoes especificas</p>
+        <p>Visualize as tabelas, relacionamentos e adicione instruções específicas</p>
       </div>
       <div class="header-actions">
+        <div class="schema-language">
+          <label for="schema-language">Idioma do banco</label>
+          <select id="schema-language" v-model="schemaLanguage" class="schema-select">
+            <option value="pt">Português (PT)</option>
+            <option value="en">English (EN)</option>
+            <option value="es">Español (ES)</option>
+          </select>
+        </div>
         <button class="btn-danger" @click="clearSchema" :disabled="clearing || indexing">
           <svg v-if="!clearing" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
           </svg>
           <span v-else class="spinner"></span>
-          {{ clearing ? 'Zerando...' : 'Zerar Schema' }}
+          {{ clearing ? 'Zerando...' : 'Zerar esquema' }}
         </button>
         <button class="btn-primary" @click="reindex" :disabled="indexing || clearing">
           <svg v-if="!indexing" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -21,7 +29,7 @@
             <path d="M16 21h5v-5"/>
           </svg>
           <span v-else class="spinner"></span>
-          {{ indexing ? 'Indexando...' : 'Reindexar Schema' }}
+          {{ indexing ? 'Indexando...' : 'Reindexar esquema' }}
         </button>
       </div>
     </header>
@@ -56,13 +64,15 @@
         </svg>
       </div>
       <h3>Nenhuma tabela indexada</h3>
-      <p>Clique em "Reindexar Schema" para carregar as tabelas do SQL Server.</p>
+      <p>Clique em "Reindexar esquema" para carregar as tabelas do SQL Server.</p>
     </div>
 
     <!-- Tables List -->
     <div v-else class="tables-section">
       <div class="tables-header">
-        <h2>{{ tables.length }} tabelas encontradas</h2>
+        <h2>
+          {{ tables.length }} {{ pluralize(tables.length, 'tabela encontrada', 'tabelas encontradas') }}
+        </h2>
         <input
           v-model="search"
           type="text"
@@ -84,14 +94,17 @@
                 {{ tag }}
               </span>
               <span class="table-name">{{ table.tableFullName }}</span>
-              <span class="column-count">{{ table.columns.length }} colunas</span>
+              <span class="column-count">
+                {{ table.columns.length }} {{ pluralize(table.columns.length, 'coluna', 'colunas') }}
+              </span>
             </div>
             <div class="table-actions">
               <span v-if="table.foreignKeys.length" class="fk-badge">
-                {{ table.foreignKeys.length }} FK
+                {{ table.foreignKeys.length }} {{ pluralize(table.foreignKeys.length, 'FK', 'FKs') }}
               </span>
               <span v-if="getTableInstructions(table.tableFullName).length" class="instruction-badge">
-                {{ getTableInstructions(table.tableFullName).length }} instrucoes
+                {{ getTableInstructions(table.tableFullName).length }}
+                {{ pluralize(getTableInstructions(table.tableFullName).length, 'instrução', 'instruções') }}
               </span>
               <svg
                 width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -121,7 +134,7 @@
 
             <!-- Foreign Keys -->
             <div v-if="table.foreignKeys.length" class="detail-section">
-              <h4>Foreign Keys</h4>
+              <h4>Chaves estrangeiras</h4>
               <div class="fk-list">
                 <div v-for="(fk, i) in table.foreignKeys" :key="i" class="fk-item">
                   <code>{{ fk.fromColumn }}</code>
@@ -136,8 +149,8 @@
 
             <!-- Instructions -->
             <div class="detail-section">
-              <h4>Instrucoes para esta tabela</h4>
-              <p class="section-desc">Estas instrucoes serao incluidas no prompt quando esta tabela for selecionada.</p>
+              <h4>Instruções para esta tabela</h4>
+              <p class="section-desc">Estas instruções serão incluídas no prompt quando esta tabela for selecionada.</p>
 
               <div v-if="getTableInstructions(table.tableFullName).length" class="instructions-list">
                 <div v-for="inst in getTableInstructions(table.tableFullName)" :key="inst.id" class="instruction-item">
@@ -145,7 +158,7 @@
                     <p>{{ inst.text }}</p>
                     <span class="inst-date">{{ formatDate(inst.createdAt) }}</span>
                   </div>
-                  <button class="btn-delete" @click="deleteInstruction(inst.id)" title="Excluir instrucao">
+                  <button class="btn-delete" @click="deleteInstruction(inst.id)" title="Excluir instrução">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                     </svg>
@@ -179,7 +192,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive } from 'vue'
+import { ref, computed, onMounted, reactive, watch } from 'vue'
 import { api } from '../services/api'
 import type { TableInfo, Instruction } from '../types'
 
@@ -194,6 +207,8 @@ const errorMessage = ref('')
 const search = ref('')
 const expandedTable = ref<string | null>(null)
 const newInstructions = reactive<Record<string, string>>({})
+const schemaLanguage = ref<'pt' | 'en' | 'es'>('pt')
+const schemaLanguageLoaded = ref(false)
 
 const filteredTables = computed(() => {
   if (!search.value.trim()) return tables.value
@@ -209,7 +224,16 @@ function getTableInstructions(tableFullName: string): Instruction[] {
 }
 
 onMounted(async () => {
-  await loadData()
+  await Promise.all([loadData(), loadSchemaLanguage()])
+})
+
+watch(schemaLanguage, async (value, previous) => {
+  if (!schemaLanguageLoaded.value || value === previous) return
+  try {
+    await api.setSchemaLanguage(value)
+  } catch (e: any) {
+    errorMessage.value = e.message || 'Erro ao salvar idioma do banco'
+  }
 })
 
 async function loadData() {
@@ -230,6 +254,17 @@ async function loadData() {
   }
 }
 
+async function loadSchemaLanguage() {
+  try {
+    const res = await api.getSchemaLanguage()
+    schemaLanguage.value = res.schemaLanguage
+  } catch (e: any) {
+    errorMessage.value = e.message || 'Erro ao carregar idioma do banco'
+  } finally {
+    schemaLanguageLoaded.value = true
+  }
+}
+
 async function reindex() {
   if (indexing.value) return
 
@@ -239,10 +274,10 @@ async function reindex() {
 
   try {
     const res = await api.ingestSchema()
-    successMessage.value = `${res.tablesIndexed} tabelas indexadas com sucesso!`
+    successMessage.value = `${res.tablesIndexed} ${pluralize(res.tablesIndexed, 'tabela indexada', 'tabelas indexadas')} com sucesso!`
     await loadData()
   } catch (e: any) {
-    errorMessage.value = e.message || 'Erro ao indexar schema'
+    errorMessage.value = e.message || 'Erro ao indexar esquema'
   } finally {
     indexing.value = false
   }
@@ -258,12 +293,12 @@ async function clearSchema() {
 
   try {
     await api.clearSchema()
-    successMessage.value = 'Schema zerado com sucesso!'
+    successMessage.value = 'Esquema zerado com sucesso!'
     tables.value = []
     expandedTable.value = null
     await loadData()
   } catch (e: any) {
-    errorMessage.value = e.message || 'Erro ao zerar schema'
+    errorMessage.value = e.message || 'Erro ao zerar esquema'
   } finally {
     clearing.value = false
   }
@@ -271,6 +306,10 @@ async function clearSchema() {
 
 function toggleTable(tableFullName: string) {
   expandedTable.value = expandedTable.value === tableFullName ? null : tableFullName
+}
+
+function pluralize(count: number, singular: string, plural: string): string {
+  return count === 1 ? singular : plural
 }
 
 async function addInstruction(tableFullName: string) {
@@ -283,25 +322,25 @@ async function addInstruction(tableFullName: string) {
     const created = await api.createInstruction(text, tableFullName)
     instructions.value.unshift(created)
     newInstructions[tableFullName] = ''
-    successMessage.value = 'Instrucao adicionada!'
+    successMessage.value = 'Instrução adicionada!'
     setTimeout(() => { successMessage.value = '' }, 3000)
   } catch (e: any) {
-    errorMessage.value = e.message || 'Erro ao adicionar instrucao'
+    errorMessage.value = e.message || 'Erro ao adicionar instrução'
   } finally {
     saving.value = false
   }
 }
 
 async function deleteInstruction(id: string) {
-  if (!confirm('Deseja realmente excluir esta instrucao?')) return
+  if (!confirm('Deseja realmente excluir esta instrução?')) return
 
   try {
     await api.deleteInstruction(id)
     instructions.value = instructions.value.filter(i => i.id !== id)
-    successMessage.value = 'Instrucao excluida!'
+    successMessage.value = 'Instrução excluída!'
     setTimeout(() => { successMessage.value = '' }, 3000)
   } catch (e: any) {
-    errorMessage.value = e.message || 'Erro ao excluir instrucao'
+    errorMessage.value = e.message || 'Erro ao excluir instrução'
   }
 }
 
@@ -340,6 +379,34 @@ function formatDate(dateStr: string): string {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+}
+
+.schema-language {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--color-gray-500);
+}
+
+.schema-language label {
+  font-size: 0.75rem;
+  color: var(--color-gray-500);
+}
+
+.schema-select {
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: var(--color-gray-200);
+  outline: none;
+  min-width: 180px;
+}
+
+.schema-select:focus {
+  border-color: var(--color-accent);
 }
 
 .btn-primary {
@@ -792,6 +859,10 @@ function formatDate(dateStr: string): string {
     width: 100%;
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .schema-select {
+    width: 100%;
   }
 
   .tables-header {

@@ -13,7 +13,7 @@ import { clearSchemaCollection } from "./qdrant.js";
 import { answerQuestion } from "./ask.js";
 import { isNonEmptyString, sanitizeErrorMessage } from "@auraia/shared";
 import { validateSql } from "./validation.js";
-import { getHistoryCollection, getInstructionsCollection } from "./mongo.js";
+import { getHistoryCollection, getInstructionsCollection, getSettingsCollection } from "./mongo.js";
 import { ObjectId } from "mongodb";
 
 const app = Fastify({
@@ -23,6 +23,29 @@ const app = Fastify({
 
 await app.register(cors, { origin: true });
 await app.register(rateLimit, { global: false });
+
+const VALID_LANGUAGES = ["pt", "en", "es"] as const;
+
+const isValidLanguage = (value: string | undefined): value is (typeof VALID_LANGUAGES)[number] =>
+  Boolean(value && VALID_LANGUAGES.includes(value as (typeof VALID_LANGUAGES)[number]));
+
+const getSchemaLanguageSetting = async (): Promise<(typeof VALID_LANGUAGES)[number]> => {
+  const collection = await getSettingsCollection();
+  const doc = await collection.findOne({ key: "schemaLanguage" });
+  if (doc && isValidLanguage(doc.value)) return doc.value;
+  return "pt";
+};
+
+const setSchemaLanguageSetting = async (
+  value: (typeof VALID_LANGUAGES)[number]
+): Promise<void> => {
+  const collection = await getSettingsCollection();
+  await collection.updateOne(
+    { key: "schemaLanguage" },
+    { $set: { value, updatedAt: new Date() } },
+    { upsert: true }
+  );
+};
 
 const extractErrorMessage = (error: unknown): string => {
   const fallback = "Erro interno.";
@@ -132,6 +155,22 @@ app.delete("/api/instructions/:id", async (request, reply) => {
   reply.send({ ok: true });
 });
 
+app.get("/api/settings/schema-language", async (_request, reply) => {
+  const schemaLanguage = await getSchemaLanguageSetting();
+  reply.send({ schemaLanguage });
+});
+
+app.put("/api/settings/schema-language", async (request, reply) => {
+  const body = request.body as { schemaLanguage?: string };
+  if (!isValidLanguage(body?.schemaLanguage)) {
+    reply.status(400).send({ errorMessage: "schemaLanguage invalido." });
+    return;
+  }
+
+  await setSchemaLanguageSetting(body.schemaLanguage);
+  reply.send({ ok: true, schemaLanguage: body.schemaLanguage });
+});
+
 app.get("/api/history", async (_request, reply) => {
   const collection = await getHistoryCollection();
   const docs = await collection
@@ -151,6 +190,7 @@ app.get("/api/history", async (_request, reply) => {
       favorite: doc.favorite,
       tags: doc.tags,
       language: doc.language,
+      responseLanguage: doc.responseLanguage,
       success: doc.success,
       errorMessage: doc.errorMessage,
       elapsedMs: doc.elapsedMs,
@@ -189,7 +229,13 @@ app.post(
   "/api/ask",
   { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
   async (request, reply) => {
-    const body = request.body as { question?: string; chatId?: string; language?: string };
+    const body = request.body as {
+      question?: string;
+      chatId?: string;
+      language?: string;
+      schemaLanguage?: string;
+      responseLanguage?: string;
+    };
     if (!isNonEmptyString(body?.question)) {
       reply.status(400).send({ errorMessage: "Campo question obrigatorio." });
       return;
@@ -198,15 +244,32 @@ app.post(
       reply.status(400).send({ errorMessage: "chatId invalido." });
       return;
     }
-    if (body.language && !["pt", "en", "es"].includes(body.language)) {
+    if (body.language && !isValidLanguage(body.language)) {
       reply.status(400).send({ errorMessage: "language invalido." });
       return;
     }
+    if (body.schemaLanguage && !isValidLanguage(body.schemaLanguage)) {
+      reply.status(400).send({ errorMessage: "schemaLanguage invalido." });
+      return;
+    }
+    if (body.responseLanguage && !isValidLanguage(body.responseLanguage)) {
+      reply.status(400).send({ errorMessage: "responseLanguage invalido." });
+      return;
+    }
 
+    const resolvedSchemaLanguage = isValidLanguage(body.schemaLanguage)
+      ? body.schemaLanguage
+      : await getSchemaLanguageSetting();
+    const resolvedQuestionLanguage = isValidLanguage(body.language) ? body.language : "pt";
+    const resolvedResponseLanguage = isValidLanguage(body.responseLanguage)
+      ? body.responseLanguage
+      : resolvedQuestionLanguage;
     const result = await answerQuestion(
       body.question.trim(),
       body.chatId?.trim(),
-      body.language as "pt" | "en" | "es" | undefined
+      resolvedQuestionLanguage,
+      resolvedSchemaLanguage,
+      resolvedResponseLanguage
     );
     if (!result.ok) {
       reply.status(400).send(result.error);

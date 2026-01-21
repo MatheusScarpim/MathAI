@@ -2,15 +2,15 @@
   <div class="instructions-page">
     <header class="page-header">
       <div>
-        <h1>Instrucoes Personalizadas</h1>
-        <p>Configure regras globais para guiar a geracao de SQL</p>
+        <h1>Instruções Personalizadas</h1>
+        <p>Configure regras globais para guiar a geração de SQL</p>
       </div>
     </header>
 
     <!-- Add Global Instruction -->
     <div class="add-section">
-      <h2>Nova Instrucao Global</h2>
-      <p class="section-desc">Instrucoes globais sao aplicadas em todas as consultas.</p>
+      <h2>Nova Instrução Global</h2>
+      <p class="section-desc">Instruções globais são aplicadas em todas as consultas.</p>
       <div class="add-form">
         <textarea
           v-model="newInstruction"
@@ -58,11 +58,11 @@
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="10"/>
           </svg>
-          Instrucoes Globais
+          Instruções Globais
         </h2>
 
         <div v-if="globalInstructions.length === 0" class="empty-state small">
-          <p>Nenhuma instrucao global configurada</p>
+          <p>Nenhuma instrução global configurada</p>
         </div>
 
         <div v-else class="instructions-list">
@@ -71,7 +71,7 @@
               <p>{{ instruction.text }}</p>
               <span class="date">{{ formatDate(instruction.createdAt) }}</span>
             </div>
-            <button class="btn-delete" @click="deleteInstruction(instruction.id)" title="Excluir instrucao">
+            <button class="btn-delete" @click="deleteInstruction(instruction.id)" title="Excluir instrução">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
               </svg>
@@ -88,15 +88,15 @@
             <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
             <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
           </svg>
-          Instrucoes por Tabela
+          Instruções por Tabela
         </h2>
         <p class="section-desc">
-          Instrucoes especificas por tabela sao aplicadas apenas quando a tabela e usada na consulta.
-          <router-link to="/schema">Gerencie na pagina de Tabelas</router-link>
+          Instruções específicas por tabela são aplicadas apenas quando a tabela é usada na consulta.
+          <router-link to="/schema">Gerencie na página de Tabelas</router-link>
         </p>
 
         <div v-if="tableInstructions.length === 0" class="empty-state small">
-          <p>Nenhuma instrucao por tabela configurada</p>
+          <p>Nenhuma instrução por tabela configurada</p>
         </div>
 
         <div v-else class="instructions-list">
@@ -106,7 +106,7 @@
               <p>{{ instruction.text }}</p>
               <span class="date">{{ formatDate(instruction.createdAt) }}</span>
             </div>
-            <button class="btn-delete" @click="deleteInstruction(instruction.id)" title="Excluir instrucao">
+            <button class="btn-delete" @click="deleteInstruction(instruction.id)" title="Excluir instrução">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
               </svg>
@@ -118,7 +118,7 @@
 
     <!-- Examples -->
     <div class="examples-section">
-      <h2>Exemplos de Instrucoes Globais</h2>
+      <h2>Exemplos de Instruções Globais</h2>
       <div class="examples-grid">
         <div
           v-for="example in examples"
@@ -160,17 +160,17 @@ const tableInstructions = computed(() =>
 const examples = [
   'Sempre use TOP 100 nas consultas para limitar resultados',
   'Evite o campo Dt_Transacao, prefira Dt_Producao para filtros de data',
-  'Use alias em portugues para as colunas nos resultados',
+  'Use alias em português para as colunas nos resultados',
   'Sempre inclua o campo Id nas consultas de clientes',
-  'Formate valores monetarios com 2 casas decimais',
-  'Agrupe resultados de vendas sempre por regiao'
+  'Formate valores monetários com 2 casas decimais',
+  'Agrupe resultados de vendas sempre por região'
 ]
 
 onMounted(async () => {
   try {
     instructions.value = await api.getInstructions()
   } catch (e: any) {
-    errorMessage.value = e.message || 'Erro ao carregar instrucoes'
+    errorMessage.value = e.message || 'Erro ao carregar instruções'
   } finally {
     loading.value = false
   }
@@ -187,10 +187,10 @@ async function addInstruction() {
     const created = await api.createInstruction(newInstruction.value.trim())
     instructions.value.unshift(created)
     newInstruction.value = ''
-    successMessage.value = 'Instrucao adicionada com sucesso!'
+    successMessage.value = 'Instrução adicionada com sucesso!'
     setTimeout(() => { successMessage.value = '' }, 3000)
   } catch (e: any) {
-    errorMessage.value = e.message || 'Erro ao adicionar instrucao'
+    errorMessage.value = e.message || 'Erro ao adicionar instrução'
   } finally {
     saving.value = false
   }
@@ -201,15 +201,15 @@ function useExample(example: string) {
 }
 
 async function deleteInstruction(id: string) {
-  if (!confirm('Deseja realmente excluir esta instrucao?')) return
+  if (!confirm('Deseja realmente excluir esta instrução?')) return
 
   try {
     await api.deleteInstruction(id)
     instructions.value = instructions.value.filter(i => i.id !== id)
-    successMessage.value = 'Instrucao excluida!'
+    successMessage.value = 'Instrução excluída!'
     setTimeout(() => { successMessage.value = '' }, 3000)
   } catch (e: any) {
-    errorMessage.value = e.message || 'Erro ao excluir instrucao'
+    errorMessage.value = e.message || 'Erro ao excluir instrução'
   }
 }
 

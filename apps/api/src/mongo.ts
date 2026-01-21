@@ -12,9 +12,11 @@ export type HistoryRecord = {
   _id?: ObjectId;
   chatId?: string;
   question: string;
+  embeddingQuestion?: string;
   sql: string;
   summary?: string;
   language?: "pt" | "en" | "es";
+  responseLanguage?: "pt" | "en" | "es";
   createdAt: Date;
   favorite: boolean;
   tags: string[];
@@ -23,6 +25,13 @@ export type HistoryRecord = {
   elapsedMs?: number;
   rowCount?: number;
   embedding?: number[];
+};
+
+export type SettingRecord = {
+  _id?: ObjectId;
+  key: string;
+  value: string;
+  updatedAt: Date;
 };
 
 let client: MongoClient | null = null;
@@ -46,4 +55,9 @@ export const getInstructionsCollection = async (): Promise<
 export const getHistoryCollection = async (): Promise<Collection<HistoryRecord>> => {
   const mongo = await getMongoClient();
   return mongo.db(config.mongo.db).collection<HistoryRecord>("history");
+};
+
+export const getSettingsCollection = async (): Promise<Collection<SettingRecord>> => {
+  const mongo = await getMongoClient();
+  return mongo.db(config.mongo.db).collection<SettingRecord>("settings");
 };

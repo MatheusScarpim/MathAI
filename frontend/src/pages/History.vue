@@ -2,7 +2,7 @@
   <div class="history-page">
     <header class="page-header">
       <div>
-        <h1>Historico</h1>
+        <h1>Histórico</h1>
         <p>Veja todas as perguntas anteriores e seus resultados</p>
       </div>
     </header>
@@ -50,7 +50,7 @@
             <input type="date" v-model="dateFrom" class="date-input" />
           </label>
           <label>
-            Ate:
+            Até:
             <input type="date" v-model="dateTo" class="date-input" />
           </label>
           <button v-if="dateFrom || dateTo" class="clear-dates-btn" @click="dateFrom = ''; dateTo = ''">
@@ -58,7 +58,8 @@
           </button>
         </div>
         <div class="results-info" v-if="!loading && filteredHistory.length > 0">
-          {{ filteredHistory.length }} resultados
+          {{ filteredHistory.length }}
+          {{ pluralize(filteredHistory.length, 'resultado', 'resultados') }}
         </div>
       </div>
     </div>
@@ -66,7 +67,7 @@
     <!-- Loading -->
     <div v-if="loading" class="loading">
       <span class="spinner"></span>
-      Carregando historico...
+      Carregando histórico...
     </div>
 
     <!-- Error -->
@@ -88,7 +89,7 @@
         </svg>
       </div>
       <h3>{{ filter === 'all' ? 'Nenhuma pergunta ainda' : 'Nenhum item encontrado' }}</h3>
-      <p>{{ filter === 'all' ? 'Faca uma pergunta na aba "Perguntar" para comecar.' : 'Tente outro filtro.' }}</p>
+      <p>{{ filter === 'all' ? 'Faça uma pergunta na aba "Perguntar" para começar.' : 'Tente outro filtro.' }}</p>
     </div>
 
     <!-- History List -->
@@ -103,7 +104,9 @@
           <div class="card-meta">
             <span class="date">{{ formatDate(item.createdAt) }}</span>
             <span v-if="item.elapsedMs" class="time">{{ item.elapsedMs }}ms</span>
-            <span v-if="item.rowCount !== undefined" class="rows">{{ item.rowCount }} linhas</span>
+            <span v-if="item.rowCount !== undefined" class="rows">
+              {{ item.rowCount }} {{ pluralize(item.rowCount, 'linha', 'linhas') }}
+            </span>
           </div>
           <div class="card-actions">
             <button
@@ -173,7 +176,7 @@
           class="page-btn"
           :disabled="currentPage === 1"
           @click="currentPage = 1"
-          title="Primeira pagina"
+          title="Primeira página"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/>
@@ -212,13 +215,13 @@
           class="page-btn"
           :disabled="currentPage === totalPages"
           @click="currentPage = totalPages"
-          title="Ultima pagina"
+          title="Última página"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/>
           </svg>
         </button>
-        <span class="page-info">Pagina {{ currentPage }} de {{ totalPages }}</span>
+        <span class="page-info">Página {{ currentPage }} de {{ totalPages }}</span>
       </div>
     </div>
   </div>
@@ -325,7 +328,7 @@ onMounted(async () => {
   try {
     history.value = await api.getHistory()
   } catch (e: any) {
-    error.value = e.message || 'Erro ao carregar historico'
+    error.value = e.message || 'Erro ao carregar histórico'
   } finally {
     loading.value = false
   }
@@ -361,6 +364,10 @@ async function addTag(item: HistoryRecord) {
 
 function copySQL(sql: string) {
   navigator.clipboard.writeText(sql)
+}
+
+function pluralize(count: number, singular: string, plural: string): string {
+  return count === 1 ? singular : plural
 }
 
 function formatDate(dateStr: string): string {

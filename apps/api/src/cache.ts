@@ -18,15 +18,28 @@ const normalizeQuestion = (value: string): string =>
     .replace(/\s+/g, " ")
     .trim();
 
-export const getCacheKey = (question: string, chatId: string | undefined, language: string) => {
+export const getCacheKey = (
+  question: string,
+  chatId: string | undefined,
+  language: string,
+  schemaLanguage?: string,
+  responseLanguage?: string
+) => {
   const normalized = normalizeQuestion(question);
   const chatKey = chatId ?? "nochat";
-  return `ask:${language}:${chatKey}:${normalized}`;
+  const schemaKey = schemaLanguage ?? "pt";
+  const responseKey = responseLanguage ?? language;
+  return `ask:${language}:${schemaKey}:${responseKey}:${chatKey}:${normalized}`;
 };
 
-const getSemanticCacheKey = (chatId: string | undefined, language: string) => {
+const getSemanticCacheKey = (
+  chatId: string | undefined,
+  language: string,
+  schemaLanguage?: string
+) => {
   const chatKey = chatId ?? "nochat";
-  return `ask:semantic:${language}:${chatKey}`;
+  const schemaKey = schemaLanguage ?? "pt";
+  return `ask:semantic:${language}:${schemaKey}:${chatKey}`;
 };
 
 export const getRedisClient = async (): Promise<RedisClientType | null> => {
@@ -78,12 +91,13 @@ const cosineSimilarity = (a: number[], b: number[]): number => {
 export const findSemanticSql = async (
   chatId: string | undefined,
   language: string,
+  schemaLanguage: string,
   embedding: number[],
   threshold: number
 ): Promise<{ sql: string; similarity: number } | null> => {
   const redis = await getRedisClient();
   if (!redis) return null;
-  const key = getSemanticCacheKey(chatId, language);
+  const key = getSemanticCacheKey(chatId, language, schemaLanguage);
   const rawEntries = await redis.lRange(key, 0, 49);
   if (!rawEntries.length) return null;
   let best: { sql: string; similarity: number } | null = null;
@@ -105,11 +119,12 @@ export const findSemanticSql = async (
 export const setSemanticEntry = async (
   chatId: string | undefined,
   language: string,
+  schemaLanguage: string,
   entry: SemanticCacheEntry
 ): Promise<void> => {
   const redis = await getRedisClient();
   if (!redis) return;
-  const key = getSemanticCacheKey(chatId, language);
+  const key = getSemanticCacheKey(chatId, language, schemaLanguage);
   const ttl = Math.max(60, config.redis.ttlSeconds || 900);
   await redis
     .multi()
@@ -117,4 +132,26 @@ export const setSemanticEntry = async (
     .lTrim(key, 0, 49)
     .expire(key, ttl)
     .exec();
+};
+
+export const clearSemanticCache = async (): Promise<number> => {
+  const redis = await getRedisClient();
+  if (!redis) return 0;
+  const pattern = "ask:semantic:*";
+  let cursor = 0;
+  let deleted = 0;
+
+  do {
+    const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 200 });
+    cursor =
+      typeof result.cursor === "string"
+        ? Number.parseInt(result.cursor, 10)
+        : result.cursor;
+    const keys = Array.isArray(result.keys) ? result.keys : [];
+    if (keys.length) {
+      deleted += await redis.del(keys);
+    }
+  } while (cursor !== 0);
+
+  return deleted;
 };

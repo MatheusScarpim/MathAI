@@ -5,6 +5,7 @@ export interface HistoryRecord {
   sql: string
   summary?: string
   language?: 'pt' | 'en' | 'es'
+  responseLanguage?: 'pt' | 'en' | 'es'
   createdAt: string
   favorite: boolean
   tags: string[]
@@ -39,7 +40,9 @@ export interface AskResponse {
     chatId?: string
     historyId?: string
     summary?: string
+    translatedQuestion?: string
     cacheHit?: boolean
+    responseLanguage?: 'pt' | 'en' | 'es'
     chart?: ChartData
     tokenUsage?: {
       sql?: {

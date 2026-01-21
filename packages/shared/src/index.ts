@@ -2,6 +2,8 @@ export type AskRequest = {
   question: string;
   chatId?: string;
   language?: "pt" | "en" | "es";
+  schemaLanguage?: "pt" | "en" | "es";
+  responseLanguage?: "pt" | "en" | "es";
 };
 
 export type AskSuccessResponse = {
@@ -12,7 +14,9 @@ export type AskSuccessResponse = {
   chatId?: string;
   historyId?: string;
   summary?: string;
+  translatedQuestion?: string;
   cacheHit?: boolean;
+  responseLanguage?: "pt" | "en" | "es";
   chart?: {
     type: "bar" | "line";
     data: Array<{
@@ -52,6 +56,7 @@ export type HistoryItem = {
   favorite: boolean;
   tags: string[];
   language?: "pt" | "en" | "es";
+  responseLanguage?: "pt" | "en" | "es";
   success?: boolean;
   errorMessage?: string;
   elapsedMs?: number;
