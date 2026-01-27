@@ -265,6 +265,53 @@ app.get("/api/chats", async (request, reply) => {
   );
 });
 
+app.get("/api/chats/:chatId/messages", async (request, reply) => {
+  const { chatId } = request.params as { chatId: string };
+  const query = request.query as { limit?: string; includeHidden?: string };
+
+  if (!isNonEmptyString(chatId) || chatId.length > 64) {
+    reply.status(400).send({ errorMessage: "chatId invalido." });
+    return;
+  }
+
+  const includeHidden = query?.includeHidden === "1";
+  const limit =
+    query?.limit && Number.isFinite(Number(query.limit)) ? Math.min(Number(query.limit), 500) : 200;
+
+  const collection = await getHistoryCollection();
+  const docs = await collection
+    .find(
+      includeHidden
+        ? { chatId: chatId.trim() }
+        : { chatId: chatId.trim(), deletedAt: { $exists: false } }
+    )
+    .sort({ createdAt: 1 })
+    .limit(limit)
+    .toArray();
+
+  reply.send(
+    docs.map((doc) => ({
+      id: doc._id?.toString() ?? "",
+      chatId: doc.chatId,
+      question: doc.question,
+      sql: doc.sql,
+      rows: doc.rows ?? [],
+      columns: doc.columns ?? [],
+      chart: doc.chart,
+      summary: doc.summary,
+      createdAt: doc.createdAt.toISOString(),
+      favorite: doc.favorite,
+      tags: doc.tags,
+      language: doc.language,
+      responseLanguage: doc.responseLanguage,
+      success: doc.success,
+      errorMessage: doc.errorMessage,
+      elapsedMs: doc.elapsedMs,
+      rowCount: doc.rowCount
+    }))
+  );
+});
+
 app.delete("/api/chats/:chatId", async (request, reply) => {
   const { chatId } = request.params as { chatId: string };
 
