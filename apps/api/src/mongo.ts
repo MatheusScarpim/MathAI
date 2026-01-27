@@ -18,7 +18,7 @@ export type HistoryRecord = {
   columns?: string[];
   chart?: {
     type: "bar" | "line";
-    data: Array<{ category: string; value: number | null }>;
+    data: Array<{ category: string | number; value: number | null }>;
     title?: string;
     xKey?: string;
     yKey?: string;
