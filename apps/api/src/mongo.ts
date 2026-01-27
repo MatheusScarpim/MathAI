@@ -14,6 +14,15 @@ export type HistoryRecord = {
   question: string;
   embeddingQuestion?: string;
   sql: string;
+  rows?: Record<string, unknown>[];
+  columns?: string[];
+  chart?: {
+    type: "bar" | "line";
+    data: Array<{ category: string; value: number | null }>;
+    title?: string;
+    xKey?: string;
+    yKey?: string;
+  };
   summary?: string;
   language?: "pt" | "en" | "es";
   responseLanguage?: "pt" | "en" | "es";

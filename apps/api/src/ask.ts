@@ -431,6 +431,9 @@ export const answerQuestion = async (
       question: normalizedQuestion,
       embeddingQuestion,
       sql: cached.sql,
+      rows: cached.rows ?? [],
+      columns: cached.columns ?? [],
+      chart: cached.chart,
       summary: cached.summary,
       createdAt: new Date(),
       favorite: false,
@@ -521,7 +524,13 @@ export const answerQuestion = async (
 
         const historyCollection = await getHistoryCollection();
         const historyResult = await historyCollection.insertOne({
-          question: normalizedQuestion, embeddingQuestion, sql: semanticMatch.sql, summary,
+          question: normalizedQuestion,
+          embeddingQuestion,
+          sql: semanticMatch.sql,
+          rows: result.recordset ?? [],
+          columns,
+          chart,
+          summary,
           createdAt: new Date(), favorite: false, tags: [], chatId: resolvedChatId,
           language: resolvedSchemaLanguage, responseLanguage: resolvedResponseLanguage,
           success: true, elapsedMs, rowCount, embedding: vector
@@ -686,7 +695,13 @@ export const answerQuestion = async (
 
       const historyCollection = await getHistoryCollection();
       const historyResult = await historyCollection.insertOne({
-        question: normalizedQuestion, embeddingQuestion, sql, summary,
+        question: normalizedQuestion,
+        embeddingQuestion,
+        sql,
+        rows: queryResult.recordset ?? [],
+        columns,
+        chart,
+        summary,
         createdAt: new Date(), favorite: false, tags: [], chatId: resolvedChatId,
         language: resolvedSchemaLanguage, responseLanguage: resolvedResponseLanguage,
         success: true, elapsedMs, rowCount, embedding: vector
