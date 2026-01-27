@@ -171,10 +171,11 @@ app.put("/api/settings/schema-language", async (request, reply) => {
   reply.send({ ok: true, schemaLanguage: body.schemaLanguage });
 });
 
-app.get("/api/history", async (_request, reply) => {
+app.get("/api/history", async (request, reply) => {
   const collection = await getHistoryCollection();
+  const includeHidden = (request.query as { includeHidden?: string })?.includeHidden === "1";
   const docs = await collection
-    .find({})
+    .find(includeHidden ? {} : { deletedAt: { $exists: false } })
     .sort({ createdAt: -1 })
     .limit(50)
     .toArray();
@@ -197,6 +198,90 @@ app.get("/api/history", async (_request, reply) => {
       rowCount: doc.rowCount
     }))
   );
+});
+
+app.get("/api/chats", async (request, reply) => {
+  const collection = await getHistoryCollection();
+  const limitParam = (request.query as { limit?: string })?.limit;
+  const includeHidden = (request.query as { includeHidden?: string })?.includeHidden === "1";
+  const limit =
+    limitParam && Number.isFinite(Number(limitParam)) ? Math.min(Number(limitParam), 200) : 50;
+
+  const docs = await collection
+    .aggregate<{
+      _id: string;
+      lastCreatedAt: Date;
+      lastQuestion?: string;
+      lastSummary?: string;
+      lastSql?: string;
+      lastSuccess?: boolean;
+      lastErrorMessage?: string;
+      lastLanguage?: string;
+      lastResponseLanguage?: string;
+      count: number;
+    }>([
+      {
+        $match: {
+          chatId: { $type: "string", $ne: "" },
+          ...(includeHidden ? {} : { deletedAt: { $exists: false } })
+        }
+      },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: "$chatId",
+          lastCreatedAt: { $first: "$createdAt" },
+          lastQuestion: { $first: "$question" },
+          lastSummary: { $first: "$summary" },
+          lastSql: { $first: "$sql" },
+          lastSuccess: { $first: "$success" },
+          lastErrorMessage: { $first: "$errorMessage" },
+          lastLanguage: { $first: "$language" },
+          lastResponseLanguage: { $first: "$responseLanguage" },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { lastCreatedAt: -1 } },
+      { $limit: limit }
+    ])
+    .toArray();
+
+  reply.send(
+    docs.map((doc) => ({
+      chatId: doc._id,
+      lastCreatedAt: doc.lastCreatedAt.toISOString(),
+      lastQuestion: doc.lastQuestion,
+      lastSummary: doc.lastSummary,
+      lastSql: doc.lastSql,
+      lastSuccess: doc.lastSuccess,
+      lastErrorMessage: doc.lastErrorMessage,
+      lastLanguage: doc.lastLanguage,
+      lastResponseLanguage: doc.lastResponseLanguage,
+      messageCount: doc.count
+    }))
+  );
+});
+
+app.delete("/api/chats/:chatId", async (request, reply) => {
+  const { chatId } = request.params as { chatId: string };
+
+  if (!isNonEmptyString(chatId) || chatId.length > 64) {
+    reply.status(400).send({ errorMessage: "chatId invalido." });
+    return;
+  }
+
+  const collection = await getHistoryCollection();
+  const result = await collection.updateMany(
+    { chatId: chatId.trim(), deletedAt: { $exists: false } },
+    { $set: { deletedAt: new Date() } }
+  );
+
+  if (result.matchedCount === 0) {
+    reply.status(404).send({ errorMessage: "Chat nao encontrado." });
+    return;
+  }
+
+  reply.send({ ok: true, hidden: result.modifiedCount });
 });
 
 app.patch("/api/history/:id", async (request, reply) => {

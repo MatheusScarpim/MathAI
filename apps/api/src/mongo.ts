@@ -18,6 +18,7 @@ export type HistoryRecord = {
   language?: "pt" | "en" | "es";
   responseLanguage?: "pt" | "en" | "es";
   createdAt: Date;
+  deletedAt?: Date;
   favorite: boolean;
   tags: string[];
   success?: boolean;
