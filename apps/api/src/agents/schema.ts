@@ -86,8 +86,49 @@ export const expandTables = async (initial: TableChunk[]): Promise<ExpandedConte
   return { tables: finalTables, joins };
 };
 
+const normalizeText = (value: string): string =>
+  value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9_\. ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const tokenize = (value: string): string[] =>
+  normalizeText(value)
+    .split(/[\s\.\_]+/g)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3);
+
+const scoreTableMatch = (questionTokens: string[], table: TableChunk): number => {
+  const tableTokens = new Set<string>([
+    ...tokenize(table.tableFullName),
+    ...tokenize(table.tableFullName.split(".").pop() ?? "")
+  ]);
+  if (!tableTokens.size || !questionTokens.length) return 0;
+
+  let score = 0;
+  for (const token of questionTokens) {
+    if (tableTokens.has(token)) {
+      score += 2;
+      continue;
+    }
+    for (const t of tableTokens) {
+      if (t.length < 4 || token.length < 4) continue;
+      if (t.includes(token) || token.includes(t)) {
+        score += 1;
+        break;
+      }
+    }
+  }
+  if (table.tags?.includes("Fat")) score += 0.5;
+  return score;
+};
+
 export const searchRelevantTables = async (
-  vector: number[]
+  vector: number[],
+  question: string
 ): Promise<TableChunk[]> => {
   const search = await qdrant.search("schema_chunks", {
     vector,
@@ -95,9 +136,35 @@ export const searchRelevantTables = async (
     with_payload: true
   });
 
-  return search
+  const semanticResults = search
     .map((point) => point.payload as TableChunk)
     .filter((payload) => Boolean(payload?.tableFullName));
+
+  const questionTokens = tokenize(question);
+  if (!questionTokens.length) return semanticResults;
+
+  const allTables = await loadSchemaGraph();
+  const lexicalMatches = allTables
+    .map((table) => ({
+      table,
+      score: scoreTableMatch(questionTokens, table)
+    }))
+    .filter((item) => item.score >= 2)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map((item) => item.table);
+
+  const merged = new Map<string, TableChunk>();
+  for (const table of semanticResults) {
+    merged.set(table.tableFullName, table);
+  }
+  for (const table of lexicalMatches) {
+    if (!merged.has(table.tableFullName)) {
+      merged.set(table.tableFullName, table);
+    }
+  }
+
+  return Array.from(merged.values());
 };
 
 const shouldLogPrompts = (): boolean => {

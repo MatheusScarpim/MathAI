@@ -546,7 +546,7 @@ export const answerQuestion = async (
   }
 
   // Step 6: Search relevant tables (SchemaAgent)
-  const initialTables = await searchRelevantTables(vector);
+  const initialTables = await searchRelevantTables(vector, embeddingQuestion);
   if (initialTables.length === 0) {
     return {
       ok: false,
