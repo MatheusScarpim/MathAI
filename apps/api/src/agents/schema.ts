@@ -132,7 +132,7 @@ export const searchRelevantTables = async (
 ): Promise<TableChunk[]> => {
   const search = await qdrant.search("schema_chunks", {
     vector,
-    limit: 5,
+    limit: 9,
     with_payload: true
   });
 

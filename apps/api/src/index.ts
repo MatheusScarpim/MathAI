@@ -321,15 +321,18 @@ app.delete("/api/chats/:chatId", async (request, reply) => {
   }
 
   const collection = await getHistoryCollection();
-  const result = await collection.updateMany(
-    { chatId: chatId.trim(), deletedAt: { $exists: false } },
-    { $set: { deletedAt: new Date() } }
-  );
+  const normalizedChatId = chatId.trim();
+  const exists = await collection.findOne({ chatId: normalizedChatId }, { projection: { _id: 1 } });
 
-  if (result.matchedCount === 0) {
+  if (!exists) {
     reply.status(404).send({ errorMessage: "Chat nao encontrado." });
     return;
   }
+
+  const result = await collection.updateMany(
+    { chatId: normalizedChatId, deletedAt: { $exists: false } },
+    { $set: { deletedAt: new Date() } }
+  );
 
   reply.send({ ok: true, hidden: result.modifiedCount });
 });
