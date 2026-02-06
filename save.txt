@@ -1,0 +1,2 @@
+preciso que quando retornar as columns retorne bonito
+todos eles tem um prefixo no começo Nr(numero), Ps(peso), Qn(Quantidade), ID (identificador), Sk (Side Key), Pc (Porcentagem), Gn (Genérico), FL(Flag), Dt(Data), Dr (Duração (Hora/Min/Seg)), 
