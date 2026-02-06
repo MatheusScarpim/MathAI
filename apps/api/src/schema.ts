@@ -8,6 +8,7 @@ type RawTableRow = {
   schema_name: string;
   table_name: string;
   object_id: number;
+  object_type: "U" | "V";
 };
 
 type RawColumnRow = {
@@ -39,10 +40,11 @@ type TableInfo = {
   tags: string[];
 };
 
-const tagForTable = (name: string): string[] => {
+const tagForTable = (name: string, objectType: "U" | "V"): string[] => {
   const tags: string[] = [];
   if (/^fat_/i.test(name)) tags.push("Fat");
   if (/^dim_/i.test(name)) tags.push("Dim");
+  if (objectType === "V") tags.push("View");
   return tags;
 };
 
@@ -50,9 +52,10 @@ export const loadSchemaFromSqlServer = async (
   pool: sql.ConnectionPool
 ): Promise<TableInfo[]> => {
   const tablesResult = await pool.request().query<RawTableRow>(`
-    SELECT s.name AS schema_name, t.name AS table_name, t.object_id
-    FROM sys.tables t
-    INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+    SELECT s.name AS schema_name, o.name AS table_name, o.object_id, o.type AS object_type
+    FROM sys.objects o
+    INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
+    WHERE o.type IN ('U','V')
   `);
 
   const tablesById = new Map<number, TableInfo>();
@@ -66,7 +69,7 @@ export const loadSchemaFromSqlServer = async (
       columns: [],
       primaryKey: [],
       foreignKeys: [],
-      tags: tagForTable(row.table_name)
+      tags: tagForTable(row.table_name, row.object_type)
     });
   }
 
