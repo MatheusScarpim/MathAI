@@ -1,11 +1,12 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
+import OpenAI from "openai";
 import { config } from "./config.js";
-import { getPool } from "./db.js";
+import { closeAdapter, getAdapter, testConnection } from "./db.js";
 import {
   ingestSchemaToQdrant,
-  loadSchemaFromSqlServer,
+  loadSchema,
   loadSchemaGraph,
   clearSchemaCache
 } from "./schema.js";
@@ -13,8 +14,24 @@ import { clearSchemaCollection } from "./qdrant.js";
 import { answerQuestion } from "./ask.js";
 import { isNonEmptyString, sanitizeErrorMessage } from "@auraia/shared";
 import { validateSql } from "./validation.js";
-import { getHistoryCollection, getInstructionsCollection, getSettingsCollection } from "./mongo.js";
+import {
+  getHistoryCollection,
+  getInstructionsCollection,
+  getMongoClient,
+  getSettingsCollection
+} from "./mongo.js";
 import { ObjectId } from "mongodb";
+import {
+  clearAppConfig,
+  clearConfigCache,
+  getAppConfig,
+  isConfigured,
+  saveAppConfig,
+  type AppConfig,
+  type DbType
+} from "./appConfig.js";
+import { clearOpenAICache } from "./openai.js";
+import { clearAskCache } from "./cache.js";
 
 const app = Fastify({
   logger: true,
@@ -32,8 +49,28 @@ const isValidLanguage = (value: string | undefined): value is (typeof VALID_LANG
 const getSchemaLanguageSetting = async (): Promise<(typeof VALID_LANGUAGES)[number]> => {
   const collection = await getSettingsCollection();
   const doc = await collection.findOne({ key: "schemaLanguage" });
-  if (doc && isValidLanguage(doc.value)) return doc.value;
+  if (doc && typeof doc.value === "string" && isValidLanguage(doc.value)) return doc.value;
   return "pt";
+};
+
+const getTableReferenceCountSetting = async (): Promise<number> => {
+  const collection = await getSettingsCollection();
+  const doc = await collection.findOne({ key: "tableReferenceCount" });
+  const value =
+    typeof doc?.value === "number"
+      ? doc.value
+      : Number.parseInt(String(doc?.value ?? ""), 10);
+  if (!Number.isFinite(value)) return 8;
+  return Math.max(1, Math.min(30, Math.floor(value)));
+};
+
+const setTableReferenceCountSetting = async (value: number): Promise<void> => {
+  const collection = await getSettingsCollection();
+  await collection.updateOne(
+    { key: "tableReferenceCount" },
+    { $set: { value, updatedAt: new Date() } },
+    { upsert: true }
+  );
 };
 
 const setSchemaLanguageSetting = async (
@@ -70,10 +107,137 @@ app.setErrorHandler((error, _request, reply) => {
   reply.status(500).send({ errorMessage: message });
 });
 
+type SaveConfigBody = {
+  openAiApiKey?: string;
+  dbType?: DbType;
+  dbHost?: string;
+  dbPort?: number | string;
+  dbName?: string;
+  dbUser?: string;
+  dbPassword?: string;
+};
+
+const parsePort = (value: number | string | undefined): number | null => {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+};
+
+app.get("/api/config/status", async (_request, reply) => {
+  reply.send({ configured: await isConfigured() });
+});
+
+app.get("/api/config", async (_request, reply) => {
+  const appConfig = await getAppConfig();
+  if (!appConfig) {
+    reply.status(404).send({ errorMessage: "Aplicacao nao configurada." });
+    return;
+  }
+
+  reply.send({
+    dbType: appConfig.dbType,
+    dbHost: appConfig.dbHost,
+    dbPort: appConfig.dbPort,
+    dbName: appConfig.dbName,
+    dbUser: appConfig.dbUser,
+    openAiKeySet: appConfig.openAiApiKey.length > 0
+  });
+});
+
+app.post("/api/config/test-db", async (request, reply) => {
+  const body = request.body as SaveConfigBody;
+  if (body.dbType !== "sqlserver" && body.dbType !== "oracle") {
+    reply.status(400).send({ errorMessage: "dbType invalido." });
+    return;
+  }
+  if (!isNonEmptyString(body.dbHost) || !isNonEmptyString(body.dbName) || !isNonEmptyString(body.dbUser) || !isNonEmptyString(body.dbPassword)) {
+    reply.status(400).send({ errorMessage: "Campos de conexao obrigatorios: dbHost, dbName, dbUser, dbPassword." });
+    return;
+  }
+  const dbPort = parsePort(body.dbPort);
+  if (!dbPort) {
+    reply.status(400).send({ errorMessage: "dbPort invalido." });
+    return;
+  }
+
+  const result = await testConnection(
+    body.dbType,
+    body.dbHost.trim(),
+    dbPort,
+    body.dbName.trim(),
+    body.dbUser.trim(),
+    body.dbPassword
+  );
+  if (!result.ok) {
+    reply.status(400).send({ errorMessage: sanitizeErrorMessage(result.error) });
+    return;
+  }
+  reply.send({ ok: true });
+});
+
+app.post("/api/config/test-openai", async (request, reply) => {
+  const body = request.body as { openAiApiKey?: string };
+  if (!isNonEmptyString(body.openAiApiKey)) {
+    reply.status(400).send({ errorMessage: "openAiApiKey obrigatoria." });
+    return;
+  }
+
+  try {
+    const client = new OpenAI({ apiKey: body.openAiApiKey.trim() });
+    await client.models.list();
+    reply.send({ ok: true });
+  } catch (error) {
+    reply.status(400).send({ errorMessage: sanitizeErrorMessage((error as { message?: string })?.message ?? "OpenAI key invalida.") });
+  }
+});
+
+app.post("/api/config", async (request, reply) => {
+  const body = request.body as SaveConfigBody;
+  if (!isNonEmptyString(body.openAiApiKey)) {
+    reply.status(400).send({ errorMessage: "openAiApiKey obrigatoria." });
+    return;
+  }
+  if (body.dbType !== "sqlserver" && body.dbType !== "oracle") {
+    reply.status(400).send({ errorMessage: "dbType invalido." });
+    return;
+  }
+  if (!isNonEmptyString(body.dbHost) || !isNonEmptyString(body.dbName) || !isNonEmptyString(body.dbUser) || !isNonEmptyString(body.dbPassword)) {
+    reply.status(400).send({ errorMessage: "Campos de conexao obrigatorios: dbHost, dbName, dbUser, dbPassword." });
+    return;
+  }
+  const dbPort = parsePort(body.dbPort);
+  if (!dbPort) {
+    reply.status(400).send({ errorMessage: "dbPort invalido." });
+    return;
+  }
+
+  const nextConfig: AppConfig = {
+    openAiApiKey: body.openAiApiKey.trim(),
+    dbType: body.dbType,
+    dbHost: body.dbHost.trim(),
+    dbPort,
+    dbName: body.dbName.trim(),
+    dbUser: body.dbUser.trim(),
+    dbPassword: body.dbPassword,
+    configuredAt: new Date()
+  };
+
+  await saveAppConfig(nextConfig);
+  await closeAdapter();
+  clearConfigCache();
+  clearOpenAICache();
+  clearSchemaCache();
+  reply.send({ ok: true });
+});
+
 app.post("/api/ingest/schema", async (_request, reply) => {
-  const pool = await getPool();
-  const tables = await loadSchemaFromSqlServer(pool);
+  const adapter = await getAdapter();
+  const tables = await loadSchema(adapter);
   const tablesIndexed = await ingestSchemaToQdrant(tables);
+  clearSchemaCache();
   reply.send({ tablesIndexed });
 });
 
@@ -169,6 +333,55 @@ app.put("/api/settings/schema-language", async (request, reply) => {
 
   await setSchemaLanguageSetting(body.schemaLanguage);
   reply.send({ ok: true, schemaLanguage: body.schemaLanguage });
+});
+
+app.get("/api/settings/table-reference-count", async (_request, reply) => {
+  const tableReferenceCount = await getTableReferenceCountSetting();
+  reply.send({ tableReferenceCount });
+});
+
+app.put("/api/settings/table-reference-count", async (request, reply) => {
+  const body = request.body as { tableReferenceCount?: number };
+  const raw = body?.tableReferenceCount;
+  if (!Number.isFinite(raw)) {
+    reply.status(400).send({ errorMessage: "tableReferenceCount invalido." });
+    return;
+  }
+
+  const tableReferenceCount = Math.max(1, Math.min(30, Math.floor(raw!)));
+  await setTableReferenceCountSetting(tableReferenceCount);
+  reply.send({ ok: true, tableReferenceCount });
+});
+
+app.post("/api/settings/reset-environment", async (_request, reply) => {
+  await closeAdapter();
+  clearOpenAICache();
+  clearConfigCache();
+  clearSchemaCache();
+
+  await clearSchemaCollection();
+
+  const mongo = await getMongoClient();
+  const db = mongo.db(config.mongo.db);
+  const [historyResult, instructionsResult, settingsResult, appConfigDeleted, redisDeleted] =
+    await Promise.all([
+      db.collection("history").deleteMany({}),
+      db.collection("instructions").deleteMany({}),
+      db.collection("settings").deleteMany({}),
+      clearAppConfig(),
+      clearAskCache()
+    ]);
+
+  reply.send({
+    ok: true,
+    cleared: {
+      history: historyResult.deletedCount ?? 0,
+      instructions: instructionsResult.deletedCount ?? 0,
+      settings: settingsResult.deletedCount ?? 0,
+      appConfig: appConfigDeleted,
+      redisKeys: redisDeleted
+    }
+  });
 });
 
 app.get("/api/history", async (request, reply) => {
@@ -425,21 +638,17 @@ app.post("/api/run", async (request, reply) => {
     return;
   }
 
-  const validation = validateSql(body.sql);
+  const adapter = await getAdapter();
+  const validation = validateSql(body.sql, adapter.getDbType());
   if (!validation.ok) {
     reply.status(400).send(validation.error);
     return;
   }
 
-  const pool = await getPool();
   const start = Date.now();
-  const result = await pool.request().query(body.sql);
+  const result = await adapter.query(body.sql);
   const elapsedMs = Date.now() - start;
-  const columns = result.recordset?.columns
-    ? Object.keys(result.recordset.columns)
-    : result.recordset?.[0]
-      ? Object.keys(result.recordset[0])
-      : [];
+  const columns = result.columns;
   const [first, second] = columns;
   const xKey = first && first !== second ? first : undefined;
   const yKey = second ?? first;

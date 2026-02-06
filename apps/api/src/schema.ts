@@ -1,33 +1,8 @@
 import type { ColumnInfo, ForeignKeyInfo, TableChunk } from "@auraia/shared";
-import sql from "mssql";
-import { openai, EMBEDDING_MODEL } from "./openai.js";
+import { getOpenAI, EMBEDDING_MODEL } from "./openai.js";
 import { qdrant, ensureSchemaCollection } from "./qdrant.js";
 import { createHash } from "crypto";
-
-type RawTableRow = {
-  schema_name: string;
-  table_name: string;
-  object_id: number;
-  object_type: "U" | "V";
-};
-
-type RawColumnRow = {
-  object_id: number;
-  column_name: string;
-  data_type: string;
-};
-
-type RawPkRow = {
-  object_id: number;
-  column_name: string;
-};
-
-type RawFkRow = {
-  parent_object_id: number;
-  referenced_object_id: number;
-  parent_column: string;
-  referenced_column: string;
-};
+import type { DbAdapter } from "./db.js";
 
 type TableInfo = {
   schema: string;
@@ -48,10 +23,15 @@ const tagForTable = (name: string, objectType: "U" | "V"): string[] => {
   return tags;
 };
 
-export const loadSchemaFromSqlServer = async (
-  pool: sql.ConnectionPool
-): Promise<TableInfo[]> => {
-  const tablesResult = await pool.request().query<RawTableRow>(`
+// ================== SQL Server Schema ==================
+
+type SqlServerTableRow = { schema_name: string; table_name: string; object_id: number; object_type: "U" | "V" };
+type SqlServerColumnRow = { object_id: number; column_name: string; data_type: string };
+type SqlServerPkRow = { object_id: number; column_name: string };
+type SqlServerFkRow = { parent_object_id: number; referenced_object_id: number; parent_column: string; referenced_column: string };
+
+const loadSchemaFromSqlServer = async (adapter: DbAdapter): Promise<TableInfo[]> => {
+  const tablesResult = await adapter.query<SqlServerTableRow>(`
     SELECT s.name AS schema_name, o.name AS table_name, o.object_id, o.type AS object_type
     FROM sys.objects o
     INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
@@ -73,7 +53,7 @@ export const loadSchemaFromSqlServer = async (
     });
   }
 
-  const columnsResult = await pool.request().query<RawColumnRow>(`
+  const columnsResult = await adapter.query<SqlServerColumnRow>(`
     SELECT c.object_id, c.name AS column_name, ty.name AS data_type
     FROM sys.columns c
     INNER JOIN sys.types ty ON c.user_type_id = ty.user_type_id
@@ -85,7 +65,7 @@ export const loadSchemaFromSqlServer = async (
     table.columns.push({ name: row.column_name, type: row.data_type });
   }
 
-  const pkResult = await pool.request().query<RawPkRow>(`
+  const pkResult = await adapter.query<SqlServerPkRow>(`
     SELECT ic.object_id, c.name AS column_name
     FROM sys.indexes i
     INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
@@ -99,7 +79,7 @@ export const loadSchemaFromSqlServer = async (
     table.primaryKey.push(row.column_name);
   }
 
-  const fkResult = await pool.request().query<RawFkRow>(`
+  const fkResult = await adapter.query<SqlServerFkRow>(`
     SELECT
       fkc.parent_object_id,
       fkc.referenced_object_id,
@@ -126,6 +106,118 @@ export const loadSchemaFromSqlServer = async (
 
   return Array.from(tablesById.values());
 };
+
+// ================== Oracle Schema ==================
+
+type OracleTableRow = { OWNER: string; TABLE_NAME: string; TABLE_TYPE: string };
+type OracleColumnRow = { OWNER: string; TABLE_NAME: string; COLUMN_NAME: string; DATA_TYPE: string };
+type OraclePkRow = { OWNER: string; TABLE_NAME: string; COLUMN_NAME: string };
+type OracleFkRow = { OWNER: string; TABLE_NAME: string; COLUMN_NAME: string; R_OWNER: string; R_TABLE_NAME: string; R_COLUMN_NAME: string };
+
+const loadSchemaFromOracle = async (adapter: DbAdapter): Promise<TableInfo[]> => {
+  // Get tables and views
+  const tablesResult = await adapter.query<OracleTableRow>(`
+    SELECT owner AS "OWNER", table_name AS "TABLE_NAME", 'U' AS "TABLE_TYPE"
+    FROM all_tables
+    WHERE owner = SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')
+    UNION ALL
+    SELECT owner AS "OWNER", view_name AS "TABLE_NAME", 'V' AS "TABLE_TYPE"
+    FROM all_views
+    WHERE owner = SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')
+  `);
+
+  let objectCounter = 1;
+  const tablesByFullName = new Map<string, TableInfo>();
+  for (const row of tablesResult.recordset) {
+    const fullName = `${row.OWNER}.${row.TABLE_NAME}`;
+    const objectType = row.TABLE_TYPE === "V" ? "V" as const : "U" as const;
+    tablesByFullName.set(fullName, {
+      schema: row.OWNER,
+      name: row.TABLE_NAME,
+      fullName,
+      objectId: objectCounter++,
+      columns: [],
+      primaryKey: [],
+      foreignKeys: [],
+      tags: tagForTable(row.TABLE_NAME, objectType)
+    });
+  }
+
+  // Get columns
+  const columnsResult = await adapter.query<OracleColumnRow>(`
+    SELECT owner AS "OWNER", table_name AS "TABLE_NAME", column_name AS "COLUMN_NAME", data_type AS "DATA_TYPE"
+    FROM all_tab_columns
+    WHERE owner = SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')
+    ORDER BY owner, table_name, column_id
+  `);
+
+  for (const row of columnsResult.recordset) {
+    const fullName = `${row.OWNER}.${row.TABLE_NAME}`;
+    const table = tablesByFullName.get(fullName);
+    if (!table) continue;
+    table.columns.push({ name: row.COLUMN_NAME, type: row.DATA_TYPE });
+  }
+
+  // Get primary keys
+  const pkResult = await adapter.query<OraclePkRow>(`
+    SELECT ac.owner AS "OWNER", ac.table_name AS "TABLE_NAME", acc.column_name AS "COLUMN_NAME"
+    FROM all_constraints ac
+    INNER JOIN all_cons_columns acc ON ac.constraint_name = acc.constraint_name AND ac.owner = acc.owner
+    WHERE ac.constraint_type = 'P'
+    AND ac.owner = SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')
+  `);
+
+  for (const row of pkResult.recordset) {
+    const fullName = `${row.OWNER}.${row.TABLE_NAME}`;
+    const table = tablesByFullName.get(fullName);
+    if (!table) continue;
+    table.primaryKey.push(row.COLUMN_NAME);
+  }
+
+  // Get foreign keys
+  const fkResult = await adapter.query<OracleFkRow>(`
+    SELECT
+      ac.owner AS "OWNER",
+      ac.table_name AS "TABLE_NAME",
+      acc.column_name AS "COLUMN_NAME",
+      rc.owner AS "R_OWNER",
+      rc.table_name AS "R_TABLE_NAME",
+      rcc.column_name AS "R_COLUMN_NAME"
+    FROM all_constraints ac
+    INNER JOIN all_cons_columns acc ON ac.constraint_name = acc.constraint_name AND ac.owner = acc.owner
+    INNER JOIN all_constraints rc ON ac.r_constraint_name = rc.constraint_name AND ac.r_owner = rc.owner
+    INNER JOIN all_cons_columns rcc ON rc.constraint_name = rcc.constraint_name AND rc.owner = rcc.owner AND acc.position = rcc.position
+    WHERE ac.constraint_type = 'R'
+    AND ac.owner = SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')
+  `);
+
+  for (const row of fkResult.recordset) {
+    const fullName = `${row.OWNER}.${row.TABLE_NAME}`;
+    const table = tablesByFullName.get(fullName);
+    if (!table) continue;
+
+    const refFullName = `${row.R_OWNER}.${row.R_TABLE_NAME}`;
+    table.foreignKeys.push({
+      fromTable: fullName,
+      fromColumn: row.COLUMN_NAME,
+      toTable: refFullName,
+      toColumn: row.R_COLUMN_NAME
+    });
+  }
+
+  return Array.from(tablesByFullName.values());
+};
+
+// ================== Unified ==================
+
+export const loadSchema = async (adapter: DbAdapter): Promise<TableInfo[]> => {
+  if (adapter.getDbType() === "oracle") {
+    return loadSchemaFromOracle(adapter);
+  }
+  return loadSchemaFromSqlServer(adapter);
+};
+
+// ================== Qdrant Ingestion (unchanged) ==================
 
 const MAX_COLUMNS = 160;
 const MAX_FOREIGN_KEYS = 80;
@@ -179,7 +271,8 @@ export const ingestSchemaToQdrant = async (
   for (let i = 0; i < tables.length; i += batchSize) {
     const batch = tables.slice(i, i + batchSize);
     const texts = batch.map(buildChunkText);
-    const embeddings = await openai.embeddings.create({
+    const client = await getOpenAI();
+    const embeddings = await client.embeddings.create({
       model: EMBEDDING_MODEL,
       input: texts
     });

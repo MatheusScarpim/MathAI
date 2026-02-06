@@ -4,7 +4,12 @@ import type {
   HistoryRecord,
   Instruction,
   IngestResponse,
-  TableInfo
+  TableInfo,
+  AppConfigView,
+  ConfigStatusResponse,
+  SaveAppConfigPayload,
+  TableReferenceCountSetting,
+  ResetEnvironmentResponse
 } from '../types'
 
 const API_BASE = '/api'
@@ -34,6 +39,35 @@ async function request<T>(
 }
 
 export const api = {
+  async getConfigStatus(): Promise<ConfigStatusResponse> {
+    return request('/config/status')
+  },
+
+  async getConfig(): Promise<AppConfigView> {
+    return request('/config')
+  },
+
+  async saveConfig(payload: SaveAppConfigPayload): Promise<{ ok: boolean }> {
+    return request('/config', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+  },
+
+  async testDbConfig(payload: Omit<SaveAppConfigPayload, 'openAiApiKey'>): Promise<{ ok: boolean }> {
+    return request('/config/test-db', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+  },
+
+  async testOpenAi(openAiApiKey: string): Promise<{ ok: boolean }> {
+    return request('/config/test-openai', {
+      method: 'POST',
+      body: JSON.stringify({ openAiApiKey })
+    })
+  },
+
   // Schema / Tables
   async ingestSchema(): Promise<IngestResponse> {
     return request('/ingest/schema', { method: 'POST' })
@@ -58,6 +92,25 @@ export const api = {
     return request('/settings/schema-language', {
       method: 'PUT',
       body: JSON.stringify({ schemaLanguage })
+    })
+  },
+
+  async getTableReferenceCount(): Promise<TableReferenceCountSetting> {
+    return request('/settings/table-reference-count')
+  },
+
+  async setTableReferenceCount(
+    tableReferenceCount: number
+  ): Promise<{ ok: boolean; tableReferenceCount: number }> {
+    return request('/settings/table-reference-count', {
+      method: 'PUT',
+      body: JSON.stringify({ tableReferenceCount })
+    })
+  },
+
+  async resetEnvironment(): Promise<ResetEnvironmentResponse> {
+    return request('/settings/reset-environment', {
+      method: 'POST'
     })
   },
 

@@ -139,7 +139,12 @@
 
         <div class="sql-preview" v-if="item.sql">
           <code>{{ truncateSQL(item.sql) }}</code>
-          <button class="copy-btn" @click="copySQL(item.sql)" title="Copiar SQL">
+          <button
+            class="copy-btn"
+            :class="{ copied: copiedItemId === item.id }"
+            @click="copySQL(item.id, item.sql)"
+            :title="copiedItemId === item.id ? 'Copiado!' : 'Copiar SQL'"
+          >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
               <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -238,6 +243,7 @@ const error = ref('')
 const filter = ref<'all' | 'favorites' | 'errors'>('all')
 const editingTagsId = ref<string | null>(null)
 const newTag = ref('')
+const copiedItemId = ref<string | null>(null)
 
 // Pagination
 const currentPage = ref(1)
@@ -362,8 +368,34 @@ async function addTag(item: HistoryRecord) {
   }
 }
 
-function copySQL(sql: string) {
-  navigator.clipboard.writeText(sql)
+function copyViaFallback(sql: string): boolean {
+  const textarea = document.createElement('textarea')
+  textarea.value = sql
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+  const ok = document.execCommand('copy')
+  document.body.removeChild(textarea)
+  return ok
+}
+
+async function copySQL(itemId: string, sql: string) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(sql)
+    } else {
+      const ok = copyViaFallback(sql)
+      if (!ok) throw new Error('copy failed')
+    }
+    copiedItemId.value = itemId
+    window.setTimeout(() => {
+      if (copiedItemId.value === itemId) copiedItemId.value = null
+    }, 1500)
+  } catch {
+    error.value = 'Nao foi possivel copiar o SQL.'
+  }
 }
 
 function pluralize(count: number, singular: string, plural: string): string {
@@ -721,6 +753,12 @@ function truncateSQL(sql: string): string {
 .copy-btn:hover {
   background: var(--color-gray-600);
   color: var(--color-gray-200);
+}
+
+.copy-btn.copied {
+  opacity: 1;
+  background: rgba(16, 185, 129, 0.2);
+  color: var(--color-accent-light);
 }
 
 .tags-row {

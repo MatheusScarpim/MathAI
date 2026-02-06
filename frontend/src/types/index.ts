@@ -92,3 +92,43 @@ export interface TableInfo {
   }[]
   tags: string[]
 }
+
+export type DbType = 'sqlserver' | 'oracle'
+
+export interface ConfigStatusResponse {
+  configured: boolean
+}
+
+export interface AppConfigView {
+  dbType: DbType
+  dbHost: string
+  dbPort: number
+  dbName: string
+  dbUser: string
+  openAiKeySet: boolean
+}
+
+export interface SaveAppConfigPayload {
+  openAiApiKey: string
+  dbType: DbType
+  dbHost: string
+  dbPort: number
+  dbName: string
+  dbUser: string
+  dbPassword: string
+}
+
+export interface TableReferenceCountSetting {
+  tableReferenceCount: number
+}
+
+export interface ResetEnvironmentResponse {
+  ok: boolean
+  cleared: {
+    history: number
+    instructions: number
+    settings: number
+    appConfig: number
+    redisKeys: number
+  }
+}

@@ -1,5 +1,5 @@
 import type { AskSuccessResponse } from "@auraia/shared";
-import { openai, SUMMARY_MODEL } from "../openai.js";
+import { getOpenAI, SUMMARY_MODEL } from "../openai.js";
 
 const shouldLogPrompts = (): boolean => {
   const flag = process.env.LOG_PROMPTS?.toLowerCase();
@@ -147,7 +147,8 @@ export const inferChartWithLLM = async (
     user: chartPrompt,
     meta: { model: SUMMARY_MODEL, language }
   });
-  const completion = await openai.chat.completions.create({
+  const client = await getOpenAI();
+  const completion = await client.chat.completions.create({
     model: SUMMARY_MODEL,
     temperature: 0.2,
     messages: [

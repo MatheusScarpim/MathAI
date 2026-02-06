@@ -155,3 +155,25 @@ export const clearSemanticCache = async (): Promise<number> => {
 
   return deleted;
 };
+
+export const clearAskCache = async (): Promise<number> => {
+  const redis = await getRedisClient();
+  if (!redis) return 0;
+  const pattern = "ask:*";
+  let cursor = 0;
+  let deleted = 0;
+
+  do {
+    const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 200 });
+    cursor =
+      typeof result.cursor === "string"
+        ? Number.parseInt(result.cursor, 10)
+        : result.cursor;
+    const keys = Array.isArray(result.keys) ? result.keys : [];
+    if (keys.length) {
+      deleted += await redis.del(keys);
+    }
+  } while (cursor !== 0);
+
+  return deleted;
+};

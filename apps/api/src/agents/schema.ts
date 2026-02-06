@@ -1,7 +1,7 @@
 import type { TableChunk } from "@auraia/shared";
 import { qdrant } from "../qdrant.js";
 import { loadSchemaGraph } from "../schema.js";
-import { openai, EMBEDDING_MODEL } from "../openai.js";
+import { getOpenAI, EMBEDDING_MODEL } from "../openai.js";
 import { getHistoryCollection } from "../mongo.js";
 
 export type ExpandedContext = {
@@ -128,11 +128,16 @@ const scoreTableMatch = (questionTokens: string[], table: TableChunk): number =>
 
 export const searchRelevantTables = async (
   vector: number[],
-  question: string
+  question: string,
+  maxTables: number = 8
 ): Promise<TableChunk[]> => {
+  const safeMaxTables = Number.isFinite(maxTables)
+    ? Math.max(1, Math.min(30, Math.floor(maxTables)))
+    : 8;
+
   const search = await qdrant.search("schema_chunks", {
     vector,
-    limit: 9,
+    limit: Math.max(3, safeMaxTables + 2),
     with_payload: true
   });
 
@@ -151,7 +156,7 @@ export const searchRelevantTables = async (
     }))
     .filter((item) => item.score >= 2)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 5)
+    .slice(0, Math.max(3, safeMaxTables))
     .map((item) => item.table);
 
   const merged = new Map<string, TableChunk>();
@@ -164,7 +169,7 @@ export const searchRelevantTables = async (
     }
   }
 
-  return Array.from(merged.values());
+  return Array.from(merged.values()).slice(0, safeMaxTables);
 };
 
 const shouldLogPrompts = (): boolean => {
@@ -175,7 +180,8 @@ const shouldLogPrompts = (): boolean => {
 export const generateEmbedding = async (
   text: string
 ): Promise<number[]> => {
-  const embedding = await openai.embeddings.create({
+  const client = await getOpenAI();
+  const embedding = await client.embeddings.create({
     model: EMBEDDING_MODEL,
     input: text
   });

@@ -1,5 +1,6 @@
 import type { TableChunk } from "@auraia/shared";
-import { openai, SQL_MODEL, SQL_MODEL_MINI } from "../openai.js";
+import { getOpenAI, SQL_MODEL, SQL_MODEL_MINI } from "../openai.js";
+import type { DbType } from "../appConfig.js";
 import type { ExpandedContext } from "./schema.js";
 
 type FewShotExample = {
@@ -155,7 +156,11 @@ export const buildPrompt = (
   return lines.filter((line) => line !== null).join("\n");
 };
 
-const buildSystemContent = (instructionText: string, language: "pt" | "en" | "es"): string => {
+const buildSystemContent = (
+  instructionText: string,
+  language: "pt" | "en" | "es",
+  dbType: DbType
+): string => {
   const seasonRule =
     language === "en"
       ? "CRITICAL - Southern Hemisphere seasons (Brazil): Summer=Dec,Jan,Feb (months 12,1,2); Winter=Jun,Jul,Aug (months 6,7,8); Autumn=Mar,Apr,May; Spring=Sep,Oct,Nov. NEVER confuse seasons."
@@ -163,8 +168,19 @@ const buildSystemContent = (instructionText: string, language: "pt" | "en" | "es
         ? "CRITICO - Estaciones del hemisferio sur (Brasil): Verano=Dic,Ene,Feb (meses 12,1,2); Invierno=Jun,Jul,Ago (meses 6,7,8); Otono=Mar,Abr,May; Primavera=Sep,Oct,Nov. NUNCA confundir estaciones."
         : "CRITICO - Estacoes do hemisferio sul (Brasil): Verao=Dez,Jan,Fev (meses 12,1,2); Inverno=Jun,Jul,Ago (meses 6,7,8); Outono=Mar,Abr,Mai; Primavera=Set,Out,Nov. NUNCA confundir estacoes.";
 
-  const base =
-    language === "en"
+  const base = dbType === "oracle"
+    ? language === "en"
+      ? "You are an Oracle SQL expert. Output only SELECT statements, no markdown or comments. " +
+        "Rules: use FETCH FIRST n ROWS ONLY or ROWNUM <= n; no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
+        seasonRule
+      : language === "es"
+        ? "Eres un experto en Oracle SQL. Devuelve solo sentencias SELECT, sin markdown ni comentarios. " +
+          "Reglas: usa FETCH FIRST n ROWS ONLY o ROWNUM <= n; no SELECT *; prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
+          seasonRule
+        : "Voce e um especialista em Oracle SQL. Retorne apenas sentencas SELECT, sem markdown ou comentarios. " +
+          "Regras: use FETCH FIRST n ROWS ONLY ou ROWNUM <= n; nao use SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
+          seasonRule
+    : language === "en"
       ? "You are a SQL Server expert. Output only T-SQL SELECT, no markdown or comments. " +
         "Rules: TOP (100); no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
         seasonRule
@@ -199,11 +215,12 @@ export const generateSql = async (
   prompt: string,
   instructionText: string,
   language: "pt" | "en" | "es",
+  dbType: DbType,
   useMini: boolean,
   allowEscalation: boolean
 ): Promise<GenerateSqlResult> => {
   const model = useMini ? SQL_MODEL_MINI : SQL_MODEL;
-  const baseSystem = buildSystemContent(instructionText, language);
+  const baseSystem = buildSystemContent(instructionText, language, dbType);
   const system = allowEscalation
     ? `${baseSystem}\nIf unsure you can produce a correct query, reply with only: ESCALATE`
     : baseSystem;
@@ -212,7 +229,8 @@ export const generateSql = async (
     user: prompt,
     meta: { model, language }
   });
-  const completion = await openai.chat.completions.create({
+  const client = await getOpenAI();
+  const completion = await client.chat.completions.create({
     model,
     messages: [
       { role: "system", content: system },

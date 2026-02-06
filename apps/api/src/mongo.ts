@@ -40,7 +40,7 @@ export type HistoryRecord = {
 export type SettingRecord = {
   _id?: ObjectId;
   key: string;
-  value: string;
+  value: string | number;
   updatedAt: Date;
 };
 

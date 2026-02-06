@@ -1,7 +1,12 @@
 import type { AskErrorResponse, AskSuccessResponse } from "@auraia/shared";
 import { sanitizeErrorMessage } from "@auraia/shared";
-import { getPool } from "./db.js";
-import { getHistoryCollection, getInstructionsCollection, type HistoryRecord } from "./mongo.js";
+import { getAdapter } from "./db.js";
+import {
+  getHistoryCollection,
+  getInstructionsCollection,
+  getSettingsCollection,
+  type HistoryRecord
+} from "./mongo.js";
 import { validateSql } from "./validation.js";
 import { ensureSchemaCollection } from "./qdrant.js";
 import type { Filter } from "mongodb";
@@ -41,6 +46,18 @@ let aliasInstructionEnsured = false;
 const shouldLogPrompts = (): boolean => {
   const flag = process.env.LOG_PROMPTS?.toLowerCase();
   return flag === "1" || flag === "true" || flag === "yes";
+};
+
+const getTableReferenceCount = async (): Promise<number> => {
+  try {
+    const collection = await getSettingsCollection();
+    const doc = await collection.findOne({ key: "tableReferenceCount" });
+    const value = typeof doc?.value === "number" ? doc.value : Number.parseInt(String(doc?.value ?? ""), 10);
+    if (!Number.isFinite(value)) return 8;
+    return Math.max(1, Math.min(30, Math.floor(value)));
+  } catch {
+    return 8;
+  }
 };
 
 // ============== HELPER FUNCTIONS ==============
@@ -458,7 +475,8 @@ export const answerQuestion = async (
     };
   }
 
-  const pool = await getPool();
+  const adapter = await getAdapter();
+  const dbType = adapter.getDbType();
 
   // Step 5: Check semantic cache (with number mismatch detection)
   const semanticMatch = await findSemanticSql(resolvedChatId, resolvedResponseLanguage, resolvedSchemaLanguage, vector, SEMANTIC_SIMILARITY_THRESHOLD);
@@ -486,21 +504,24 @@ export const answerQuestion = async (
   }
 
   if (semanticMatch?.sql && !hasNumberMismatch) {
-    const validation = validateSql(semanticMatch.sql);
+    const validation = validateSql(semanticMatch.sql, dbType);
     if (validation.ok) {
       try {
         const start = Date.now();
-        const result = await pool.request().query(semanticMatch.sql);
+        const result = await adapter.query(semanticMatch.sql);
         const elapsedMs = Date.now() - start;
         const rowCount = result.recordset?.length ?? 0;
-        const columns = result.recordset?.columns
-          ? Object.keys(result.recordset.columns)
-          : result.recordset?.[0] ? Object.keys(result.recordset[0]) : [];
+        const columns = result.columns;
 
         // ChartAgent
         let chart = inferChart(result.recordset ?? [], columns, displayQuestion);
         try {
-          chart = await inferChartWithLLM(displayQuestion, result.recordset ?? [], columns, resolvedResponseLanguage);
+          chart = await inferChartWithLLM(
+            displayQuestion,
+            result.recordset ?? [],
+            columns,
+            resolvedResponseLanguage
+          );
         } catch {
           chart = inferChart(result.recordset ?? [], columns, displayQuestion);
         }
@@ -509,7 +530,13 @@ export const answerQuestion = async (
         let summary: string | undefined;
         let summaryUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } = {};
         try {
-          const summaryResult = await summarizeResult(schemaQuestion, semanticMatch.sql, columns, result.recordset ?? [], resolvedSchemaLanguage);
+          const summaryResult = await summarizeResult(
+            schemaQuestion,
+            semanticMatch.sql,
+            columns,
+            result.recordset ?? [],
+            resolvedSchemaLanguage
+          );
           summary = summaryResult.summary;
           if (summaryResult.usage) summaryUsage = summaryResult.usage;
         } catch {
@@ -555,7 +582,8 @@ export const answerQuestion = async (
   }
 
   // Step 6: Search relevant tables (SchemaAgent)
-  const initialTables = await searchRelevantTables(vector, embeddingQuestion);
+  const tableReferenceCount = await getTableReferenceCount();
+  const initialTables = await searchRelevantTables(vector, embeddingQuestion, tableReferenceCount);
   if (initialTables.length === 0) {
     return {
       ok: false,
@@ -612,7 +640,14 @@ export const answerQuestion = async (
       : prompt;
 
     const useMini = !forceLargeModel && attempt === 0;
-    let result = await generateSql(promptWithPeriod, instructionText, resolvedSchemaLanguage, useMini, useMini);
+    let result = await generateSql(
+      promptWithPeriod,
+      instructionText,
+      resolvedSchemaLanguage,
+      dbType,
+      useMini,
+      useMini
+    );
     if (result.usage) {
       sqlUsage = {
         prompt_tokens: (sqlUsage.prompt_tokens ?? 0) + (result.usage.prompt_tokens ?? 0),
@@ -623,7 +658,14 @@ export const answerQuestion = async (
 
     if (useMini && result.escalated) {
       forceLargeModel = true;
-      result = await generateSql(promptWithPeriod, instructionText, resolvedSchemaLanguage, false, false);
+      result = await generateSql(
+        promptWithPeriod,
+        instructionText,
+        resolvedSchemaLanguage,
+        dbType,
+        false,
+        false
+      );
       if (result.usage) {
         sqlUsage = {
           prompt_tokens: (sqlUsage.prompt_tokens ?? 0) + (result.usage.prompt_tokens ?? 0),
@@ -634,11 +676,18 @@ export const answerQuestion = async (
     }
 
     lastSql = result.sql;
-    let validation = validateSql(result.sql);
+    let validation = validateSql(result.sql, dbType);
 
     if (!validation.ok && useMini && !result.escalated) {
       forceLargeModel = true;
-      const retry = await generateSql(promptWithPeriod, instructionText, resolvedSchemaLanguage, false, false);
+      const retry = await generateSql(
+        promptWithPeriod,
+        instructionText,
+        resolvedSchemaLanguage,
+        dbType,
+        false,
+        false
+      );
       if (retry.usage) {
         sqlUsage = {
           prompt_tokens: (sqlUsage.prompt_tokens ?? 0) + (retry.usage.prompt_tokens ?? 0),
@@ -647,7 +696,7 @@ export const answerQuestion = async (
         };
       }
       lastSql = retry.sql;
-      validation = validateSql(retry.sql);
+      validation = validateSql(retry.sql, dbType);
     }
 
     if (!validation.ok) {
@@ -658,12 +707,10 @@ export const answerQuestion = async (
     const sql = result.sql;
     try {
       const start = Date.now();
-      const queryResult = await pool.request().query(sql);
+      const queryResult = await adapter.query(sql);
       const elapsedMs = Date.now() - start;
       const rowCount = queryResult.recordset?.length ?? 0;
-      const columns = queryResult.recordset?.columns
-        ? Object.keys(queryResult.recordset.columns)
-        : queryResult.recordset?.[0] ? Object.keys(queryResult.recordset[0]) : [];
+      const columns = queryResult.columns;
 
       // ChartAgent
       let chart = inferChart(queryResult.recordset ?? [], columns, displayQuestion);

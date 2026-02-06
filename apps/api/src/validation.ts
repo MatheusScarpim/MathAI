@@ -1,4 +1,5 @@
 import type { AskErrorResponse } from "@auraia/shared";
+import type { DbType } from "./appConfig.js";
 
 const forbiddenKeywords = [
   "delete",
@@ -22,20 +23,31 @@ const hasForbiddenKeyword = (sql: string): string | null => {
   return null;
 };
 
-const extractTop = (sql: string): number | null => {
+const extractTopSqlServer = (sql: string): number | null => {
   const match = sql.match(/top\s*\(\s*(\d+)\s*\)|top\s+(\d+)/i);
   const value = match?.[1] ?? match?.[2];
   return value ? Number.parseInt(value, 10) : null;
 };
 
-export const validateSql = (
+const extractFetchOracle = (sql: string): number | null => {
+  const fetchMatch = sql.match(/fetch\s+first\s+(\d+)\s+rows?\s+only/i);
+  if (fetchMatch?.[1]) return Number.parseInt(fetchMatch[1], 10);
+
+  const rownumMatch = sql.match(/rownum\s*<=?\s*(\d+)/i);
+  if (rownumMatch?.[1]) return Number.parseInt(rownumMatch[1], 10);
+
+  return null;
+};
+
+const validateSqlServer = (
   sql: string
 ): { ok: true } | { ok: false; error: AskErrorResponse } => {
-  if (!sql.trim()) {
+  const trimmed = sql.trim();
+
+  if (!trimmed) {
     return { ok: false, error: { errorMessage: "SQL vazio retornado pela IA." } };
   }
 
-  const trimmed = sql.trim();
   if (!/^(with|select)\b/i.test(trimmed)) {
     return {
       ok: false,
@@ -66,7 +78,7 @@ export const validateSql = (
     };
   }
 
-  const topValue = extractTop(trimmed);
+  const topValue = extractTopSqlServer(trimmed);
   if (!topValue) {
     return {
       ok: false,
@@ -82,4 +94,71 @@ export const validateSql = (
   }
 
   return { ok: true };
+};
+
+const validateOracle = (
+  sql: string
+): { ok: true } | { ok: false; error: AskErrorResponse } => {
+  const trimmed = sql.trim();
+
+  if (!trimmed) {
+    return { ok: false, error: { errorMessage: "SQL vazio retornado pela IA." } };
+  }
+
+  if (!/^(with|select)\b/i.test(trimmed)) {
+    return {
+      ok: false,
+      error: { sql, errorMessage: "A query precisa iniciar com SELECT ou WITH." }
+    };
+  }
+
+  const forbidden = hasForbiddenKeyword(trimmed);
+  if (forbidden) {
+    return {
+      ok: false,
+      error: { sql, errorMessage: `Keyword proibida detectada: ${forbidden}.` }
+    };
+  }
+
+  const semicolonIndex = trimmed.indexOf(";");
+  if (semicolonIndex !== -1 && semicolonIndex < trimmed.length - 1) {
+    return {
+      ok: false,
+      error: { sql, errorMessage: "Somente uma query eh permitida." }
+    };
+  }
+
+  if (/select\s+\*/i.test(trimmed)) {
+    return {
+      ok: false,
+      error: { sql, errorMessage: "SELECT * nao eh permitido." }
+    };
+  }
+
+  const fetchValue = extractFetchOracle(trimmed);
+  if (!fetchValue) {
+    return {
+      ok: false,
+      error: { sql, errorMessage: "A query precisa ter FETCH FIRST n ROWS ONLY ou ROWNUM <= n." }
+    };
+  }
+
+  if (fetchValue > 500) {
+    return {
+      ok: false,
+      error: { sql, errorMessage: "Limite de linhas maior que 500 nao eh permitido." }
+    };
+  }
+
+  return { ok: true };
+};
+
+export const validateSql = (
+  sql: string,
+  dbType: DbType = "sqlserver"
+): { ok: true } | { ok: false; error: AskErrorResponse } => {
+  if (dbType === "oracle") {
+    return validateOracle(sql);
+  }
+  return validateSqlServer(sql);
 };
