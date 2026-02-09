@@ -45,7 +45,7 @@ services:
     restart: unless-stopped
     pull_policy: always
     env_file:
-      - ../.env
+      - .env
     ports:
       - "${API_PORT:-3001}:3001"
     depends_on:

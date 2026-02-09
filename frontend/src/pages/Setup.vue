@@ -94,6 +94,15 @@
             {{ testingDb ? 'Testando...' : 'Testar Conexao' }}
           </button>
         </div>
+
+        <div v-if="form.dbType === 'oracle'" class="oracle-hint">
+          <strong>Oracle com NNE/Data Integrity:</strong>
+          <span>
+            Se aparecer <code>NJS-533</code> ou <code>ORA-12660</code>, configure
+            <code>ORACLE_DRIVER_MODE=thick</code> e <code>ORACLE_CLIENT_LIB_DIR</code>
+            no ambiente da API.
+          </span>
+        </div>
       </div>
 
       <footer class="footer">
@@ -137,6 +146,21 @@ const setMessage = (text: string, type: 'ok' | 'error') => {
   messageType.value = type
 }
 
+const mapDbError = (error: unknown): string => {
+  const raw = (error as Error)?.message ?? ''
+  const normalized = raw.toLowerCase()
+  const isNneError =
+    normalized.includes('njs-533') ||
+    normalized.includes('ora-12660') ||
+    normalized.includes('native network encryption')
+
+  if (isNneError) {
+    return 'Oracle exige Native Network Encryption/Data Integrity. Configure ORACLE_DRIVER_MODE=thick e ORACLE_CLIENT_LIB_DIR na API.'
+  }
+
+  return raw || 'Erro ao conectar no banco.'
+}
+
 onMounted(async () => {
   try {
     const { schemaLanguage: currentLanguage } = await api.getSchemaLanguage()
@@ -164,7 +188,7 @@ const onTestOpenAi = async () => {
     await api.testOpenAi(form.openAiApiKey.trim())
     setMessage('OpenAI validada com sucesso.', 'ok')
   } catch (error) {
-    setMessage((error as Error).message, 'error')
+    setMessage(mapDbError(error), 'error')
   } finally {
     testingOpenAi.value = false
   }
@@ -183,7 +207,7 @@ const onTestDb = async () => {
     })
     setMessage('Conexao com banco validada com sucesso.', 'ok')
   } catch (error) {
-    setMessage((error as Error).message, 'error')
+    setMessage(mapDbError(error), 'error')
   } finally {
     testingDb.value = false
   }
@@ -370,6 +394,23 @@ const onSave = async () => {
 
 .message.error {
   color: #fb7185;
+}
+
+.oracle-hint {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: #fcd34d;
+  background: rgba(234, 179, 8, 0.08);
+  border: 1px solid rgba(234, 179, 8, 0.3);
+  border-radius: 10px;
+  padding: 0.75rem;
+}
+
+.oracle-hint code {
+  color: #fde68a;
 }
 
 @media (max-width: 768px) {

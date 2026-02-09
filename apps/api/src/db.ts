@@ -2,6 +2,33 @@ import sql from "mssql";
 import OracleDB from "oracledb";
 import { getAppConfig, type DbType } from "./appConfig.js";
 
+let oracleClientInitialized = false;
+
+const ensureOracleDriverMode = (): void => {
+  if (oracleClientInitialized) return;
+
+  const mode = (process.env.ORACLE_DRIVER_MODE ?? "thin").toLowerCase();
+  if (mode !== "thick") {
+    oracleClientInitialized = true;
+    return;
+  }
+
+  const libDir = process.env.ORACLE_CLIENT_LIB_DIR?.trim();
+  try {
+    if (libDir) {
+      OracleDB.initOracleClient({ libDir });
+    } else {
+      OracleDB.initOracleClient();
+    }
+    oracleClientInitialized = true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Falha ao iniciar Oracle thick mode. Defina ORACLE_CLIENT_LIB_DIR corretamente. Detalhe: ${message}`
+    );
+  }
+};
+
 export type QueryResult<T = Record<string, unknown>> = {
   recordset: T[];
   columns: string[];
@@ -97,6 +124,7 @@ class OracleAdapter implements DbAdapter {
 
   async connect(): Promise<void> {
     if (this.pool) return;
+    ensureOracleDriverMode();
     OracleDB.outFormat = OracleDB.OUT_FORMAT_OBJECT;
     OracleDB.autoCommit = true;
     OracleDB.fetchAsString = [OracleDB.CLOB];
@@ -130,6 +158,18 @@ class OracleAdapter implements DbAdapter {
           : [];
 
       return { recordset: rows, columns };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isNneError =
+        message.includes("NJS-533") ||
+        message.includes("ORA-12660") ||
+        message.toLowerCase().includes("native network encryption");
+      if (isNneError) {
+        throw new Error(
+          "Oracle exige Native Network Encryption/Data Integrity. Configure ORACLE_DRIVER_MODE=thick e Oracle Instant Client (ORACLE_CLIENT_LIB_DIR), ou desative NNE no servidor Oracle."
+        );
+      }
+      throw error;
     } finally {
       if (connection) {
         await connection.close();

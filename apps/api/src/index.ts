@@ -1,6 +1,8 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
+import swagger from "@fastify/swagger";
+import swaggerUi from "@fastify/swagger-ui";
 import OpenAI from "openai";
 import { config } from "./config.js";
 import { closeAdapter, getAdapter, testConnection } from "./db.js";
@@ -40,6 +42,23 @@ const app = Fastify({
 
 await app.register(cors, { origin: true });
 await app.register(rateLimit, { global: false });
+await app.register(swagger, {
+  openapi: {
+    info: {
+      title: "MathAI API",
+      description: "Documentacao da API do MathAI",
+      version: "1.0.0"
+    }
+  }
+});
+await app.register(swaggerUi, {
+  routePrefix: "/docs",
+  uiConfig: {
+    docExpansion: "list",
+    deepLinking: false
+  },
+  staticCSP: true
+});
 
 const VALID_LANGUAGES = ["pt", "en", "es"] as const;
 
