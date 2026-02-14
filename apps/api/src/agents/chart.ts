@@ -1,5 +1,6 @@
 import type { AskSuccessResponse } from "@auraia/shared";
-import { getOpenAI, SUMMARY_MODEL } from "../openai.js";
+import { getOpenAI, getChartModel } from "../openai.js";
+import { getAgentsConfig } from "../agentConfig.js";
 
 const shouldLogPrompts = (): boolean => {
   const flag = process.env.LOG_PROMPTS?.toLowerCase();
@@ -142,15 +143,17 @@ export const inferChartWithLLM = async (
         : "Voce e um assistente de dados. Crie uma sugestao de grafico. Retorne APENAS um objeto JSON com campos: type (bar|line), data (array de {category, value}), title, xKey, yKey. Sem markdown.";
 
   const chartPrompt = buildChartPrompt(question, columns, sample, language);
+  const model = await getChartModel();
+  const agentsCfg = await getAgentsConfig();
   logPrompt("chart", {
     system,
     user: chartPrompt,
-    meta: { model: SUMMARY_MODEL, language }
+    meta: { model, language }
   });
   const client = await getOpenAI();
   const completion = await client.chat.completions.create({
-    model: SUMMARY_MODEL,
-    temperature: 0.2,
+    model,
+    temperature: agentsCfg.chart.temperature ?? 0.2,
     messages: [
       { role: "system", content: system },
       { role: "user", content: chartPrompt }

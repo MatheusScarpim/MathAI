@@ -17,16 +17,16 @@
           <span>Perguntar</span>
         </router-link>
         <router-link to="/history" class="nav-item" :class="{ active: $route.path === '/history' }">
-          <span>Historico</span>
+          <span>Histórico</span>
         </router-link>
         <router-link to="/schema" class="nav-item" :class="{ active: $route.path === '/schema' }">
           <span>Tabelas</span>
         </router-link>
         <router-link to="/instructions" class="nav-item" :class="{ active: $route.path === '/instructions' }">
-          <span>Instrucoes</span>
+          <span>Instruções</span>
         </router-link>
         <router-link to="/settings" class="nav-item" :class="{ active: $route.path === '/settings' }">
-          <span>Settings</span>
+          <span>Configurações</span>
         </router-link>
       </nav>
 

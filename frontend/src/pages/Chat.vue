@@ -82,11 +82,6 @@
             Pergunta (db): {{ entry.result.translatedQuestion }}
           </p>
 
-          <div v-if="entry.loading" class="entry-loading">
-            <span class="spinner small"></span>
-            Buscando resposta...
-          </div>
-
           <div v-if="entry.error" class="error-card">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"/>
@@ -99,7 +94,7 @@
             </div>
           </div>
 
-          <div v-if="entry.result" class="results-container">
+          <div v-if="entry.result && entry.result.sql" class="results-container">
             <!-- Summary -->
             <div v-if="entry.result.summary" class="summary-card">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -195,6 +190,12 @@
               </div>
             </div>
           </div>
+
+          <!-- Loading indicator - after partial results so it appears at the bottom -->
+          <div v-if="entry.loading" class="entry-loading">
+            <span class="spinner small"></span>
+            {{ entry.stepLabel || 'Iniciando...' }}
+          </div>
         </div>
       </div>
     </div>
@@ -212,6 +213,7 @@ type ChatEntry = {
   language: 'pt' | 'en' | 'es'
   createdAt: number
   loading: boolean
+  stepLabel: string
   error: AskResponse['error'] | null
   result: AskResponse['data'] | null
   copied: boolean
@@ -248,6 +250,7 @@ function makeEntry(questionText: string, lang: 'pt' | 'en' | 'es'): ChatEntry {
     language: lang,
     createdAt: Date.now(),
     loading: true,
+    stepLabel: 'Iniciando...',
     error: null,
     result: null,
     copied: false,
@@ -255,6 +258,20 @@ function makeEntry(questionText: string, lang: 'pt' | 'en' | 'es'): ChatEntry {
     tags: [],
     newTag: ''
   }
+}
+
+function parseSSEEvents(text: string): Array<{ event: string; data: string }> {
+  const events: Array<{ event: string; data: string }> = []
+  const blocks = text.split('\n\n')
+  for (const block of blocks) {
+    if (!block.trim()) continue
+    const eventMatch = block.match(/^event: (.+)$/m)
+    const dataMatch = block.match(/^data: (.+)$/m)
+    if (eventMatch && dataMatch) {
+      events.push({ event: eventMatch[1], data: dataMatch[1] })
+    }
+  }
+  return events
 }
 
 async function ask() {
@@ -267,13 +284,90 @@ async function ask() {
   sending.value = true
 
   try {
-    const res = await api.ask(trimmed, chatId.value, language.value, schemaLanguage.value)
-    if (res.ok && res.data) {
-      entry.result = res.data
-      entry.isFavorite = false
-      entry.tags = []
-    } else {
-      entry.error = res.error ?? { errorMessage: 'Erro ao processar pergunta' }
+    const res = await fetch('/api/ask/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question: trimmed,
+        chatId: chatId.value,
+        language: language.value,
+        schemaLanguage: schemaLanguage.value,
+        responseLanguage: language.value
+      })
+    })
+
+    if (!res.ok || !res.body) {
+      const payload = await res.json().catch(() => null)
+      entry.error = {
+        errorMessage: payload?.errorMessage || `HTTP ${res.status}`
+      }
+      entry.loading = false
+      sending.value = false
+      return
+    }
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const parts = buffer.split('\n\n')
+      buffer = parts.pop()!
+
+      for (const block of parts) {
+        const events = parseSSEEvents(block + '\n\n')
+        for (const { event, data } of events) {
+          let parsed: any
+          try { parsed = JSON.parse(data) } catch { continue }
+
+          switch (event) {
+            case 'step':
+              entry.stepLabel = parsed.label ?? ''
+              break
+            case 'sql':
+              entry.result = { ...(entry.result ?? {}), sql: parsed.sql } as any
+              break
+            case 'rows':
+              entry.result = {
+                ...(entry.result ?? {}),
+                rows: parsed.rows,
+                columns: parsed.columns,
+                elapsedMs: parsed.elapsedMs
+              } as any
+              break
+            case 'done':
+              entry.result = parsed
+              entry.isFavorite = false
+              entry.tags = []
+              entry.loading = false
+              break
+            case 'error':
+              entry.error = parsed
+              entry.loading = false
+              break
+          }
+        }
+      }
+    }
+
+    // Handle remaining buffer
+    if (buffer.trim()) {
+      const events = parseSSEEvents(buffer + '\n\n')
+      for (const { event, data } of events) {
+        let parsed: any
+        try { parsed = JSON.parse(data) } catch { continue }
+        if (event === 'done') {
+          entry.result = parsed
+          entry.isFavorite = false
+          entry.tags = []
+        } else if (event === 'error') {
+          entry.error = parsed
+        }
+      }
     }
   } catch (e: any) {
     entry.error = { errorMessage: e.message || 'Erro ao processar pergunta' }

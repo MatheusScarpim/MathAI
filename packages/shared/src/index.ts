@@ -4,6 +4,8 @@ export type AskRequest = {
   language?: "pt" | "en" | "es";
   schemaLanguage?: "pt" | "en" | "es";
   responseLanguage?: "pt" | "en" | "es";
+  async?: boolean;
+  webhookUrl?: string;
 };
 
 export type AskSuccessResponse = {
@@ -74,6 +76,27 @@ export type AskErrorResponse = {
   hint?: string;
 };
 
+export type AskQueuedResponse = {
+  processingId: string;
+  status: "processing";
+};
+
+export type AskProcessingResponse =
+  | {
+      processingId: string;
+      status: "processing";
+    }
+  | {
+      processingId: string;
+      status: "completed";
+      data: AskSuccessResponse;
+    }
+  | {
+      processingId: string;
+      status: "failed";
+      error: AskErrorResponse;
+    };
+
 export type IngestResponse = {
   tablesIndexed: number;
 };
@@ -106,6 +129,29 @@ export type TableChunk = {
   primaryKey: string[];
   foreignKeys: ForeignKeyInfo[];
   tags: string[];
+};
+
+export type AgentConfig = {
+  model: string;
+  temperature?: number;
+  enabled?: boolean;
+};
+
+export type SqlAgentConfig = AgentConfig & {
+  modelMini: string;
+  maxRetries: number;
+};
+
+export type EmbeddingAgentConfig = {
+  model: string;
+};
+
+export type AgentsConfig = {
+  sql: SqlAgentConfig;
+  summary: AgentConfig;
+  translation: AgentConfig;
+  chart: AgentConfig;
+  embedding: EmbeddingAgentConfig;
 };
 
 export const sanitizeErrorMessage = (message: string): string => {

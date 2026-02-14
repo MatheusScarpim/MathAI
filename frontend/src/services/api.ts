@@ -9,7 +9,8 @@ import type {
   ConfigStatusResponse,
   SaveAppConfigPayload,
   TableReferenceCountSetting,
-  ResetEnvironmentResponse
+  ResetEnvironmentResponse,
+  AgentsConfig
 } from '../types'
 
 const API_BASE = '/api'
@@ -105,6 +106,17 @@ export const api = {
     return request('/settings/table-reference-count', {
       method: 'PUT',
       body: JSON.stringify({ tableReferenceCount })
+    })
+  },
+
+  async getAgentsConfig(): Promise<AgentsConfig> {
+    return request('/settings/agents')
+  },
+
+  async saveAgentsConfig(config: AgentsConfig): Promise<AgentsConfig> {
+    return request('/settings/agents', {
+      method: 'PUT',
+      body: JSON.stringify(config)
     })
   },
 

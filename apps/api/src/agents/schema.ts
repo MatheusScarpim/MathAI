@@ -1,7 +1,7 @@
 import type { TableChunk } from "@auraia/shared";
 import { qdrant } from "../qdrant.js";
 import { loadSchemaGraph } from "../schema.js";
-import { getOpenAI, EMBEDDING_MODEL } from "../openai.js";
+import { getOpenAI, getEmbeddingModel } from "../openai.js";
 import { getHistoryCollection } from "../mongo.js";
 
 export type ExpandedContext = {
@@ -181,8 +181,9 @@ export const generateEmbedding = async (
   text: string
 ): Promise<number[]> => {
   const client = await getOpenAI();
+  const embeddingModel = await getEmbeddingModel();
   const embedding = await client.embeddings.create({
-    model: EMBEDDING_MODEL,
+    model: embeddingModel,
     input: text
   });
   if (shouldLogPrompts() && embedding.usage) {
@@ -198,10 +199,12 @@ export const buildEmbeddingInput = async (
 ): Promise<string> => {
   const trimmed = question.trim();
   if (!chatId) return trimmed;
+  const MAX_HISTORY_FOR_EMBEDDING = 8;
   const collection = await getHistoryCollection();
   const items = await collection
     .find({ chatId })
-    .sort({ createdAt: 1 })
+    .sort({ createdAt: -1 })
+    .limit(MAX_HISTORY_FOR_EMBEDDING)
     .toArray();
   if (!items.length) return trimmed;
 
@@ -214,7 +217,7 @@ export const buildEmbeddingInput = async (
   const currentLabel =
     language === "en" ? "Current question" : language === "es" ? "Pregunta atual" : "Pergunta atual";
 
-  const historyLines = items.map((item, index) => {
+  const historyLines = items.reverse().map((item, index) => {
     const previous = item.embeddingQuestion ?? item.question;
     return `${prevLabel} ${index + 1}: ${previous}`;
   });

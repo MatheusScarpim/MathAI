@@ -1,5 +1,6 @@
 import { MongoClient, type Collection, type ObjectId } from "mongodb";
 import { config } from "./config.js";
+import type { AskErrorResponse, AskSuccessResponse } from "@auraia/shared";
 
 export type InstructionRecord = {
   _id?: ObjectId;
@@ -40,7 +41,24 @@ export type HistoryRecord = {
 export type SettingRecord = {
   _id?: ObjectId;
   key: string;
-  value: string | number;
+  value: unknown;
+  updatedAt: Date;
+};
+
+export type ProcessingJobRecord = {
+  _id?: ObjectId;
+  status: "processing" | "completed" | "failed";
+  question: string;
+  chatId?: string;
+  webhookUrl?: string;
+  language: "pt" | "en" | "es";
+  schemaLanguage: "pt" | "en" | "es";
+  responseLanguage: "pt" | "en" | "es";
+  result?: AskSuccessResponse;
+  error?: AskErrorResponse;
+  webhookNotifiedAt?: Date;
+  webhookError?: string;
+  createdAt: Date;
   updatedAt: Date;
 };
 
@@ -70,4 +88,9 @@ export const getHistoryCollection = async (): Promise<Collection<HistoryRecord>>
 export const getSettingsCollection = async (): Promise<Collection<SettingRecord>> => {
   const mongo = await getMongoClient();
   return mongo.db(config.mongo.db).collection<SettingRecord>("settings");
+};
+
+export const getProcessingJobsCollection = async (): Promise<Collection<ProcessingJobRecord>> => {
+  const mongo = await getMongoClient();
+  return mongo.db(config.mongo.db).collection<ProcessingJobRecord>("processing_jobs");
 };

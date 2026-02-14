@@ -132,3 +132,26 @@ export interface ResetEnvironmentResponse {
     redisKeys: number
   }
 }
+
+export interface AgentConfig {
+  model: string
+  temperature?: number
+  enabled?: boolean
+}
+
+export interface SqlAgentConfig extends AgentConfig {
+  modelMini: string
+  maxRetries: number
+}
+
+export interface EmbeddingAgentConfig {
+  model: string
+}
+
+export interface AgentsConfig {
+  sql: SqlAgentConfig
+  summary: AgentConfig
+  translation: AgentConfig
+  chart: AgentConfig
+  embedding: EmbeddingAgentConfig
+}

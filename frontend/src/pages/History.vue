@@ -394,7 +394,7 @@ async function copySQL(itemId: string, sql: string) {
       if (copiedItemId.value === itemId) copiedItemId.value = null
     }, 1500)
   } catch {
-    error.value = 'Nao foi possivel copiar o SQL.'
+    error.value = 'Não foi possível copiar o SQL.'
   }
 }
 

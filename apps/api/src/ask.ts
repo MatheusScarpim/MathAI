@@ -24,6 +24,7 @@ import { expandTables, searchRelevantTables, generateEmbedding, buildEmbeddingIn
 import { buildPrompt, generateSql } from "./agents/sql.js";
 import { summarizeResult, extractYearFromSql } from "./agents/summary.js";
 import { inferChart, inferChartWithLLM } from "./agents/chart.js";
+import { getAgentsConfig } from "./agentConfig.js";
 
 type AskResult =
   | { ok: true; data: AskSuccessResponse }
@@ -385,12 +386,15 @@ const formatPeriodText = (
 
 // ============== MAIN FUNCTION ==============
 
+export type StepEmitter = (event: string, data: unknown) => void;
+
 export const answerQuestion = async (
   question: string,
   chatId?: string,
   language: "pt" | "en" | "es" = "pt",
   schemaLanguage: "pt" | "en" | "es" = language,
-  responseLanguage: "pt" | "en" | "es" = language
+  responseLanguage: "pt" | "en" | "es" = language,
+  emit?: StepEmitter
 ): Promise<AskResult> => {
   await ensureSchemaCollection();
   await ensureAliasInstruction();
@@ -398,10 +402,12 @@ export const answerQuestion = async (
   const normalizedQuestion = question.trim();
   const resolvedSchemaLanguage = schemaLanguage ?? language;
   const resolvedResponseLanguage = responseLanguage ?? language;
+  const agentsCfg = await getAgentsConfig();
 
   // Step 1: Translate question if needed (TranslationAgent)
+  emit?.("step", { step: "translating", label: "Traduzindo pergunta..." });
   let translatedQuestion = normalizedQuestion;
-  if (resolvedSchemaLanguage !== language) {
+  if (resolvedSchemaLanguage !== language && agentsCfg.translation.enabled !== false) {
     try {
       translatedQuestion = await translateText(normalizedQuestion, resolvedSchemaLanguage, "question");
     } catch {
@@ -413,8 +419,9 @@ export const answerQuestion = async (
   const resolvedChatId = normalizedChatId ?? `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
   // Step 2: Build standalone question from history (TranslationAgent)
+  emit?.("step", { step: "building_context", label: "Construindo contexto..." });
   let concreteQuestion = translatedQuestion.trim() || normalizedQuestion;
-  if (normalizedChatId) {
+  if (normalizedChatId && agentsCfg.translation.enabled !== false) {
     const historyForRewrite = await loadHistoryForRewrite(normalizedChatId, resolvedSchemaLanguage);
     if (historyForRewrite.length) {
       try {
@@ -436,6 +443,7 @@ export const answerQuestion = async (
   const cached = await getCachedValue<AskSuccessResponse>(cacheKey);
 
   // Step 4: Generate embedding (SchemaAgent)
+  emit?.("step", { step: "embedding", label: "Gerando embedding..." });
   const embeddingInput = await buildEmbeddingInput(embeddingQuestion, resolvedChatId, resolvedSchemaLanguage);
   const vector = await generateEmbedding(embeddingInput);
 
@@ -443,6 +451,7 @@ export const answerQuestion = async (
   const displayQuestion = normalizedQuestion;
 
   if (cached) {
+    emit?.("step", { step: "cache_hit", label: "Resultado encontrado no cache!" });
     const historyCollection = await getHistoryCollection();
     const historyResult = await historyCollection.insertOne({
       question: normalizedQuestion,
@@ -479,6 +488,7 @@ export const answerQuestion = async (
   const dbType = adapter.getDbType();
 
   // Step 5: Check semantic cache (with number mismatch detection)
+  emit?.("step", { step: "checking_cache", label: "Verificando cache semantico..." });
   const semanticMatch = await findSemanticSql(resolvedChatId, resolvedResponseLanguage, resolvedSchemaLanguage, vector, SEMANTIC_SIMILARITY_THRESHOLD);
 
   // Extract all numbers from question and cached SQL to detect mismatches
@@ -513,37 +523,34 @@ export const answerQuestion = async (
         const rowCount = result.recordset?.length ?? 0;
         const columns = result.columns;
 
-        // ChartAgent
-        let chart = inferChart(result.recordset ?? [], columns, displayQuestion);
-        try {
-          chart = await inferChartWithLLM(
-            displayQuestion,
-            result.recordset ?? [],
-            columns,
-            resolvedResponseLanguage
-          );
-        } catch {
-          chart = inferChart(result.recordset ?? [], columns, displayQuestion);
-        }
+        // Run chart + summary in parallel to reduce end-to-end latency.
+        const chartEnabled = agentsCfg.chart.enabled !== false;
+        const summaryEnabled = agentsCfg.summary.enabled !== false;
+        const parallelTasks: [Promise<unknown>, Promise<unknown>] = [
+          chartEnabled
+            ? inferChartWithLLM(displayQuestion, result.recordset ?? [], columns, resolvedResponseLanguage)
+            : Promise.resolve(undefined),
+          summaryEnabled
+            ? summarizeResult(schemaQuestion, semanticMatch.sql, columns, result.recordset ?? [], resolvedSchemaLanguage)
+            : Promise.resolve({ summary: undefined, usage: undefined })
+        ];
+        const [chartResult, summaryResultSettled] = await Promise.allSettled(parallelTasks);
 
-        // SummaryAgent
+        let chart = chartEnabled
+          ? (chartResult.status === "fulfilled"
+              ? (chartResult.value as AskSuccessResponse["chart"])
+              : inferChart(result.recordset ?? [], columns, displayQuestion))
+          : undefined;
+
         let summary: string | undefined;
         let summaryUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } = {};
-        try {
-          const summaryResult = await summarizeResult(
-            schemaQuestion,
-            semanticMatch.sql,
-            columns,
-            result.recordset ?? [],
-            resolvedSchemaLanguage
-          );
-          summary = summaryResult.summary;
-          if (summaryResult.usage) summaryUsage = summaryResult.usage;
-        } catch {
-          summary = undefined;
+        if (summaryEnabled && summaryResultSettled.status === "fulfilled") {
+          const settled = summaryResultSettled.value as { summary?: string; usage?: typeof summaryUsage };
+          summary = settled.summary;
+          if (settled.usage) summaryUsage = settled.usage;
         }
 
-        if (summary && resolvedSchemaLanguage !== resolvedResponseLanguage) {
+        if (summary && resolvedSchemaLanguage !== resolvedResponseLanguage && agentsCfg.translation.enabled !== false) {
           try {
             summary = await translateText(summary, resolvedResponseLanguage, "summary");
           } catch { /* keep original */ }
@@ -582,6 +589,7 @@ export const answerQuestion = async (
   }
 
   // Step 6: Search relevant tables (SchemaAgent)
+  emit?.("step", { step: "searching_tables", label: "Buscando tabelas relevantes..." });
   const tableReferenceCount = await getTableReferenceCount();
   const initialTables = await searchRelevantTables(vector, embeddingQuestion, tableReferenceCount);
   if (initialTables.length === 0) {
@@ -626,7 +634,8 @@ export const answerQuestion = async (
   }
 
   // Step 10: SQL Generation Loop (SQLAgent)
-  const maxAttempts = 3;
+  emit?.("step", { step: "generating_sql", label: "Gerando SQL..." });
+  const maxAttempts = agentsCfg.sql.maxRetries ?? 3;
   let lastError: string | null = null;
   let lastSql: string | null = null;
   let sqlUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } = {};
@@ -705,36 +714,49 @@ export const answerQuestion = async (
     }
 
     const sql = result.sql;
+    emit?.("sql", { sql });
     try {
+      emit?.("step", { step: "executing_query", label: "Executando query..." });
       const start = Date.now();
       const queryResult = await adapter.query(sql);
       const elapsedMs = Date.now() - start;
       const rowCount = queryResult.recordset?.length ?? 0;
       const columns = queryResult.columns;
+      emit?.("rows", { rows: queryResult.recordset ?? [], columns, elapsedMs });
 
-      // ChartAgent
-      let chart = inferChart(queryResult.recordset ?? [], columns, displayQuestion);
-      try {
-        chart = await inferChartWithLLM(displayQuestion, queryResult.recordset ?? [], columns, resolvedResponseLanguage);
-      } catch {
-        chart = inferChart(queryResult.recordset ?? [], columns, displayQuestion);
-      }
+      emit?.("step", { step: "summarizing", label: "Gerando resumo..." });
+      const chartEnabled2 = agentsCfg.chart.enabled !== false;
+      const summaryEnabled2 = agentsCfg.summary.enabled !== false;
+      const parallelTasks2: [Promise<unknown>, Promise<unknown>] = [
+        chartEnabled2
+          ? inferChartWithLLM(displayQuestion, queryResult.recordset ?? [], columns, resolvedResponseLanguage)
+          : Promise.resolve(undefined),
+        summaryEnabled2
+          ? summarizeResult(schemaQuestion, sql, columns, queryResult.recordset ?? [], resolvedSchemaLanguage)
+          : Promise.resolve({ summary: undefined, usage: undefined })
+      ];
+      const [chartResult, summaryResultSettled] = await Promise.allSettled(parallelTasks2);
 
-      // SummaryAgent
+      let chart = chartEnabled2
+        ? (chartResult.status === "fulfilled"
+            ? (chartResult.value as AskSuccessResponse["chart"])
+            : inferChart(queryResult.recordset ?? [], columns, displayQuestion))
+        : undefined;
+
       let summary: string | undefined;
-      try {
-        const summaryResult = await summarizeResult(schemaQuestion, sql, columns, queryResult.recordset ?? [], resolvedSchemaLanguage);
-        summary = summaryResult.summary;
-        if (summaryResult.usage) {
+      if (summaryEnabled2 && summaryResultSettled.status === "fulfilled") {
+        const settled = summaryResultSettled.value as { summary?: string; usage?: typeof summaryUsage };
+        summary = settled.summary;
+        if (settled.usage) {
           summaryUsage = {
-            prompt_tokens: (summaryUsage.prompt_tokens ?? 0) + (summaryResult.usage.prompt_tokens ?? 0),
-            completion_tokens: (summaryUsage.completion_tokens ?? 0) + (summaryResult.usage.completion_tokens ?? 0),
-            total_tokens: (summaryUsage.total_tokens ?? 0) + (summaryResult.usage.total_tokens ?? 0)
+            prompt_tokens: (summaryUsage.prompt_tokens ?? 0) + (settled.usage.prompt_tokens ?? 0),
+            completion_tokens: (summaryUsage.completion_tokens ?? 0) + (settled.usage.completion_tokens ?? 0),
+            total_tokens: (summaryUsage.total_tokens ?? 0) + (settled.usage.total_tokens ?? 0)
           };
         }
-      } catch { summary = undefined; }
+      }
 
-      if (summary && resolvedSchemaLanguage !== resolvedResponseLanguage) {
+      if (summary && resolvedSchemaLanguage !== resolvedResponseLanguage && agentsCfg.translation.enabled !== false) {
         try {
           summary = await translateText(summary, resolvedResponseLanguage, "summary");
         } catch { /* keep original */ }

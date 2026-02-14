@@ -5,7 +5,7 @@
 
     <section class="setup-shell">
       <header class="hero">
-        <p class="eyebrow">Primeira configuracao</p>
+        <p class="eyebrow">Primeira configuração</p>
         <h1>Conecte o MathAI ao seu ambiente</h1>
         <p class="subtitle">
           Defina OpenAI, banco de dados e idioma do schema para o parser gerar SQL correto.
@@ -52,12 +52,12 @@
 
         <label class="label">Idioma do banco (schema)</label>
         <select v-model="schemaLanguage" class="input">
-          <option value="pt">Portugues</option>
+          <option value="pt">Português</option>
           <option value="en">English</option>
-          <option value="es">Espanol</option>
+          <option value="es">Español</option>
         </select>
 
-        <label class="label">Qtd. de tabelas de referencia</label>
+        <label class="label">Qtd. de tabelas de referência</label>
         <input
           v-model.number="tableReferenceCount"
           class="input"
@@ -80,7 +80,7 @@
             <input v-model="form.dbName" class="input" type="text" />
           </div>
           <div>
-            <label class="label">Usuario</label>
+            <label class="label">Usuário</label>
             <input v-model="form.dbUser" class="input" type="text" />
           </div>
           <div class="full">
@@ -91,7 +91,7 @@
 
         <div class="actions-inline">
           <button class="btn btn-secondary" :disabled="testingDb" @click="onTestDb">
-            {{ testingDb ? 'Testando...' : 'Testar Conexao' }}
+            {{ testingDb ? 'Testando...' : 'Testar Conexão' }}
           </button>
         </div>
 
@@ -107,7 +107,7 @@
 
       <footer class="footer">
         <button class="btn btn-primary" :disabled="saving" @click="onSave">
-          {{ saving ? 'Salvando...' : 'Salvar e Comecar' }}
+          {{ saving ? 'Salvando...' : 'Salvar e Começar' }}
         </button>
         <p v-if="message" class="message" :class="messageType">{{ message }}</p>
       </footer>
@@ -205,7 +205,7 @@ const onTestDb = async () => {
       dbUser: form.dbUser.trim(),
       dbPassword: form.dbPassword
     })
-    setMessage('Conexao com banco validada com sucesso.', 'ok')
+    setMessage('Conexão com banco validada com sucesso.', 'ok')
   } catch (error) {
     setMessage(mapDbError(error), 'error')
   } finally {
@@ -229,7 +229,7 @@ const onSave = async () => {
     })
     await api.setSchemaLanguage(schemaLanguage.value)
     await api.setTableReferenceCount(safeTableCount)
-    setMessage('Configuracao salva. Indexando schema...', 'ok')
+    setMessage('Configuração salva. Indexando schema...', 'ok')
     await api.ingestSchema()
     await router.push('/chat')
   } catch (error) {

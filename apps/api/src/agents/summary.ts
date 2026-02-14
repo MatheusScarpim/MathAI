@@ -1,4 +1,5 @@
-import { getOpenAI, SUMMARY_MODEL } from "../openai.js";
+import { getOpenAI, getSummaryModel } from "../openai.js";
+import { getAgentsConfig } from "../agentConfig.js";
 
 const shouldLogPrompts = (): boolean => {
   const flag = process.env.LOG_PROMPTS?.toLowerCase();
@@ -99,15 +100,17 @@ export const summarizeResult = async (
   const system = periodInstruction ? `${systemBase} ${periodInstruction}` : systemBase;
 
   const summaryPrompt = buildSummaryPrompt(question, sql, columns, sample, language);
+  const agentsCfg = await getAgentsConfig();
+  const model = await getSummaryModel();
   logPrompt("summary", {
     system,
     user: summaryPrompt,
-    meta: { model: SUMMARY_MODEL, language }
+    meta: { model, language }
   });
   const client = await getOpenAI();
   const completion = await client.chat.completions.create({
-    model: SUMMARY_MODEL,
-    temperature: 0.2,
+    model,
+    temperature: agentsCfg.summary.temperature ?? 0.2,
     messages: [
       { role: "system", content: system },
       { role: "user", content: summaryPrompt }

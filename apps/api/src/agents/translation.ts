@@ -1,4 +1,5 @@
-import { getOpenAI, SUMMARY_MODEL } from "../openai.js";
+import { getOpenAI, getTranslationModel } from "../openai.js";
+import { getAgentsConfig } from "../agentConfig.js";
 
 const shouldLogPrompts = (): boolean => {
   const flag = process.env.LOG_PROMPTS?.toLowerCase();
@@ -39,15 +40,17 @@ export const translateText = async (
     "Preserve database identifiers (table/column names), SQL keywords, and code fragments.",
     "Return only the translated text without quotes or markdown."
   ].join(" ");
+  const model = await getTranslationModel();
+  const agentsCfg = await getAgentsConfig();
   logPrompt(`translate:${label}`, {
     system,
     user: trimmed,
-    meta: { model: SUMMARY_MODEL, targetLanguage }
+    meta: { model, targetLanguage }
   });
   const client = await getOpenAI();
   const completion = await client.chat.completions.create({
-    model: SUMMARY_MODEL,
-    temperature: 0,
+    model,
+    temperature: agentsCfg.translation.temperature ?? 0,
     messages: [
       { role: "system", content: system },
       { role: "user", content: trimmed }
@@ -83,14 +86,15 @@ export const buildStandaloneQuestion = async (
   const user = historySection
     ? `History:\n${historySection}\n\nCurrent question:\n${trimmed}`
     : `Current question:\n${trimmed}`;
+  const model = await getTranslationModel();
   logPrompt("standalone-question", {
     system,
     user,
-    meta: { model: SUMMARY_MODEL, targetLanguage }
+    meta: { model, targetLanguage }
   });
   const client = await getOpenAI();
   const completion = await client.chat.completions.create({
-    model: SUMMARY_MODEL,
+    model,
     temperature: 0.2,
     messages: [
       { role: "system", content: system },

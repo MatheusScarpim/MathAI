@@ -1,5 +1,6 @@
 import type { TableChunk } from "@auraia/shared";
-import { getOpenAI, SQL_MODEL, SQL_MODEL_MINI } from "../openai.js";
+import { getOpenAI, getSqlModel, getSqlModelMini } from "../openai.js";
+import { getAgentsConfig } from "../agentConfig.js";
 import type { DbType } from "../appConfig.js";
 import type { ExpandedContext } from "./schema.js";
 
@@ -219,7 +220,8 @@ export const generateSql = async (
   useMini: boolean,
   allowEscalation: boolean
 ): Promise<GenerateSqlResult> => {
-  const model = useMini ? SQL_MODEL_MINI : SQL_MODEL;
+  const model = useMini ? await getSqlModelMini() : await getSqlModel();
+  const agentsCfg = await getAgentsConfig();
   const baseSystem = buildSystemContent(instructionText, language, dbType);
   const system = allowEscalation
     ? `${baseSystem}\nIf unsure you can produce a correct query, reply with only: ESCALATE`
@@ -230,8 +232,10 @@ export const generateSql = async (
     meta: { model, language }
   });
   const client = await getOpenAI();
+  const temperature = agentsCfg.sql.temperature;
   const completion = await client.chat.completions.create({
     model,
+    ...(temperature !== undefined && temperature !== null ? { temperature } : {}),
     messages: [
       { role: "system", content: system },
       { role: "user", content: prompt }
