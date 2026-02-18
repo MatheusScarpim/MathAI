@@ -181,6 +181,18 @@ const buildSystemContent = (
         : "Voce e um especialista em Oracle SQL. Retorne apenas sentencas SELECT, sem markdown ou comentarios. " +
           "Regras: use FETCH FIRST n ROWS ONLY ou ROWNUM <= n; nao use SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
           seasonRule
+    : dbType === "mysql"
+    ? language === "en"
+      ? "You are a MySQL expert. Output only SELECT statements, no markdown or comments. " +
+        "Rules: use LIMIT 100; no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
+        seasonRule
+      : language === "es"
+        ? "Eres un experto en MySQL. Devuelve solo sentencias SELECT, sin markdown ni comentarios. " +
+          "Reglas: usa LIMIT 100; no SELECT *; prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
+          seasonRule
+        : "Voce e um especialista em MySQL. Retorne apenas sentencas SELECT, sem markdown ou comentarios. " +
+          "Regras: use LIMIT 100; nao use SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
+          seasonRule
     : language === "en"
       ? "You are a SQL Server expert. Output only T-SQL SELECT, no markdown or comments. " +
         "Rules: TOP (100); no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +

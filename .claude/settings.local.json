@@ -4,7 +4,10 @@
       "Bash(docker compose:*)",
       "Bash(docker-compose restart:*)",
       "Bash(docker restart:*)",
-      "Bash(docker ps:*)"
+      "Bash(docker ps:*)",
+      "Bash(npx:*)",
+      "Bash(node_modules/.bin/tsc:*)",
+      "Bash(npm install:*)"
     ]
   }
 }

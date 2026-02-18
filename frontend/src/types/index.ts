@@ -93,7 +93,7 @@ export interface TableInfo {
   tags: string[]
 }
 
-export type DbType = 'sqlserver' | 'oracle'
+export type DbType = 'sqlserver' | 'oracle' | 'mysql'
 
 export interface ConfigStatusResponse {
   configured: boolean

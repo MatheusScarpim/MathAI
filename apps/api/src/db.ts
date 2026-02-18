@@ -1,5 +1,6 @@
 import sql from "mssql";
 import OracleDB from "oracledb";
+import mysql from "mysql2/promise";
 import { getAppConfig, type DbType } from "./appConfig.js";
 
 let oracleClientInitialized = false;
@@ -189,6 +190,63 @@ class OracleAdapter implements DbAdapter {
   }
 }
 
+// ================== MySQL Adapter ==================
+
+class MySQLAdapter implements DbAdapter {
+  private pool: mysql.Pool | null = null;
+  private host: string;
+  private port: number;
+  private database: string;
+  private user: string;
+  private password: string;
+
+  constructor(host: string, port: number, database: string, user: string, password: string) {
+    this.host = host;
+    this.port = port;
+    this.database = database;
+    this.user = user;
+    this.password = password;
+  }
+
+  async connect(): Promise<void> {
+    if (this.pool) return;
+    this.pool = mysql.createPool({
+      host: this.host,
+      port: this.port,
+      database: this.database,
+      user: this.user,
+      password: this.password,
+      waitForConnections: true,
+      connectionLimit: 5,
+      queueLimit: 0,
+      connectTimeout: 15000
+    });
+  }
+
+  async query<T = Record<string, unknown>>(sqlText: string): Promise<QueryResult<T>> {
+    if (!this.pool) await this.connect();
+    const [rows, fields] = await this.pool!.query(sqlText);
+    const recordset = Array.isArray(rows) ? (rows as T[]) : [];
+    const columns = Array.isArray(fields)
+      ? fields.map((f) => f.name)
+      : recordset.length > 0
+        ? Object.keys(recordset[0] as Record<string, unknown>)
+        : [];
+    return { recordset, columns };
+  }
+
+  async close(): Promise<void> {
+    if (this.pool) {
+      await this.pool.end();
+      this.pool = null;
+    }
+  }
+
+  getDbType(): DbType {
+    return "mysql";
+  }
+}
+
 // ================== Factory ==================
 
 let currentAdapter: DbAdapter | null = null;
@@ -234,6 +292,14 @@ export const getAdapter = async (): Promise<DbAdapter> => {
       appConfig.dbUser,
       appConfig.dbPassword
     );
+  } else if (appConfig.dbType === "mysql") {
+    currentAdapter = new MySQLAdapter(
+      appConfig.dbHost,
+      appConfig.dbPort,
+      appConfig.dbName,
+      appConfig.dbUser,
+      appConfig.dbPassword
+    );
   } else {
     currentAdapter = new SqlServerAdapter(
       appConfig.dbHost,
@@ -269,6 +335,8 @@ export const testConnection = async (
   let adapter: DbAdapter;
   if (dbType === "oracle") {
     adapter = new OracleAdapter(host, port, name, user, password);
+  } else if (dbType === "mysql") {
+    adapter = new MySQLAdapter(host, port, name, user, password);
   } else {
     adapter = new SqlServerAdapter(host, port, name, user, password);
   }

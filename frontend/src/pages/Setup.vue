@@ -37,16 +37,23 @@
           <button
             class="toggle"
             :class="{ active: form.dbType === 'sqlserver' }"
-            @click="form.dbType = 'sqlserver'"
+            @click="form.dbType = 'sqlserver'; form.dbPort = 1433"
           >
             SQL Server
           </button>
           <button
             class="toggle"
             :class="{ active: form.dbType === 'oracle' }"
-            @click="form.dbType = 'oracle'"
+            @click="form.dbType = 'oracle'; form.dbPort = 1521"
           >
             Oracle
+          </button>
+          <button
+            class="toggle"
+            :class="{ active: form.dbType === 'mysql' }"
+            @click="form.dbType = 'mysql'; form.dbPort = 3306"
+          >
+            MySQL
           </button>
         </div>
 
@@ -76,7 +83,7 @@
             <input v-model.number="form.dbPort" class="input" type="number" min="1" />
           </div>
           <div>
-            <label class="label">{{ form.dbType === 'oracle' ? 'Service Name' : 'Database' }}</label>
+            <label class="label">{{ form.dbType === 'oracle' ? 'Service Name' : 'Database (nome)' }}</label>
             <input v-model="form.dbName" class="input" type="text" />
           </div>
           <div>

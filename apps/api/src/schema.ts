@@ -208,11 +208,108 @@ const loadSchemaFromOracle = async (adapter: DbAdapter): Promise<TableInfo[]> =>
   return Array.from(tablesByFullName.values());
 };
 
+// ================== MySQL Schema ==================
+
+type MySQLTableRow = { TABLE_SCHEMA: string; TABLE_NAME: string; TABLE_TYPE: string };
+type MySQLColumnRow = { TABLE_SCHEMA: string; TABLE_NAME: string; COLUMN_NAME: string; DATA_TYPE: string };
+type MySQLPkRow = { TABLE_SCHEMA: string; TABLE_NAME: string; COLUMN_NAME: string };
+type MySQLFkRow = { TABLE_SCHEMA: string; TABLE_NAME: string; COLUMN_NAME: string; REFERENCED_TABLE_SCHEMA: string; REFERENCED_TABLE_NAME: string; REFERENCED_COLUMN_NAME: string };
+
+const loadSchemaFromMySQL = async (adapter: DbAdapter): Promise<TableInfo[]> => {
+  const tablesResult = await adapter.query<MySQLTableRow>(`
+    SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE
+    FROM INFORMATION_SCHEMA.TABLES
+    WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_TYPE IN ('BASE TABLE', 'VIEW')
+  `);
+
+  let objectCounter = 1;
+  const tablesByFullName = new Map<string, TableInfo>();
+  for (const row of tablesResult.recordset) {
+    const fullName = `${row.TABLE_SCHEMA}.${row.TABLE_NAME}`;
+    const objectType = row.TABLE_TYPE === "VIEW" ? "V" as const : "U" as const;
+    tablesByFullName.set(fullName, {
+      schema: row.TABLE_SCHEMA,
+      name: row.TABLE_NAME,
+      fullName,
+      objectId: objectCounter++,
+      columns: [],
+      primaryKey: [],
+      foreignKeys: [],
+      tags: tagForTable(row.TABLE_NAME, objectType)
+    });
+  }
+
+  const columnsResult = await adapter.query<MySQLColumnRow>(`
+    SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+    ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION
+  `);
+
+  for (const row of columnsResult.recordset) {
+    const fullName = `${row.TABLE_SCHEMA}.${row.TABLE_NAME}`;
+    const table = tablesByFullName.get(fullName);
+    if (!table) continue;
+    table.columns.push({ name: row.COLUMN_NAME, type: row.DATA_TYPE });
+  }
+
+  const pkResult = await adapter.query<MySQLPkRow>(`
+    SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.COLUMN_NAME
+    FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+    JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+      ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+      AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA
+      AND tc.TABLE_NAME = kcu.TABLE_NAME
+    WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+    AND tc.TABLE_SCHEMA = DATABASE()
+  `);
+
+  for (const row of pkResult.recordset) {
+    const fullName = `${row.TABLE_SCHEMA}.${row.TABLE_NAME}`;
+    const table = tablesByFullName.get(fullName);
+    if (!table) continue;
+    table.primaryKey.push(row.COLUMN_NAME);
+  }
+
+  const fkResult = await adapter.query<MySQLFkRow>(`
+    SELECT
+      kcu.TABLE_SCHEMA,
+      kcu.TABLE_NAME,
+      kcu.COLUMN_NAME,
+      kcu.REFERENCED_TABLE_SCHEMA,
+      kcu.REFERENCED_TABLE_NAME,
+      kcu.REFERENCED_COLUMN_NAME
+    FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+    WHERE kcu.REFERENCED_TABLE_NAME IS NOT NULL
+    AND kcu.TABLE_SCHEMA = DATABASE()
+  `);
+
+  for (const row of fkResult.recordset) {
+    const fullName = `${row.TABLE_SCHEMA}.${row.TABLE_NAME}`;
+    const table = tablesByFullName.get(fullName);
+    if (!table) continue;
+
+    const refFullName = `${row.REFERENCED_TABLE_SCHEMA}.${row.REFERENCED_TABLE_NAME}`;
+    table.foreignKeys.push({
+      fromTable: fullName,
+      fromColumn: row.COLUMN_NAME,
+      toTable: refFullName,
+      toColumn: row.REFERENCED_COLUMN_NAME
+    });
+  }
+
+  return Array.from(tablesByFullName.values());
+};
+
 // ================== Unified ==================
 
 export const loadSchema = async (adapter: DbAdapter): Promise<TableInfo[]> => {
   if (adapter.getDbType() === "oracle") {
     return loadSchemaFromOracle(adapter);
+  }
+  if (adapter.getDbType() === "mysql") {
+    return loadSchemaFromMySQL(adapter);
   }
   return loadSchemaFromSqlServer(adapter);
 };

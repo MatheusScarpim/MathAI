@@ -153,12 +153,77 @@ const validateOracle = (
   return { ok: true };
 };
 
+const extractLimitMySQL = (sql: string): number | null => {
+  const match = sql.match(/limit\s+(\d+)/i);
+  return match?.[1] ? Number.parseInt(match[1], 10) : null;
+};
+
+const validateMySQL = (
+  sql: string
+): { ok: true } | { ok: false; error: AskErrorResponse } => {
+  const trimmed = sql.trim();
+
+  if (!trimmed) {
+    return { ok: false, error: { errorMessage: "SQL vazio retornado pela IA." } };
+  }
+
+  if (!/^(with|select)\b/i.test(trimmed)) {
+    return {
+      ok: false,
+      error: { sql, errorMessage: "A query precisa iniciar com SELECT ou WITH." }
+    };
+  }
+
+  const forbidden = hasForbiddenKeyword(trimmed);
+  if (forbidden) {
+    return {
+      ok: false,
+      error: { sql, errorMessage: `Keyword proibida detectada: ${forbidden}.` }
+    };
+  }
+
+  const semicolonIndex = trimmed.indexOf(";");
+  if (semicolonIndex !== -1 && semicolonIndex < trimmed.length - 1) {
+    return {
+      ok: false,
+      error: { sql, errorMessage: "Somente uma query eh permitida." }
+    };
+  }
+
+  if (/select\s+\*/i.test(trimmed)) {
+    return {
+      ok: false,
+      error: { sql, errorMessage: "SELECT * nao eh permitido." }
+    };
+  }
+
+  const limitValue = extractLimitMySQL(trimmed);
+  if (!limitValue) {
+    return {
+      ok: false,
+      error: { sql, errorMessage: "A query precisa ter LIMIT n." }
+    };
+  }
+
+  if (limitValue > 500) {
+    return {
+      ok: false,
+      error: { sql, errorMessage: "LIMIT maior que 500 nao eh permitido." }
+    };
+  }
+
+  return { ok: true };
+};
+
 export const validateSql = (
   sql: string,
   dbType: DbType = "sqlserver"
 ): { ok: true } | { ok: false; error: AskErrorResponse } => {
   if (dbType === "oracle") {
     return validateOracle(sql);
+  }
+  if (dbType === "mysql") {
+    return validateMySQL(sql);
   }
   return validateSqlServer(sql);
 };

@@ -469,7 +469,7 @@ app.get("/api/config", async (_request, reply) => {
 
 app.post("/api/config/test-db", async (request, reply) => {
   const body = request.body as SaveConfigBody;
-  if (body.dbType !== "sqlserver" && body.dbType !== "oracle") {
+  if (body.dbType !== "sqlserver" && body.dbType !== "oracle" && body.dbType !== "mysql") {
     reply.status(400).send({ errorMessage: "dbType invalido." });
     return;
   }
@@ -520,7 +520,7 @@ app.post("/api/config", async (request, reply) => {
     reply.status(400).send({ errorMessage: "openAiApiKey obrigatoria." });
     return;
   }
-  if (body.dbType !== "sqlserver" && body.dbType !== "oracle") {
+  if (body.dbType !== "sqlserver" && body.dbType !== "oracle" && body.dbType !== "mysql") {
     reply.status(400).send({ errorMessage: "dbType invalido." });
     return;
   }

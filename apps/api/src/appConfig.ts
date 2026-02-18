@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "crypt
 import { getMongoClient } from "./mongo.js";
 import { config } from "./config.js";
 
-export type DbType = "sqlserver" | "oracle";
+export type DbType = "sqlserver" | "oracle" | "mysql";
 
 export type AppConfig = {
   openAiApiKey: string;
