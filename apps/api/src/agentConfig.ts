@@ -62,8 +62,10 @@ export const getAgentsConfig = async (): Promise<AgentsConfig> => {
         translation: { ...DEFAULT_AGENTS_CONFIG.translation, ...stored.translation },
         chart: { ...DEFAULT_AGENTS_CONFIG.chart, ...stored.chart },
         embedding: { ...DEFAULT_AGENTS_CONFIG.embedding, ...stored.embedding },
-        planner: { ...DEFAULT_AGENTS_CONFIG.planner, ...stored.planner }
-      };
+        planner: stored.planner
+          ? { ...DEFAULT_AGENTS_CONFIG.planner!, ...stored.planner }
+          : DEFAULT_AGENTS_CONFIG.planner
+      } as AgentsConfig;
     } else {
       cachedConfig = { ...DEFAULT_AGENTS_CONFIG };
     }
@@ -71,7 +73,7 @@ export const getAgentsConfig = async (): Promise<AgentsConfig> => {
     cachedConfig = { ...DEFAULT_AGENTS_CONFIG };
   }
 
-  return cachedConfig;
+  return cachedConfig!;
 };
 
 export const saveAgentsConfig = async (config: AgentsConfig): Promise<void> => {

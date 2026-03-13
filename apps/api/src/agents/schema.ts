@@ -292,7 +292,7 @@ export const rerankTablesWithLLM = async (
   for (const idx of indices) {
     if (seen.has(idx)) continue;
     seen.add(idx);
-    result.push(candidates[idx]);
+    result.push(candidates[idx]!);
     if (result.length >= topN) break;
   }
 
