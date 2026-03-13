@@ -32,6 +32,11 @@ export const DEFAULT_AGENTS_CONFIG: AgentsConfig = {
   },
   embedding: {
     model: "text-embedding-3-small"
+  },
+  planner: {
+    model: "gpt-5-mini",
+    temperature: 0,
+    enabled: true
   }
 };
 
@@ -56,7 +61,8 @@ export const getAgentsConfig = async (): Promise<AgentsConfig> => {
         summary: { ...DEFAULT_AGENTS_CONFIG.summary, ...stored.summary },
         translation: { ...DEFAULT_AGENTS_CONFIG.translation, ...stored.translation },
         chart: { ...DEFAULT_AGENTS_CONFIG.chart, ...stored.chart },
-        embedding: { ...DEFAULT_AGENTS_CONFIG.embedding, ...stored.embedding }
+        embedding: { ...DEFAULT_AGENTS_CONFIG.embedding, ...stored.embedding },
+        planner: { ...DEFAULT_AGENTS_CONFIG.planner, ...stored.planner }
       };
     } else {
       cachedConfig = { ...DEFAULT_AGENTS_CONFIG };

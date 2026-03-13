@@ -218,6 +218,7 @@ export type AgentsConfig = {
   translation: AgentConfig;
   chart: AgentConfig;
   embedding: EmbeddingAgentConfig;
+  planner?: AgentConfig;
 };
 
 export const sanitizeErrorMessage = (message: string): string => {

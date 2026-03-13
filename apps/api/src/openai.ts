@@ -26,6 +26,9 @@ export const getChartModel = async (): Promise<string> =>
 export const getEmbeddingModel = async (): Promise<string> =>
   (await getAgentsConfig()).embedding.model;
 
+export const getPlannerModel = async (): Promise<string> =>
+  (await getAgentsConfig()).planner?.model ?? SQL_MODEL_MINI;
+
 let cachedClient: OpenAI | null = null;
 let cachedKey: string | null = null;
 

@@ -194,4 +194,5 @@ export interface AgentsConfig {
   translation: AgentConfig
   chart: AgentConfig
   embedding: EmbeddingAgentConfig
+  planner?: AgentConfig
 }

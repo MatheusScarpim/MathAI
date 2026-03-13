@@ -159,6 +159,32 @@
           </article>
 
           <article class="agent-card">
+            <h3>Planner</h3>
+            <p>Decomp&#245;e perguntas complexas em sub-consultas independentes.</p>
+
+            <label>
+              Modelo
+              <input v-model="plannerModel" type="text" placeholder="gpt-5-mini" />
+            </label>
+
+            <label>
+              Temperatura
+              <input
+                v-model.number="plannerTemperature"
+                type="number"
+                min="0"
+                max="2"
+                step="0.1"
+              />
+            </label>
+
+            <label class="toggle-line">
+              <input v-model="plannerEnabled" type="checkbox" />
+              <span>Ativado</span>
+            </label>
+          </article>
+
+          <article class="agent-card">
             <h3>Embedding</h3>
             <p>Gera embeddings para busca semantica de contexto e schema.</p>
 
@@ -227,6 +253,9 @@ const resetMessage = ref('')
 const resetMessageType = ref<'ok' | 'error'>('ok')
 
 const httpTemperatureInput = ref('')
+const plannerModel = ref('gpt-5-mini')
+const plannerTemperature = ref(0)
+const plannerEnabled = ref(true)
 
 const cloneAgentsConfig = (config: AgentsConfig): AgentsConfig => ({
   sql: { ...config.sql },
@@ -234,7 +263,8 @@ const cloneAgentsConfig = (config: AgentsConfig): AgentsConfig => ({
   summary: { ...config.summary },
   translation: { ...config.translation },
   chart: { ...config.chart },
-  embedding: { ...config.embedding }
+  embedding: { ...config.embedding },
+  planner: config.planner ? { ...config.planner } : undefined
 })
 
 const clampTemperature = (value: number): number => Math.max(0, Math.min(2, value))
@@ -263,6 +293,9 @@ const applyAgentsConfig = (config: AgentsConfig): void => {
     typeof config.http.temperature === 'number' && Number.isFinite(config.http.temperature)
       ? String(config.http.temperature)
       : ''
+  plannerModel.value = config.planner?.model ?? 'gpt-5-mini'
+  plannerTemperature.value = config.planner?.temperature ?? 0
+  plannerEnabled.value = config.planner?.enabled !== false
 }
 
 const loadAgentsConfig = async (): Promise<void> => {
@@ -311,6 +344,11 @@ const buildPayload = (config: AgentsConfig): AgentsConfig => ({
   },
   embedding: {
     model: config.embedding.model.trim()
+  },
+  planner: {
+    model: plannerModel.value.trim() || 'gpt-5-mini',
+    temperature: parseRequiredTemperature(plannerTemperature.value, 0),
+    enabled: plannerEnabled.value
   }
 })
 

@@ -22,8 +22,9 @@ import { answerQuestionApi } from "./askApi.js";
 
 // Import agents
 import { translateText, buildStandaloneQuestion } from "./agents/translation.js";
-import { expandTables, searchRelevantTables, generateEmbedding, buildEmbeddingInput } from "./agents/schema.js";
+import { expandTables, searchRelevantTables, generateEmbedding, buildEmbeddingInput, estimateQueryComplexity } from "./agents/schema.js";
 import { buildPrompt, generateSql, generateCorrectedSql, classifyError, reflectOnError } from "./agents/sql.js";
+import { decomposeQuestion, combineSubQueries, type DecompositionPlan } from "./agents/planner.js";
 import { summarizeResult, extractYearFromSql } from "./agents/summary.js";
 import { inferChart, inferChartWithLLM } from "./agents/chart.js";
 import { getAgentsConfig } from "./agentConfig.js";
@@ -617,8 +618,9 @@ export const answerQuestion = async (
     };
   }
 
-  // Step 7: Expand tables context (SchemaAgent)
-  const context = await expandTables(initialTables);
+  // Step 7: Expand tables context (SchemaAgent) — dynamic hops based on question complexity
+  const hops = estimateQueryComplexity(embeddingQuestion, initialTables.length);
+  const context = await expandTables(initialTables, hops);
   const rawPeriod = findPeriodInText(schemaQuestion) ?? {};
   const currentPeriodText = formatPeriodText(rawPeriod, resolvedSchemaLanguage);
   const historySnippet = currentPeriodText ? null : await buildHistorySnippet(resolvedChatId, resolvedSchemaLanguage);
@@ -651,7 +653,18 @@ export const answerQuestion = async (
     });
   }
 
-  // Step 10: SQL Generation Loop (SQLAgent) with Self-Correction Feedback Loop
+  // Step 10: Query Decomposition (PlannerAgent)
+  emit?.("step", { step: "planning", label: "Analisando complexidade da pergunta..." });
+  let decompositionPlan: DecompositionPlan | null = null;
+  let plannerUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } = {};
+  try {
+    decompositionPlan = await decomposeQuestion(schemaQuestion, context, resolvedSchemaLanguage, dbType);
+    if (decompositionPlan.usage) plannerUsage = decompositionPlan.usage;
+  } catch {
+    decompositionPlan = null;
+  }
+
+  // Step 11: SQL Generation Loop (SQLAgent) with Self-Correction Feedback Loop
   emit?.("step", { step: "generating_sql", label: "Gerando SQL..." });
   const maxAttempts = agentsCfg.sql.maxRetries ?? 3;
   let lastError: string | null = null;
@@ -671,6 +684,134 @@ export const answerQuestion = async (
     };
   };
 
+  // Include planner tokens in SQL usage tracking
+  accumulateUsage(plannerUsage);
+
+  // ── Decomposed query path: generate SQL for each sub-question, then combine ──
+  if (decompositionPlan?.needsDecomposition && decompositionPlan.subQuestions.length >= 2) {
+    emit?.("step", { step: "decomposing", label: `Decompondo em ${decompositionPlan.subQuestions.length} sub-consultas...` });
+
+    const subSqls: Array<{ id: string; sql: string; question: string }> = [];
+    let decompositionFailed = false;
+
+    for (const subQ of decompositionPlan.subQuestions) {
+      const subPrompt = buildPrompt(subQ.question, context, null, fewShotExamples, null, null, resolvedSchemaLanguage, currentPeriodText);
+      const subPromptWithPeriod = periodHint
+        ? `${subPrompt}\n\n${resolvedSchemaLanguage === "en" ? `Fixed period from chat history: ${periodHint}` : resolvedSchemaLanguage === "es" ? `Periodo fijo del historial del chat: ${periodHint}` : `Periodo fixo do historico do chat: ${periodHint}`}`
+        : subPrompt;
+
+      emit?.("step", { step: "generating_sub_sql", label: `Gerando SQL: ${subQ.focus}...` });
+      const subResult = await generateSql(subPromptWithPeriod, instructionText, resolvedSchemaLanguage, dbType, false, false);
+      accumulateUsage(subResult.usage);
+
+      const subValidation = validateSql(subResult.sql, dbType);
+      if (!subValidation.ok) {
+        decompositionFailed = true;
+        if (shouldLogPrompts()) console.info(`[planner] Sub-query ${subQ.id} validation failed, falling back to single query`);
+        break;
+      }
+      subSqls.push({ id: subQ.id, sql: subResult.sql, question: subQ.question });
+    }
+
+    if (!decompositionFailed && subSqls.length === decompositionPlan.subQuestions.length) {
+      emit?.("step", { step: "combining_sql", label: "Combinando sub-consultas..." });
+      try {
+        const combined = await combineSubQueries(decompositionPlan, subSqls, resolvedSchemaLanguage, dbType, instructionText);
+        accumulateUsage(combined.usage);
+
+        const combinedValidation = validateSql(combined.sql, dbType);
+        if (combinedValidation.ok) {
+          const sql = combined.sql;
+          emit?.("sql", { sql });
+
+          emit?.("step", { step: "executing_query", label: "Executando query combinada..." });
+          const start = Date.now();
+          const queryResult = await adapter.query(sql);
+          const elapsedMs = Date.now() - start;
+          const rowCount = queryResult.recordset?.length ?? 0;
+          const columns = queryResult.columns;
+          emit?.("rows", { rows: queryResult.recordset ?? [], columns, elapsedMs });
+
+          emit?.("step", { step: "summarizing", label: "Gerando resumo..." });
+          const chartEnabled2 = agentsCfg.chart.enabled !== false;
+          const summaryEnabled2 = agentsCfg.summary.enabled !== false;
+          const parallelTasks2: [Promise<unknown>, Promise<unknown>] = [
+            chartEnabled2
+              ? inferChartWithLLM(displayQuestion, queryResult.recordset ?? [], columns, resolvedResponseLanguage)
+              : Promise.resolve(undefined),
+            summaryEnabled2
+              ? summarizeResult(schemaQuestion, sql, columns, queryResult.recordset ?? [], resolvedSchemaLanguage)
+              : Promise.resolve({ summary: undefined, usage: undefined })
+          ];
+          const [chartResult, summaryResultSettled] = await Promise.allSettled(parallelTasks2);
+
+          let chart = chartEnabled2
+            ? (chartResult.status === "fulfilled"
+                ? (chartResult.value as AskSuccessResponse["chart"])
+                : inferChart(queryResult.recordset ?? [], columns, displayQuestion))
+            : undefined;
+
+          let summary: string | undefined;
+          if (summaryEnabled2 && summaryResultSettled.status === "fulfilled") {
+            const settled = summaryResultSettled.value as { summary?: string; usage?: typeof summaryUsage };
+            summary = settled.summary;
+            if (settled.usage) {
+              summaryUsage = {
+                prompt_tokens: (summaryUsage.prompt_tokens ?? 0) + (settled.usage.prompt_tokens ?? 0),
+                completion_tokens: (summaryUsage.completion_tokens ?? 0) + (settled.usage.completion_tokens ?? 0),
+                total_tokens: (summaryUsage.total_tokens ?? 0) + (settled.usage.total_tokens ?? 0)
+              };
+            }
+          }
+
+          if (summary && resolvedSchemaLanguage !== resolvedResponseLanguage && agentsCfg.translation.enabled !== false) {
+            try {
+              summary = await translateText(summary, resolvedResponseLanguage, "summary");
+            } catch { /* keep original */ }
+          }
+
+          const historyCollection = await getHistoryCollection();
+          const historyResult = await historyCollection.insertOne({
+            question: normalizedQuestion, embeddingQuestion, sql,
+            rows: queryResult.recordset ?? [], columns, chart, summary,
+            createdAt: new Date(), favorite: false, tags: [], chatId: resolvedChatId,
+            language: resolvedSchemaLanguage, responseLanguage: resolvedResponseLanguage,
+            success: true, elapsedMs, rowCount, embedding: vector
+          });
+
+          const responseData: AskSuccessResponse = {
+            sql, rows: queryResult.recordset ?? [], columns, elapsedMs,
+            chatId: resolvedChatId, historyId: historyResult.insertedId.toString(),
+            summary, cacheHit: false, chart, responseLanguage: resolvedResponseLanguage,
+            translatedQuestion: schemaQuestion,
+            tokenUsage: {
+              sql: { inputTokens: sqlUsage.prompt_tokens ?? 0, outputTokens: sqlUsage.completion_tokens ?? 0, totalTokens: sqlUsage.total_tokens ?? 0 },
+              summary: summaryUsage.total_tokens ? { inputTokens: summaryUsage.prompt_tokens ?? 0, outputTokens: summaryUsage.completion_tokens ?? 0, totalTokens: summaryUsage.total_tokens ?? 0 } : undefined,
+              total: { inputTokens: (sqlUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0), outputTokens: (sqlUsage.completion_tokens ?? 0) + (summaryUsage.completion_tokens ?? 0), totalTokens: (sqlUsage.total_tokens ?? 0) + (summaryUsage.total_tokens ?? 0) }
+            }
+          };
+          await setCachedValue(cacheKey, responseData);
+          await setSemanticEntry(resolvedChatId, resolvedResponseLanguage, resolvedSchemaLanguage, { embedding: vector, sql, question: normalizedQuestion, createdAt: new Date().toISOString() });
+
+          if (shouldLogPrompts()) {
+            const totalIn = (sqlUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0);
+            const totalOut = (sqlUsage.completion_tokens ?? 0) + (summaryUsage.completion_tokens ?? 0);
+            console.info(`[tokens] === TOTAL REQUEST (decomposed) === | input=${totalIn} output=${totalOut} total=${totalIn + totalOut}`);
+          }
+
+          return { ok: true, data: responseData };
+        }
+      } catch (error) {
+        if (shouldLogPrompts()) console.info(`[planner] Combined query failed: ${(error as { message?: string })?.message}, falling back to single query`);
+      }
+    }
+
+    // If decomposition failed at any point, fall back to single query flow
+    if (shouldLogPrompts()) console.info("[planner] Falling back to single query generation");
+    emit?.("step", { step: "generating_sql", label: "Gerando SQL (fallback)..." });
+  }
+
+  // ── Standard single-query path (also used as fallback from decomposition) ──
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const isRetry = attempt > 0 && lastClassifiedError && lastReflection && lastSql;
 
