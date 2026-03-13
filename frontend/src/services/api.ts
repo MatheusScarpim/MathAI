@@ -10,7 +10,9 @@ import type {
   SaveAppConfigPayload,
   TableReferenceCountSetting,
   ResetEnvironmentResponse,
-  AgentsConfig
+  AgentsConfig,
+  AppMode,
+  EndpointInfo
 } from '../types'
 
 const API_BASE = '/api'
@@ -203,5 +205,41 @@ export const api = {
 
   async deleteInstruction(id: string): Promise<{ ok: boolean }> {
     return request(`/instructions/${id}`, { method: 'DELETE' })
+  },
+
+  // Mode
+  async getMode(): Promise<{ mode: AppMode }> {
+    return request('/config/mode')
+  },
+
+  // API mode
+  async testApiConnection(payload: {
+    apiBaseUrl: string
+    apiAuthType: string
+    apiAuthToken?: string
+    apiAuthApiKeyHeader?: string
+    apiAuthApiKeyValue?: string
+    apiAuthUsername?: string
+    apiAuthPassword?: string
+  }): Promise<{ ok: boolean }> {
+    return request('/config/test-api', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+  },
+
+  async ingestSwagger(payload: { url?: string; content?: string }): Promise<{ endpointsIndexed: number }> {
+    return request('/ingest/swagger', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+  },
+
+  async getEndpoints(): Promise<{ endpoints: EndpointInfo[] }> {
+    return request('/schema/endpoints')
+  },
+
+  async clearEndpoints(): Promise<{ ok: boolean }> {
+    return request('/schema/endpoints/clear', { method: 'POST' })
   }
 }

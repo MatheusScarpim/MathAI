@@ -33,3 +33,26 @@ export const clearSchemaCollection = async (): Promise<void> => {
   if (!exists) return;
   await qdrant.deleteCollection("schema_chunks");
 };
+
+/* ── Endpoint collection (API mode) ──────────────────────── */
+
+export const ensureEndpointCollection = async (): Promise<void> => {
+  const collections = await qdrant.getCollections();
+  const exists = collections.collections.some((c) => c.name === "endpoint_chunks");
+  if (exists) return;
+
+  const vectorSize = VECTOR_SIZE_BY_MODEL[EMBEDDING_MODEL] ?? 1536;
+  await qdrant.createCollection("endpoint_chunks", {
+    vectors: {
+      size: vectorSize,
+      distance: "Cosine"
+    }
+  });
+};
+
+export const clearEndpointCollection = async (): Promise<void> => {
+  const collections = await qdrant.getCollections();
+  const exists = collections.collections.some((c) => c.name === "endpoint_chunks");
+  if (!exists) return;
+  await qdrant.deleteCollection("endpoint_chunks");
+};

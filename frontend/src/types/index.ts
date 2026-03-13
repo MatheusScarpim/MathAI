@@ -1,8 +1,25 @@
+export type AppMode = 'database' | 'api'
+export type ApiAuthType = 'none' | 'bearer' | 'apikey' | 'basic'
+
+export interface EndpointInfo {
+  operationId: string
+  method: string
+  path: string
+  summary?: string
+  description?: string
+  parameters: { name: string; in: string; required: boolean; type: string; description?: string }[]
+  requestBodySchema?: string
+  responseSchema?: string
+  tags: string[]
+}
+
 export interface HistoryRecord {
   id: string
   chatId?: string
   question: string
   sql: string
+  httpRequest?: string
+  mode?: AppMode
   summary?: string
   language?: 'pt' | 'en' | 'es'
   responseLanguage?: 'pt' | 'en' | 'es'
@@ -34,6 +51,8 @@ export interface AskResponse {
   ok: boolean
   data?: {
     sql: string
+    httpRequest?: string
+    mode?: AppMode
     rows: Record<string, unknown>[]
     columns: string[]
     elapsedMs: number
@@ -100,22 +119,38 @@ export interface ConfigStatusResponse {
 }
 
 export interface AppConfigView {
-  dbType: DbType
-  dbHost: string
-  dbPort: number
-  dbName: string
-  dbUser: string
+  mode: AppMode
+  dbType?: DbType
+  dbHost?: string
+  dbPort?: number
+  dbName?: string
+  dbUser?: string
   openAiKeySet: boolean
+  apiBaseUrl?: string
+  apiAuthType?: ApiAuthType
+  apiReadOnly?: boolean
+  swaggerUrl?: string
 }
 
 export interface SaveAppConfigPayload {
   openAiApiKey: string
-  dbType: DbType
-  dbHost: string
-  dbPort: number
-  dbName: string
-  dbUser: string
-  dbPassword: string
+  mode: AppMode
+  dbType?: DbType
+  dbHost?: string
+  dbPort?: number
+  dbName?: string
+  dbUser?: string
+  dbPassword?: string
+  apiBaseUrl?: string
+  apiAuthType?: ApiAuthType
+  apiAuthToken?: string
+  apiAuthApiKeyHeader?: string
+  apiAuthApiKeyValue?: string
+  apiAuthUsername?: string
+  apiAuthPassword?: string
+  apiReadOnly?: boolean
+  swaggerUrl?: string
+  swaggerContent?: string
 }
 
 export interface TableReferenceCountSetting {
@@ -148,8 +183,13 @@ export interface EmbeddingAgentConfig {
   model: string
 }
 
+export interface HttpAgentConfig extends AgentConfig {
+  maxRetries: number
+}
+
 export interface AgentsConfig {
   sql: SqlAgentConfig
+  http: HttpAgentConfig
   summary: AgentConfig
   translation: AgentConfig
   chart: AgentConfig

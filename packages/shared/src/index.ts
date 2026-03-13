@@ -1,3 +1,64 @@
+/* ── Mode & Auth ─────────────────────────────────────────── */
+
+export type AppMode = "database" | "api";
+
+export type ApiAuthType = "none" | "bearer" | "apikey" | "basic";
+
+export type ApiAuthConfig = {
+  type: ApiAuthType;
+  token?: string;
+  apiKeyHeader?: string;
+  apiKeyValue?: string;
+  username?: string;
+  password?: string;
+};
+
+/* ── Endpoint types (API mode) ───────────────────────────── */
+
+export type EndpointParameter = {
+  name: string;
+  in: "query" | "path" | "header" | "cookie";
+  required: boolean;
+  type: string;
+  description?: string;
+};
+
+export type EndpointChunk = {
+  operationId: string;
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  path: string;
+  summary?: string;
+  description?: string;
+  parameters: EndpointParameter[];
+  requestBodySchema?: string;
+  responseSchema?: string;
+  tags: string[];
+};
+
+export type HttpRequestStep = {
+  stepIndex: number;
+  method: string;
+  url: string;
+  headers?: Record<string, string>;
+  queryParams?: Record<string, string>;
+  body?: unknown;
+  description: string;
+  dependsOn?: number;
+  extractFrom?: string;
+};
+
+export type HttpRequestPlan = {
+  steps: HttpRequestStep[];
+};
+
+/* ── HTTP Agent config ───────────────────────────────────── */
+
+export type HttpAgentConfig = AgentConfig & {
+  maxRetries: number;
+};
+
+/* ── Ask ─────────────────────────────────────────────────── */
+
 export type AskRequest = {
   question: string;
   chatId?: string;
@@ -19,6 +80,8 @@ export type AskSuccessResponse = {
   translatedQuestion?: string;
   cacheHit?: boolean;
   responseLanguage?: "pt" | "en" | "es";
+  mode?: AppMode;
+  httpRequest?: string;
   chart?: {
     type: "bar" | "line";
     data: Array<{
@@ -53,6 +116,8 @@ export type HistoryItem = {
   chatId?: string;
   question: string;
   sql: string;
+  httpRequest?: string;
+  mode?: AppMode;
   summary?: string;
   createdAt: string;
   favorite: boolean;
@@ -148,6 +213,7 @@ export type EmbeddingAgentConfig = {
 
 export type AgentsConfig = {
   sql: SqlAgentConfig;
+  http: HttpAgentConfig;
   summary: AgentConfig;
   translation: AgentConfig;
   chart: AgentConfig;

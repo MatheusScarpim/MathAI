@@ -2,11 +2,14 @@
   <div class="schema-page">
     <header class="page-header">
       <div>
-        <h1>Tabelas Indexadas</h1>
-        <p>Visualize as tabelas, relacionamentos e adicione instruções específicas</p>
+        <h1>{{ mode === 'api' ? 'Endpoints Indexados' : 'Tabelas Indexadas' }}</h1>
+        <p>{{ mode === 'api'
+          ? 'Visualize os endpoints da API importados do Swagger'
+          : 'Visualize as tabelas, relacionamentos e adicione instruções específicas'
+        }}</p>
       </div>
       <div class="header-actions">
-        <div class="schema-language">
+        <div v-if="mode === 'database'" class="schema-language">
           <label for="schema-language">Idioma do banco</label>
           <select id="schema-language" v-model="schemaLanguage" class="schema-select">
             <option value="pt">Português (PT)</option>
@@ -14,14 +17,14 @@
             <option value="es">Español (ES)</option>
           </select>
         </div>
-        <button class="btn-danger" @click="clearSchema" :disabled="clearing || indexing">
+        <button class="btn-danger" @click="onClear" :disabled="clearing || indexing">
           <svg v-if="!clearing" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
           </svg>
           <span v-else class="spinner"></span>
-          {{ clearing ? 'Zerando...' : 'Zerar esquema' }}
+          {{ clearing ? 'Zerando...' : mode === 'api' ? 'Zerar endpoints' : 'Zerar esquema' }}
         </button>
-        <button class="btn-primary" @click="reindex" :disabled="indexing || clearing">
+        <button class="btn-primary" @click="onReindex" :disabled="indexing || clearing">
           <svg v-if="!indexing" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
             <path d="M3 3v5h5"/>
@@ -29,7 +32,7 @@
             <path d="M16 21h5v-5"/>
           </svg>
           <span v-else class="spinner"></span>
-          {{ indexing ? 'Indexando...' : 'Reindexar esquema' }}
+          {{ indexing ? 'Indexando...' : mode === 'api' ? 'Reindexar endpoints' : 'Reindexar esquema' }}
         </button>
       </div>
     </header>
@@ -51,11 +54,11 @@
     <!-- Loading -->
     <div v-if="loading" class="loading">
       <span class="spinner"></span>
-      Carregando tabelas...
+      {{ mode === 'api' ? 'Carregando endpoints...' : 'Carregando tabelas...' }}
     </div>
 
-    <!-- Empty State -->
-    <div v-else-if="tables.length === 0" class="empty-state">
+    <!-- Empty State (DB mode) -->
+    <div v-else-if="mode === 'database' && tables.length === 0" class="empty-state">
       <div class="empty-icon">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
           <ellipse cx="12" cy="5" rx="9" ry="3"/>
@@ -64,10 +67,90 @@
         </svg>
       </div>
       <h3>Nenhuma tabela indexada</h3>
-      <p>Clique em "Reindexar esquema" para carregar as tabelas do SQL Server.</p>
+      <p>Clique em "Reindexar esquema" para carregar as tabelas do banco.</p>
     </div>
 
-    <!-- Tables List -->
+    <!-- Empty State (API mode) -->
+    <div v-else-if="mode === 'api' && endpoints.length === 0" class="empty-state">
+      <div class="empty-icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+          <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+        </svg>
+      </div>
+      <h3>Nenhum endpoint indexado</h3>
+      <p>Clique em "Reindexar endpoints" para recarregar os endpoints do Swagger.</p>
+    </div>
+
+    <!-- Endpoints List (API mode) -->
+    <div v-else-if="mode === 'api'" class="tables-section">
+      <div class="tables-header">
+        <h2>
+          {{ endpoints.length }} {{ pluralize(endpoints.length, 'endpoint encontrado', 'endpoints encontrados') }}
+        </h2>
+        <input
+          v-model="search"
+          type="text"
+          placeholder="Buscar endpoint..."
+          class="search-input"
+        />
+      </div>
+
+      <div class="tables-list">
+        <div
+          v-for="ep in filteredEndpoints"
+          :key="ep.operationId"
+          class="table-card"
+          :class="{ expanded: expandedTable === ep.operationId }"
+        >
+          <div class="table-header" @click="toggleTable(ep.operationId)">
+            <div class="table-info">
+              <span class="method-badge" :class="ep.method.toLowerCase()">{{ ep.method }}</span>
+              <span class="table-name">{{ ep.path }}</span>
+              <span v-if="ep.summary" class="column-count">{{ ep.summary }}</span>
+            </div>
+            <div class="table-actions">
+              <span v-if="ep.parameters.length" class="fk-badge">
+                {{ ep.parameters.length }} {{ pluralize(ep.parameters.length, 'param', 'params') }}
+              </span>
+              <span v-for="tag in ep.tags" :key="tag" class="instruction-badge">{{ tag }}</span>
+              <svg
+                width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                :class="{ rotated: expandedTable === ep.operationId }"
+              >
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </div>
+          </div>
+
+          <div v-if="expandedTable === ep.operationId" class="table-details">
+            <div v-if="ep.parameters.length" class="detail-section">
+              <h4>Parâmetros</h4>
+              <div class="columns-grid">
+                <div v-for="p in ep.parameters" :key="p.name" class="column-item">
+                  <span class="col-name" :class="{ pk: p.required }">
+                    {{ p.name }}
+                    <span v-if="p.required" style="color: #f87171; font-size: 0.7rem;">(obrigatório)</span>
+                  </span>
+                  <span class="col-type">{{ p.type }} ({{ p.in }})</span>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="ep.requestBodySchema" class="detail-section">
+              <h4>Request Body</h4>
+              <pre class="schema-preview">{{ ep.requestBodySchema }}</pre>
+            </div>
+
+            <div v-if="ep.responseSchema" class="detail-section">
+              <h4>Response Schema</h4>
+              <pre class="schema-preview">{{ ep.responseSchema }}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tables List (DB mode) -->
     <div v-else class="tables-section">
       <div class="tables-header">
         <h2>
@@ -194,9 +277,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, reactive, watch } from 'vue'
 import { api } from '../services/api'
-import type { TableInfo, Instruction } from '../types'
+import type { TableInfo, Instruction, EndpointInfo, AppMode } from '../types'
 
+const mode = ref<AppMode>('database')
 const tables = ref<TableInfo[]>([])
+const endpoints = ref<EndpointInfo[]>([])
 const instructions = ref<Instruction[]>([])
 const loading = ref(true)
 const indexing = ref(false)
@@ -219,11 +304,28 @@ const filteredTables = computed(() => {
   )
 })
 
+const filteredEndpoints = computed(() => {
+  if (!search.value.trim()) return endpoints.value
+  const q = search.value.toLowerCase()
+  return endpoints.value.filter(ep =>
+    ep.path.toLowerCase().includes(q) ||
+    ep.method.toLowerCase().includes(q) ||
+    (ep.summary?.toLowerCase().includes(q) ?? false) ||
+    ep.tags.some(t => t.toLowerCase().includes(q))
+  )
+})
+
 function getTableInstructions(tableFullName: string): Instruction[] {
   return instructions.value.filter(i => i.tableFullName === tableFullName)
 }
 
 onMounted(async () => {
+  try {
+    const res = await api.getMode()
+    mode.value = res.mode
+  } catch {
+    mode.value = 'database'
+  }
   await Promise.all([loadData(), loadSchemaLanguage()])
 })
 
@@ -241,12 +343,21 @@ async function loadData() {
   errorMessage.value = ''
 
   try {
-    const [tablesRes, instructionsRes] = await Promise.all([
-      api.getTables(),
-      api.getInstructions()
-    ])
-    tables.value = tablesRes.tables
-    instructions.value = instructionsRes
+    if (mode.value === 'api') {
+      const [endpointsRes, instructionsRes] = await Promise.all([
+        api.getEndpoints(),
+        api.getInstructions()
+      ])
+      endpoints.value = endpointsRes.endpoints
+      instructions.value = instructionsRes
+    } else {
+      const [tablesRes, instructionsRes] = await Promise.all([
+        api.getTables(),
+        api.getInstructions()
+      ])
+      tables.value = tablesRes.tables
+      instructions.value = instructionsRes
+    }
   } catch (e: any) {
     errorMessage.value = e.message || 'Erro ao carregar dados'
   } finally {
@@ -265,7 +376,7 @@ async function loadSchemaLanguage() {
   }
 }
 
-async function reindex() {
+async function onReindex() {
   if (indexing.value) return
 
   indexing.value = true
@@ -273,32 +384,46 @@ async function reindex() {
   errorMessage.value = ''
 
   try {
-    const res = await api.ingestSchema()
-    successMessage.value = `${res.tablesIndexed} ${pluralize(res.tablesIndexed, 'tabela indexada', 'tabelas indexadas')} com sucesso!`
+    if (mode.value === 'api') {
+      const res = await api.ingestSwagger({})
+      successMessage.value = `${res.endpointsIndexed} ${pluralize(res.endpointsIndexed, 'endpoint indexado', 'endpoints indexados')} com sucesso!`
+    } else {
+      const res = await api.ingestSchema()
+      successMessage.value = `${res.tablesIndexed} ${pluralize(res.tablesIndexed, 'tabela indexada', 'tabelas indexadas')} com sucesso!`
+    }
     await loadData()
   } catch (e: any) {
-    errorMessage.value = e.message || 'Erro ao indexar esquema'
+    errorMessage.value = e.message || 'Erro ao indexar'
   } finally {
     indexing.value = false
   }
 }
 
-async function clearSchema() {
+async function onClear() {
   if (clearing.value) return
-  if (!confirm('Isso vai remover todas as tabelas indexadas. Deseja continuar?')) return
+  const msg = mode.value === 'api'
+    ? 'Isso vai remover todos os endpoints indexados. Deseja continuar?'
+    : 'Isso vai remover todas as tabelas indexadas. Deseja continuar?'
+  if (!confirm(msg)) return
 
   clearing.value = true
   successMessage.value = ''
   errorMessage.value = ''
 
   try {
-    await api.clearSchema()
-    successMessage.value = 'Esquema zerado com sucesso!'
-    tables.value = []
+    if (mode.value === 'api') {
+      await api.clearEndpoints()
+      successMessage.value = 'Endpoints zerados com sucesso!'
+      endpoints.value = []
+    } else {
+      await api.clearSchema()
+      successMessage.value = 'Esquema zerado com sucesso!'
+      tables.value = []
+    }
     expandedTable.value = null
     await loadData()
   } catch (e: any) {
-    errorMessage.value = e.message || 'Erro ao zerar esquema'
+    errorMessage.value = e.message || 'Erro ao zerar'
   } finally {
     clearing.value = false
   }
@@ -847,6 +972,55 @@ function formatDate(dateStr: string): string {
 .btn-add:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.method-badge {
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  font-family: monospace;
+}
+
+.method-badge.get {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+}
+
+.method-badge.post {
+  background: rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+}
+
+.method-badge.put {
+  background: rgba(251, 191, 36, 0.2);
+  color: #fbbf24;
+}
+
+.method-badge.patch {
+  background: rgba(251, 146, 60, 0.2);
+  color: #fb923c;
+}
+
+.method-badge.delete {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+}
+
+.schema-preview {
+  padding: 0.75rem;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.8rem;
+  color: var(--color-gray-300);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  margin: 0;
+  max-height: 200px;
+  overflow-y: auto;
 }
 
 @media (max-width: 768px) {

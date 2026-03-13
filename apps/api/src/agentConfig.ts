@@ -9,6 +9,12 @@ export const DEFAULT_AGENTS_CONFIG: AgentsConfig = {
     maxRetries: 3,
     enabled: true
   },
+  http: {
+    model: "gpt-5",
+    temperature: undefined,
+    maxRetries: 3,
+    enabled: true
+  },
   summary: {
     model: "gpt-4o-mini",
     temperature: 0.2,
@@ -46,6 +52,7 @@ export const getAgentsConfig = async (): Promise<AgentsConfig> => {
       const stored = doc.value as Partial<AgentsConfig>;
       cachedConfig = {
         sql: { ...DEFAULT_AGENTS_CONFIG.sql, ...stored.sql },
+        http: { ...DEFAULT_AGENTS_CONFIG.http, ...stored.http },
         summary: { ...DEFAULT_AGENTS_CONFIG.summary, ...stored.summary },
         translation: { ...DEFAULT_AGENTS_CONFIG.translation, ...stored.translation },
         chart: { ...DEFAULT_AGENTS_CONFIG.chart, ...stored.chart },

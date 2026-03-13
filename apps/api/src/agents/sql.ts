@@ -11,6 +11,97 @@ type FewShotExample = {
   similarity: number;
 };
 
+// ============== ERROR CLASSIFICATION ==============
+
+export type ErrorCategory =
+  | "column_not_found"
+  | "type_mismatch"
+  | "syntax_error"
+  | "timeout"
+  | "table_not_found"
+  | "ambiguous_column"
+  | "aggregation_error"
+  | "join_error"
+  | "permission_denied"
+  | "validation_error"
+  | "unknown";
+
+export type ClassifiedError = {
+  category: ErrorCategory;
+  originalMessage: string;
+  hint: string;
+};
+
+const errorPatterns: Array<{ pattern: RegExp; category: ErrorCategory; hint: string }> = [
+  {
+    pattern: /invalid column name|column .+ (not found|does not exist|nao existe)|unknown column|ORA-00904/i,
+    category: "column_not_found",
+    hint: "A coluna referenciada nao existe na tabela. Verifique os nomes exatos das colunas no schema fornecido e use apenas colunas listadas."
+  },
+  {
+    pattern: /invalid object name|table .+ (not found|does not exist|nao existe)|relation .+ does not exist|ORA-00942/i,
+    category: "table_not_found",
+    hint: "A tabela referenciada nao existe. Use apenas tabelas listadas no schema fornecido, com schema e nome completos (ex: dbo.NomeTabela)."
+  },
+  {
+    pattern: /conversion failed|cannot convert|type mismatch|incompatible|operand type clash|ORA-01722|ORA-01858/i,
+    category: "type_mismatch",
+    hint: "Ha incompatibilidade de tipos. Verifique os tipos das colunas no schema e use CAST/CONVERT quando necessario. Datas devem usar o formato correto do banco."
+  },
+  {
+    pattern: /syntax error|incorrect syntax|unexpected token|ORA-00933|ORA-00936|parse error/i,
+    category: "syntax_error",
+    hint: "Erro de sintaxe SQL. Revise a estrutura da query: parenteses, virgulas, palavras-chave e clausulas obrigatorias."
+  },
+  {
+    pattern: /timeout|timed out|execution time|ORA-01013|wait timeout/i,
+    category: "timeout",
+    hint: "A query excedeu o tempo limite. Simplifique: reduza JOINs, adicione filtros mais restritivos, evite subqueries correlacionadas e use TOP/LIMIT menor."
+  },
+  {
+    pattern: /ambiguous column|ambiguous .+ reference|ORA-00918/i,
+    category: "ambiguous_column",
+    hint: "Coluna ambigua encontrada. Quando usar JOINs, qualifique todas as colunas com o alias da tabela (ex: t1.coluna, t2.coluna)."
+  },
+  {
+    pattern: /not .+ in .+ aggregate|not contained in .+ group by|aggregate function|ORA-00937|ORA-00979/i,
+    category: "aggregation_error",
+    hint: "Erro de agregacao. Toda coluna no SELECT que nao esta em uma funcao de agregacao (SUM, COUNT, etc.) precisa estar no GROUP BY."
+  },
+  {
+    pattern: /multi-part identifier .+ could not be bound|join .+ failed|cannot resolve|ORA-00905/i,
+    category: "join_error",
+    hint: "Erro no JOIN. Verifique se as tabelas e colunas de juncao existem no schema e se os aliases estao corretos."
+  },
+  {
+    pattern: /permission denied|access denied|ORA-01031|unauthorized/i,
+    category: "permission_denied",
+    hint: "Sem permissao para acessar o objeto. Tente usar tabelas/views alternativas do schema fornecido."
+  }
+];
+
+export const classifyError = (errorMessage: string, isValidationError: boolean = false): ClassifiedError => {
+  if (isValidationError) {
+    return {
+      category: "validation_error",
+      originalMessage: errorMessage,
+      hint: "O SQL gerado violou regras de validacao. Releia as regras: apenas SELECT/WITH, sem SELECT *, com limitacao de linhas (TOP/LIMIT/FETCH), sem keywords proibidas."
+    };
+  }
+
+  for (const { pattern, category, hint } of errorPatterns) {
+    if (pattern.test(errorMessage)) {
+      return { category, originalMessage: errorMessage, hint };
+    }
+  }
+
+  return {
+    category: "unknown",
+    originalMessage: errorMessage,
+    hint: "Analise a mensagem de erro com cuidado e tente uma abordagem diferente para a query."
+  };
+};
+
 const shouldLogPrompts = (): boolean => {
   const flag = process.env.LOG_PROMPTS?.toLowerCase();
   return flag === "1" || flag === "true" || flag === "yes";
@@ -218,6 +309,119 @@ const stripSql = (value: string): string => {
   return trimmed.replace(/```sql/gi, "```").replace(/```/g, "").trim();
 };
 
+// ============== SELF-REFLECTION ==============
+
+export const reflectOnError = async (
+  failedSql: string,
+  error: ClassifiedError,
+  question: string,
+  language: "pt" | "en" | "es"
+): Promise<{ reflection: string; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } }> => {
+  const client = await getOpenAI();
+  const model = await getSqlModelMini();
+
+  const systemPrompts: Record<"pt" | "en" | "es", string> = {
+    pt: "Voce e um analista de SQL. Sua tarefa e explicar de forma concisa (maximo 3 frases) por que o SQL abaixo falhou e o que precisa mudar para corrigir. Nao gere SQL, apenas a analise.",
+    en: "You are a SQL analyst. Your task is to concisely explain (max 3 sentences) why the SQL below failed and what needs to change to fix it. Do not generate SQL, only the analysis.",
+    es: "Eres un analista de SQL. Tu tarea es explicar de forma concisa (maximo 3 frases) por que el SQL a continuacion fallo y que necesita cambiar para corregirlo. No generes SQL, solo el analisis."
+  };
+
+  const userPrompt = [
+    `SQL: ${failedSql}`,
+    `Error [${error.category}]: ${error.originalMessage}`,
+    `Hint: ${error.hint}`,
+    `Question: ${question}`
+  ].join("\n");
+
+  logPrompt("sql-reflection", { system: systemPrompts[language], user: userPrompt, meta: { model, language } });
+
+  const completion = await client.chat.completions.create({
+    model,
+    temperature: 0,
+    messages: [
+      { role: "system", content: systemPrompts[language] },
+      { role: "user", content: userPrompt }
+    ]
+  });
+
+  const reflection = completion.choices[0]?.message?.content ?? "";
+  logPrompt("sql-reflection-response", { user: reflection, meta: { model, language } });
+
+  if (shouldLogPrompts() && completion.usage) {
+    console.info(`[tokens] reflection (${model}) | input=${completion.usage.prompt_tokens} output=${completion.usage.completion_tokens} total=${completion.usage.total_tokens}`);
+  }
+
+  return { reflection, usage: completion.usage };
+};
+
+// ============== CORRECTION SYSTEM PROMPT ==============
+
+const buildCorrectionSystemContent = (
+  instructionText: string,
+  language: "pt" | "en" | "es",
+  dbType: DbType,
+  error: ClassifiedError,
+  reflection: string
+): string => {
+  const correctionIntro: Record<"pt" | "en" | "es", string> = {
+    pt: "Voce e um especialista em correcao de SQL. Um SQL anterior falhou e voce deve gerar uma versao CORRIGIDA. " +
+      "Analise cuidadosamente o erro, a reflexao e o schema antes de gerar o novo SQL. " +
+      "Retorne APENAS o SQL corrigido, sem markdown ou comentarios.",
+    en: "You are a SQL correction specialist. A previous SQL failed and you must generate a CORRECTED version. " +
+      "Carefully analyze the error, the reflection and the schema before generating the new SQL. " +
+      "Return ONLY the corrected SQL, no markdown or comments.",
+    es: "Eres un especialista en correccion de SQL. Un SQL anterior fallo y debes generar una version CORREGIDA. " +
+      "Analiza cuidadosamente el error, la reflexion y el esquema antes de generar el nuevo SQL. " +
+      "Devuelve SOLO el SQL corregido, sin markdown ni comentarios."
+  };
+
+  const dbRules: Record<DbType, Record<"pt" | "en" | "es", string>> = {
+    sqlserver: {
+      pt: "Regras SQL Server: TOP (n); sem SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_.",
+      en: "SQL Server rules: TOP (n); no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_.",
+      es: "Reglas SQL Server: TOP (n); sin SELECT *; prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_."
+    },
+    oracle: {
+      pt: "Regras Oracle: FETCH FIRST n ROWS ONLY ou ROWNUM <= n; sem SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_.",
+      en: "Oracle rules: FETCH FIRST n ROWS ONLY or ROWNUM <= n; no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_.",
+      es: "Reglas Oracle: FETCH FIRST n ROWS ONLY o ROWNUM <= n; sin SELECT *; prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_."
+    },
+    mysql: {
+      pt: "Regras MySQL: LIMIT n; sem SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_.",
+      en: "MySQL rules: LIMIT n; no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_.",
+      es: "Reglas MySQL: LIMIT n; sin SELECT *; prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_."
+    }
+  };
+
+  const reflectionLabel: Record<"pt" | "en" | "es", string> = {
+    pt: "Analise do erro anterior",
+    en: "Previous error analysis",
+    es: "Analisis del error anterior"
+  };
+
+  const hintLabel: Record<"pt" | "en" | "es", string> = {
+    pt: "Dica de correcao",
+    en: "Correction hint",
+    es: "Pista de correccion"
+  };
+
+  const parts = [
+    correctionIntro[language],
+    dbRules[dbType][language],
+    `${reflectionLabel[language]}: ${reflection}`,
+    `${hintLabel[language]} [${error.category}]: ${error.hint}`
+  ];
+
+  const instructionsLabel =
+    language === "en" ? "Additional instructions:" : language === "es" ? "Instrucciones adicionales:" : "Instrucoes adicionais:";
+
+  if (instructionText.trim()) {
+    parts.push(`${instructionsLabel}\n${instructionText}`);
+  }
+
+  return parts.join("\n");
+};
+
 export type GenerateSqlResult = {
   sql: string;
   escalated?: boolean;
@@ -267,4 +471,46 @@ export const generateSql = async (
   }
   const sql = stripSql(raw);
   return { sql, usage: completion.usage };
+};
+
+export const generateCorrectedSql = async (
+  prompt: string,
+  instructionText: string,
+  language: "pt" | "en" | "es",
+  dbType: DbType,
+  error: ClassifiedError,
+  reflection: string
+): Promise<GenerateSqlResult> => {
+  const model = await getSqlModel();
+  const agentsCfg = await getAgentsConfig();
+  const system = buildCorrectionSystemContent(instructionText, language, dbType, error, reflection);
+
+  logPrompt("sql-correction", {
+    system,
+    user: prompt,
+    meta: { model, language, errorCategory: error.category }
+  });
+
+  const client = await getOpenAI();
+  const temperature = agentsCfg.sql.temperature;
+  const completion = await client.chat.completions.create({
+    model,
+    ...(temperature !== undefined && temperature !== null ? { temperature } : {}),
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: prompt }
+    ]
+  });
+
+  const raw = completion.choices[0]?.message?.content ?? "";
+  logPrompt("sql-correction-response", {
+    user: raw,
+    meta: { model, language, errorCategory: error.category }
+  });
+
+  if (shouldLogPrompts() && completion.usage) {
+    console.info(`[tokens] sql-correction (${model}) | input=${completion.usage.prompt_tokens} output=${completion.usage.completion_tokens} total=${completion.usage.total_tokens}`);
+  }
+
+  return { sql: stripSql(raw), usage: completion.usage };
 };

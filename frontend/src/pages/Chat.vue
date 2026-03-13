@@ -94,7 +94,7 @@
             </div>
           </div>
 
-          <div v-if="entry.result && entry.result.sql" class="results-container">
+          <div v-if="entry.result && (entry.result.sql || entry.result.httpRequest)" class="results-container">
             <!-- Summary -->
             <div v-if="entry.result.summary" class="summary-card">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -103,8 +103,42 @@
               <p>{{ entry.result.summary }}</p>
             </div>
 
-            <!-- SQL Generated -->
-            <div class="sql-card">
+            <!-- HTTP Request (API mode) -->
+            <div v-if="entry.result.httpRequest" class="sql-card">
+              <div class="card-header">
+                <div class="card-title">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+                  </svg>
+                  Requisição HTTP
+                  <span v-if="entry.result.cacheHit" class="cache-badge">Cache</span>
+                </div>
+                <div class="card-actions">
+                  <button class="action-btn" @click="copyContent(entry, entry.result.httpRequest!)" :title="entry.copied ? 'Copiado!' : 'Copiar'">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                    </svg>
+                    {{ entry.copied ? 'Copiado!' : 'Copiar' }}
+                  </button>
+                  <button
+                    v-if="entry.result.historyId"
+                    class="action-btn"
+                    :class="{ active: entry.isFavorite }"
+                    @click="toggleFavorite(entry)"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" :fill="entry.isFavorite ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2">
+                      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                    </svg>
+                    Favorito
+                  </button>
+                </div>
+              </div>
+              <pre class="sql-code">{{ formatHttpRequest(entry.result.httpRequest) }}</pre>
+            </div>
+
+            <!-- SQL Generated (DB mode) -->
+            <div v-else-if="entry.result.sql" class="sql-card">
               <div class="card-header">
                 <div class="card-title">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -115,7 +149,7 @@
                   <span v-if="entry.result.cacheHit" class="cache-badge">Cache</span>
                 </div>
                 <div class="card-actions">
-                  <button class="action-btn" @click="copySQL(entry)" :title="entry.copied ? 'Copiado!' : 'Copiar SQL'">
+                  <button class="action-btn" @click="copyContent(entry, entry.result.sql)" :title="entry.copied ? 'Copiado!' : 'Copiar SQL'">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -331,6 +365,9 @@ async function ask() {
             case 'sql':
               entry.result = { ...(entry.result ?? {}), sql: parsed.sql } as any
               break
+            case 'httpRequest':
+              entry.result = { ...(entry.result ?? {}), httpRequest: parsed.httpRequest } as any
+              break
             case 'rows':
               entry.result = {
                 ...(entry.result ?? {}),
@@ -383,13 +420,21 @@ function resetConversation() {
   question.value = ''
 }
 
-function copySQL(entry: ChatEntry) {
-  if (!entry.result?.sql) return
-  navigator.clipboard.writeText(entry.result.sql)
+function copyContent(entry: ChatEntry, text: string) {
+  navigator.clipboard.writeText(text)
   entry.copied = true
   setTimeout(() => {
     entry.copied = false
   }, 2000)
+}
+
+function formatHttpRequest(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw)
+    return JSON.stringify(parsed, null, 2)
+  } catch {
+    return raw
+  }
 }
 
 async function toggleFavorite(entry: ChatEntry) {

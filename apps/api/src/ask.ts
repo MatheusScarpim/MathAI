@@ -17,11 +17,13 @@ import {
   setCachedValue,
   setSemanticEntry
 } from "./cache.js";
+import { getAppConfig } from "./appConfig.js";
+import { answerQuestionApi } from "./askApi.js";
 
 // Import agents
 import { translateText, buildStandaloneQuestion } from "./agents/translation.js";
 import { expandTables, searchRelevantTables, generateEmbedding, buildEmbeddingInput } from "./agents/schema.js";
-import { buildPrompt, generateSql } from "./agents/sql.js";
+import { buildPrompt, generateSql, generateCorrectedSql, classifyError, reflectOnError } from "./agents/sql.js";
 import { summarizeResult, extractYearFromSql } from "./agents/summary.js";
 import { inferChart, inferChartWithLLM } from "./agents/chart.js";
 import { getAgentsConfig } from "./agentConfig.js";
@@ -450,6 +452,22 @@ export const answerQuestion = async (
   const schemaQuestion = embeddingQuestion;
   const displayQuestion = normalizedQuestion;
 
+  // ── Mode branching: delegate to API orchestrator if mode === "api" ──
+  const currentConfig = await getAppConfig();
+  if (currentConfig?.mode === "api") {
+    return answerQuestionApi(
+      normalizedQuestion,
+      embeddingQuestion,
+      concreteQuestion,
+      vector,
+      resolvedChatId,
+      language,
+      resolvedSchemaLanguage,
+      resolvedResponseLanguage,
+      emit
+    );
+  }
+
   if (cached) {
     emit?.("step", { step: "cache_hit", label: "Resultado encontrado no cache!" });
     const historyCollection = await getHistoryCollection();
@@ -633,61 +651,80 @@ export const answerQuestion = async (
     });
   }
 
-  // Step 10: SQL Generation Loop (SQLAgent)
+  // Step 10: SQL Generation Loop (SQLAgent) with Self-Correction Feedback Loop
   emit?.("step", { step: "generating_sql", label: "Gerando SQL..." });
   const maxAttempts = agentsCfg.sql.maxRetries ?? 3;
   let lastError: string | null = null;
   let lastSql: string | null = null;
+  let lastClassifiedError: ReturnType<typeof classifyError> | null = null;
+  let lastReflection: string | null = null;
   let sqlUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } = {};
   let summaryUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } = {};
   let forceLargeModel = false;
 
+  const accumulateUsage = (usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }) => {
+    if (!usage) return;
+    sqlUsage = {
+      prompt_tokens: (sqlUsage.prompt_tokens ?? 0) + (usage.prompt_tokens ?? 0),
+      completion_tokens: (sqlUsage.completion_tokens ?? 0) + (usage.completion_tokens ?? 0),
+      total_tokens: (sqlUsage.total_tokens ?? 0) + (usage.total_tokens ?? 0)
+    };
+  };
+
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const isRetry = attempt > 0 && lastClassifiedError && lastReflection && lastSql;
+
     const prompt = buildPrompt(schemaQuestion, context, historySnippet, fewShotExamples, lastError, lastSql, resolvedSchemaLanguage, currentPeriodText);
     const promptWithPeriod = periodHint
       ? `${prompt}\n\n${resolvedSchemaLanguage === "en" ? `Fixed period from chat history: ${periodHint}` : resolvedSchemaLanguage === "es" ? `Periodo fijo del historial del chat: ${periodHint}` : `Periodo fixo do historico do chat: ${periodHint}`}`
       : prompt;
 
-    const useMini = !forceLargeModel && attempt === 0;
-    let result = await generateSql(
-      promptWithPeriod,
-      instructionText,
-      resolvedSchemaLanguage,
-      dbType,
-      useMini,
-      useMini
-    );
-    if (result.usage) {
-      sqlUsage = {
-        prompt_tokens: (sqlUsage.prompt_tokens ?? 0) + (result.usage.prompt_tokens ?? 0),
-        completion_tokens: (sqlUsage.completion_tokens ?? 0) + (result.usage.completion_tokens ?? 0),
-        total_tokens: (sqlUsage.total_tokens ?? 0) + (result.usage.total_tokens ?? 0)
-      };
-    }
+    let result;
 
-    if (useMini && result.escalated) {
-      forceLargeModel = true;
+    if (isRetry) {
+      // Use differentiated correction prompt with self-reflection context
+      emit?.("step", { step: "correcting_sql", label: `Corrigindo SQL (tentativa ${attempt + 1})...` });
+      result = await generateCorrectedSql(
+        promptWithPeriod,
+        instructionText,
+        resolvedSchemaLanguage,
+        dbType,
+        lastClassifiedError!,
+        lastReflection!
+      );
+      accumulateUsage(result.usage);
+    } else {
+      // First attempt: use mini model with escalation
+      const useMini = !forceLargeModel;
       result = await generateSql(
         promptWithPeriod,
         instructionText,
         resolvedSchemaLanguage,
         dbType,
-        false,
-        false
+        useMini,
+        useMini
       );
-      if (result.usage) {
-        sqlUsage = {
-          prompt_tokens: (sqlUsage.prompt_tokens ?? 0) + (result.usage.prompt_tokens ?? 0),
-          completion_tokens: (sqlUsage.completion_tokens ?? 0) + (result.usage.completion_tokens ?? 0),
-          total_tokens: (sqlUsage.total_tokens ?? 0) + (result.usage.total_tokens ?? 0)
-        };
+      accumulateUsage(result.usage);
+
+      if (useMini && result.escalated) {
+        forceLargeModel = true;
+        result = await generateSql(
+          promptWithPeriod,
+          instructionText,
+          resolvedSchemaLanguage,
+          dbType,
+          false,
+          false
+        );
+        accumulateUsage(result.usage);
       }
     }
 
     lastSql = result.sql;
     let validation = validateSql(result.sql, dbType);
 
-    if (!validation.ok && useMini && !result.escalated) {
+    // On first attempt with mini model, escalate to large model on validation failure
+    if (!validation.ok && attempt === 0 && !isRetry && !forceLargeModel) {
       forceLargeModel = true;
       const retry = await generateSql(
         promptWithPeriod,
@@ -697,19 +734,28 @@ export const answerQuestion = async (
         false,
         false
       );
-      if (retry.usage) {
-        sqlUsage = {
-          prompt_tokens: (sqlUsage.prompt_tokens ?? 0) + (retry.usage.prompt_tokens ?? 0),
-          completion_tokens: (sqlUsage.completion_tokens ?? 0) + (retry.usage.completion_tokens ?? 0),
-          total_tokens: (sqlUsage.total_tokens ?? 0) + (retry.usage.total_tokens ?? 0)
-        };
-      }
+      accumulateUsage(retry.usage);
       lastSql = retry.sql;
       validation = validateSql(retry.sql, dbType);
     }
 
     if (!validation.ok) {
-      lastError = validation.error.errorMessage;
+      // Classify the validation error and run self-reflection
+      const validationErrorMsg = validation.error.errorMessage ?? "Erro de validacao SQL.";
+      lastError = validationErrorMsg;
+      lastClassifiedError = classifyError(validationErrorMsg, true);
+      forceLargeModel = true;
+
+      if (attempt < maxAttempts - 1) {
+        try {
+          emit?.("step", { step: "reflecting", label: "Analisando erro..." });
+          const reflectionResult = await reflectOnError(lastSql ?? "", lastClassifiedError, schemaQuestion, resolvedSchemaLanguage);
+          lastReflection = reflectionResult.reflection;
+          accumulateUsage(reflectionResult.usage);
+        } catch {
+          lastReflection = lastError;
+        }
+      }
       continue;
     }
 
@@ -799,8 +845,22 @@ export const answerQuestion = async (
 
       return { ok: true, data: responseData };
     } catch (error) {
-      if (useMini) forceLargeModel = true;
-      lastError = sanitizeErrorMessage((error as { message?: string })?.message ?? "Erro SQL.");
+      // Classify the execution error and run self-reflection for next retry
+      const rawError = sanitizeErrorMessage((error as { message?: string })?.message ?? "Erro SQL.");
+      lastError = rawError;
+      lastClassifiedError = classifyError(rawError, false);
+      forceLargeModel = true;
+
+      if (attempt < maxAttempts - 1) {
+        try {
+          emit?.("step", { step: "reflecting", label: "Analisando erro..." });
+          const reflectionResult = await reflectOnError(sql, lastClassifiedError, schemaQuestion, resolvedSchemaLanguage);
+          lastReflection = reflectionResult.reflection;
+          accumulateUsage(reflectionResult.usage);
+        } catch {
+          lastReflection = rawError;
+        }
+      }
     }
   }
 

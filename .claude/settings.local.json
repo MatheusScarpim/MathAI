@@ -7,7 +7,9 @@
       "Bash(docker ps:*)",
       "Bash(npx:*)",
       "Bash(node_modules/.bin/tsc:*)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(docker push:*)",
+      "Bash(docker build:*)"
     ]
   }
 }

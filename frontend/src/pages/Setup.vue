@@ -8,9 +8,29 @@
         <p class="eyebrow">Primeira configuração</p>
         <h1>Conecte o MathAI ao seu ambiente</h1>
         <p class="subtitle">
-          Defina OpenAI, banco de dados e idioma do schema para o parser gerar SQL correto.
+          Defina OpenAI e escolha o modo de operação: banco de dados ou API (Swagger).
         </p>
       </header>
+
+      <div class="panel">
+        <div class="section-title">Modo de operação</div>
+        <div class="toggle-group">
+          <button
+            class="toggle"
+            :class="{ active: form.mode === 'database' }"
+            @click="form.mode = 'database'"
+          >
+            Banco de Dados
+          </button>
+          <button
+            class="toggle"
+            :class="{ active: form.mode === 'api' }"
+            @click="form.mode = 'api'"
+          >
+            API (Swagger)
+          </button>
+        </div>
+      </div>
 
       <div class="panel">
         <div class="section-title">OpenAI</div>
@@ -29,7 +49,7 @@
         </div>
       </div>
 
-      <div class="panel">
+      <div v-if="form.mode === 'database'" class="panel">
         <div class="section-title">Banco</div>
 
         <label class="label">Tipo de banco</label>
@@ -112,6 +132,106 @@
         </div>
       </div>
 
+      <div v-if="form.mode === 'api'" class="panel">
+        <div class="section-title">API (Swagger)</div>
+
+        <label class="label">Base URL da API</label>
+        <input
+          v-model="form.apiBaseUrl"
+          class="input"
+          type="text"
+          placeholder="https://api.exemplo.com"
+        />
+
+        <label class="label">Autenticação</label>
+        <div class="toggle-group">
+          <button
+            class="toggle"
+            :class="{ active: form.apiAuthType === 'none' }"
+            @click="form.apiAuthType = 'none'"
+          >
+            Nenhuma
+          </button>
+          <button
+            class="toggle"
+            :class="{ active: form.apiAuthType === 'bearer' }"
+            @click="form.apiAuthType = 'bearer'"
+          >
+            Bearer
+          </button>
+          <button
+            class="toggle"
+            :class="{ active: form.apiAuthType === 'apikey' }"
+            @click="form.apiAuthType = 'apikey'"
+          >
+            API Key
+          </button>
+          <button
+            class="toggle"
+            :class="{ active: form.apiAuthType === 'basic' }"
+            @click="form.apiAuthType = 'basic'"
+          >
+            Basic
+          </button>
+        </div>
+
+        <div v-if="form.apiAuthType === 'bearer'" class="grid">
+          <div class="full">
+            <label class="label">Token</label>
+            <input v-model="form.apiAuthToken" class="input" type="password" placeholder="Token Bearer" />
+          </div>
+        </div>
+
+        <div v-if="form.apiAuthType === 'apikey'" class="grid">
+          <div>
+            <label class="label">Header name</label>
+            <input v-model="form.apiAuthApiKeyHeader" class="input" type="text" placeholder="X-API-Key" />
+          </div>
+          <div>
+            <label class="label">Valor da chave</label>
+            <input v-model="form.apiAuthApiKeyValue" class="input" type="password" placeholder="Valor" />
+          </div>
+        </div>
+
+        <div v-if="form.apiAuthType === 'basic'" class="grid">
+          <div>
+            <label class="label">Usuário</label>
+            <input v-model="form.apiAuthUsername" class="input" type="text" />
+          </div>
+          <div>
+            <label class="label">Senha</label>
+            <input v-model="form.apiAuthPassword" class="input" type="password" />
+          </div>
+        </div>
+
+        <label class="label">Swagger / OpenAPI URL</label>
+        <input
+          v-model="form.swaggerUrl"
+          class="input"
+          type="text"
+          placeholder="https://api.exemplo.com/swagger.json"
+        />
+
+        <label class="label">Ou cole o conteúdo do Swagger (JSON/YAML)</label>
+        <textarea
+          v-model="form.swaggerContent"
+          class="input swagger-textarea"
+          rows="5"
+          placeholder="Cole aqui o JSON ou YAML do OpenAPI..."
+        ></textarea>
+
+        <label class="toggle-line">
+          <input v-model="form.apiReadOnly" type="checkbox" />
+          <span>Somente leitura (apenas GET)</span>
+        </label>
+
+        <div class="actions-inline">
+          <button class="btn btn-secondary" :disabled="testingApi" @click="onTestApi">
+            {{ testingApi ? 'Testando...' : 'Testar Conexão API' }}
+          </button>
+        </div>
+      </div>
+
       <footer class="footer">
         <button class="btn btn-primary" :disabled="saving" @click="onSave">
           {{ saving ? 'Salvando...' : 'Salvar e Começar' }}
@@ -126,24 +246,36 @@
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../services/api'
-import type { DbType } from '../types'
+import type { AppMode, ApiAuthType, DbType } from '../types'
 
 const router = useRouter()
 
 const form = reactive({
   openAiApiKey: '',
+  mode: 'database' as AppMode,
   dbType: 'sqlserver' as DbType,
   dbHost: 'localhost',
   dbPort: 1433,
   dbName: '',
   dbUser: '',
-  dbPassword: ''
+  dbPassword: '',
+  apiBaseUrl: '',
+  apiAuthType: 'none' as ApiAuthType,
+  apiAuthToken: '',
+  apiAuthApiKeyHeader: '',
+  apiAuthApiKeyValue: '',
+  apiAuthUsername: '',
+  apiAuthPassword: '',
+  swaggerUrl: '',
+  swaggerContent: '',
+  apiReadOnly: true
 })
 
 const schemaLanguage = ref<'pt' | 'en' | 'es'>('pt')
 const tableReferenceCount = ref(8)
 const testingOpenAi = ref(false)
 const testingDb = ref(false)
+const testingApi = ref(false)
 const saving = ref(false)
 const message = ref('')
 const messageType = ref<'ok' | 'error'>('ok')
@@ -205,6 +337,7 @@ const onTestDb = async () => {
   testingDb.value = true
   try {
     await api.testDbConfig({
+      mode: 'database',
       dbType: form.dbType,
       dbHost: form.dbHost.trim(),
       dbPort: Number(form.dbPort),
@@ -220,24 +353,82 @@ const onTestDb = async () => {
   }
 }
 
+const onTestApi = async () => {
+  if (!form.apiBaseUrl.trim()) {
+    setMessage('Informe a Base URL da API.', 'error')
+    return
+  }
+
+  testingApi.value = true
+  try {
+    await api.testApiConnection({
+      apiBaseUrl: form.apiBaseUrl.trim(),
+      apiAuthType: form.apiAuthType,
+      apiAuthToken: form.apiAuthToken || undefined,
+      apiAuthApiKeyHeader: form.apiAuthApiKeyHeader || undefined,
+      apiAuthApiKeyValue: form.apiAuthApiKeyValue || undefined,
+      apiAuthUsername: form.apiAuthUsername || undefined,
+      apiAuthPassword: form.apiAuthPassword || undefined
+    })
+    setMessage('Conexão com API validada com sucesso.', 'ok')
+  } catch (error) {
+    setMessage((error as Error).message || 'Erro ao conectar na API.', 'error')
+  } finally {
+    testingApi.value = false
+  }
+}
+
 const onSave = async () => {
   saving.value = true
   try {
-    const safeTableCount = Math.min(30, Math.max(1, Number(tableReferenceCount.value) || 8))
-    tableReferenceCount.value = safeTableCount
-    await api.saveConfig({
-      openAiApiKey: form.openAiApiKey.trim(),
-      dbType: form.dbType,
-      dbHost: form.dbHost.trim(),
-      dbPort: Number(form.dbPort),
-      dbName: form.dbName.trim(),
-      dbUser: form.dbUser.trim(),
-      dbPassword: form.dbPassword
-    })
-    await api.setSchemaLanguage(schemaLanguage.value)
-    await api.setTableReferenceCount(safeTableCount)
-    setMessage('Configuração salva. Indexando schema...', 'ok')
-    await api.ingestSchema()
+    if (form.mode === 'database') {
+      const safeTableCount = Math.min(30, Math.max(1, Number(tableReferenceCount.value) || 8))
+      tableReferenceCount.value = safeTableCount
+      await api.saveConfig({
+        openAiApiKey: form.openAiApiKey.trim(),
+        mode: 'database',
+        dbType: form.dbType,
+        dbHost: form.dbHost.trim(),
+        dbPort: Number(form.dbPort),
+        dbName: form.dbName.trim(),
+        dbUser: form.dbUser.trim(),
+        dbPassword: form.dbPassword
+      })
+      await api.setSchemaLanguage(schemaLanguage.value)
+      await api.setTableReferenceCount(safeTableCount)
+      setMessage('Configuração salva. Indexando schema...', 'ok')
+      await api.ingestSchema()
+    } else {
+      if (!form.apiBaseUrl.trim()) {
+        setMessage('Informe a Base URL da API.', 'error')
+        saving.value = false
+        return
+      }
+      if (!form.swaggerUrl.trim() && !form.swaggerContent.trim()) {
+        setMessage('Informe a URL do Swagger ou cole o conteúdo.', 'error')
+        saving.value = false
+        return
+      }
+
+      await api.saveConfig({
+        openAiApiKey: form.openAiApiKey.trim(),
+        mode: 'api',
+        apiBaseUrl: form.apiBaseUrl.trim(),
+        apiAuthType: form.apiAuthType,
+        apiAuthToken: form.apiAuthToken || undefined,
+        apiAuthApiKeyHeader: form.apiAuthApiKeyHeader || undefined,
+        apiAuthApiKeyValue: form.apiAuthApiKeyValue || undefined,
+        apiAuthUsername: form.apiAuthUsername || undefined,
+        apiAuthPassword: form.apiAuthPassword || undefined,
+        apiReadOnly: form.apiReadOnly,
+        swaggerUrl: form.swaggerUrl.trim() || undefined
+      })
+      setMessage('Configuração salva. Indexando endpoints...', 'ok')
+      await api.ingestSwagger({
+        url: form.swaggerUrl.trim() || undefined,
+        content: form.swaggerContent.trim() || undefined
+      })
+    }
     await router.push('/chat')
   } catch (error) {
     setMessage((error as Error).message, 'error')
@@ -418,6 +609,27 @@ const onSave = async () => {
 
 .oracle-hint code {
   color: #fde68a;
+}
+
+.swagger-textarea {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.85rem;
+  resize: vertical;
+  min-height: 80px;
+}
+
+.toggle-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  color: var(--color-gray-300);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.toggle-line input[type='checkbox'] {
+  width: auto;
 }
 
 @media (max-width: 768px) {

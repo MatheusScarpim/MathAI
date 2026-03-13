@@ -40,12 +40,10 @@ services:
       retries: 8
 
   api:
-    image: mathai-api:latest
-    build:
-      context: .
-      dockerfile: apps/api/Dockerfile
+    image: "${MATHAI_API_IMAGE:-op3000/mathai-api:latest}"
     container_name: mathai-api
     restart: unless-stopped
+    pull_policy: always
     env_file:
       - .env
     ports:
@@ -59,12 +57,10 @@ services:
         condition: service_started
 
   frontend:
-    image: mathai-frontend:latest
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
+    image: "${MATHAI_FRONTEND_IMAGE:-op3000/mathai-frontend:latest}"
     container_name: mathai-frontend
     restart: unless-stopped
+    pull_policy: always
     ports:
       - "${FRONTEND_PORT:-80}:80"
     depends_on:

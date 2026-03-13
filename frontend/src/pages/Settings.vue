@@ -54,6 +54,33 @@
           </article>
 
           <article class="agent-card">
+            <h3>HTTP</h3>
+            <p>Gera requisições HTTP para APIs a partir de endpoints Swagger.</p>
+
+            <label>
+              Modelo
+              <input v-model="agentsConfig.http.model" type="text" placeholder="gpt-5" />
+            </label>
+
+            <label>
+              Temperatura (opcional)
+              <input
+                v-model="httpTemperatureInput"
+                type="number"
+                min="0"
+                max="2"
+                step="0.1"
+                placeholder="vazio = padrao do modelo"
+              />
+            </label>
+
+            <label>
+              Max retries
+              <input v-model.number="agentsConfig.http.maxRetries" type="number" min="1" max="10" step="1" />
+            </label>
+          </article>
+
+          <article class="agent-card">
             <h3>Resumo</h3>
             <p>Gera um resumo textual dos resultados retornados pela query.</p>
 
@@ -199,8 +226,11 @@ const resetting = ref(false)
 const resetMessage = ref('')
 const resetMessageType = ref<'ok' | 'error'>('ok')
 
+const httpTemperatureInput = ref('')
+
 const cloneAgentsConfig = (config: AgentsConfig): AgentsConfig => ({
   sql: { ...config.sql },
+  http: { ...config.http },
   summary: { ...config.summary },
   translation: { ...config.translation },
   chart: { ...config.chart },
@@ -229,6 +259,10 @@ const applyAgentsConfig = (config: AgentsConfig): void => {
     typeof config.sql.temperature === 'number' && Number.isFinite(config.sql.temperature)
       ? String(config.sql.temperature)
       : ''
+  httpTemperatureInput.value =
+    typeof config.http.temperature === 'number' && Number.isFinite(config.http.temperature)
+      ? String(config.http.temperature)
+      : ''
 }
 
 const loadAgentsConfig = async (): Promise<void> => {
@@ -253,6 +287,12 @@ const buildPayload = (config: AgentsConfig): AgentsConfig => ({
     temperature: parseOptionalTemperature(sqlTemperatureInput.value),
     maxRetries: Math.max(1, Math.min(10, Math.floor(Number(config.sql.maxRetries) || 1))),
     enabled: config.sql.enabled !== false
+  },
+  http: {
+    model: config.http.model.trim(),
+    temperature: parseOptionalTemperature(httpTemperatureInput.value),
+    maxRetries: Math.max(1, Math.min(10, Math.floor(Number(config.http.maxRetries) || 1))),
+    enabled: config.http.enabled !== false
   },
   summary: {
     model: config.summary.model.trim(),

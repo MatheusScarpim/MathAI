@@ -1,6 +1,6 @@
 import { MongoClient, type Collection, type ObjectId } from "mongodb";
 import { config } from "./config.js";
-import type { AskErrorResponse, AskSuccessResponse } from "@auraia/shared";
+import type { AskErrorResponse, AskSuccessResponse, AppMode } from "@auraia/shared";
 
 export type InstructionRecord = {
   _id?: ObjectId;
@@ -15,6 +15,8 @@ export type HistoryRecord = {
   question: string;
   embeddingQuestion?: string;
   sql: string;
+  httpRequest?: string;
+  mode?: AppMode;
   rows?: Record<string, unknown>[];
   columns?: string[];
   chart?: {

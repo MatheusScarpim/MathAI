@@ -20,7 +20,7 @@
           <span>Histórico</span>
         </router-link>
         <router-link to="/schema" class="nav-item" :class="{ active: $route.path === '/schema' }">
-          <span>Tabelas</span>
+          <span>{{ appMode === 'api' ? 'Endpoints' : 'Tabelas' }}</span>
         </router-link>
         <router-link to="/instructions" class="nav-item" :class="{ active: $route.path === '/instructions' }">
           <span>Instruções</span>
@@ -48,15 +48,20 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from './services/api'
+import type { AppMode, DbType } from './types'
 
 const route = useRoute()
 const router = useRouter()
-const dbType = ref<'sqlserver' | 'oracle' | null>(null)
+const dbType = ref<DbType | null>(null)
+const appMode = ref<AppMode>('database')
 
 const isSetupRoute = computed(() => route.path === '/setup')
-const statusText = computed(() =>
-  dbType.value === 'oracle' ? 'Oracle conectado' : 'SQL Server conectado'
-)
+const statusText = computed(() => {
+  if (appMode.value === 'api') return 'API conectada'
+  if (dbType.value === 'oracle') return 'Oracle conectado'
+  if (dbType.value === 'mysql') return 'MySQL conectado'
+  return 'SQL Server conectado'
+})
 
 const enforceSetupFlow = async () => {
   try {
@@ -71,7 +76,8 @@ const enforceSetupFlow = async () => {
     }
     if (status.configured) {
       const cfg = await api.getConfig()
-      dbType.value = cfg.dbType
+      dbType.value = cfg.dbType ?? null
+      appMode.value = cfg.mode ?? 'database'
     }
   } catch {
     if (route.path !== '/setup') {

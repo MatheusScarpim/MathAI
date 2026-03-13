@@ -267,13 +267,20 @@ export const getAdapter = async (): Promise<DbAdapter> => {
     throw new Error("App not configured. Please complete setup first.");
   }
 
+  const dbType = appConfig.dbType ?? "sqlserver";
+  const dbHost = appConfig.dbHost ?? "localhost";
+  const dbPort = appConfig.dbPort ?? 1433;
+  const dbName = appConfig.dbName ?? "";
+  const dbUser = appConfig.dbUser ?? "";
+  const dbPassword = appConfig.dbPassword ?? "";
+
   const hash = buildConfigHash(
-    appConfig.dbType,
-    appConfig.dbHost,
-    appConfig.dbPort,
-    appConfig.dbName,
-    appConfig.dbUser,
-    appConfig.dbPassword
+    dbType,
+    dbHost,
+    dbPort,
+    dbName,
+    dbUser,
+    dbPassword
   );
 
   if (currentAdapter && currentConfigHash === hash) {
@@ -284,29 +291,29 @@ export const getAdapter = async (): Promise<DbAdapter> => {
     await currentAdapter.close();
   }
 
-  if (appConfig.dbType === "oracle") {
+  if (dbType === "oracle") {
     currentAdapter = new OracleAdapter(
-      appConfig.dbHost,
-      appConfig.dbPort,
-      appConfig.dbName,
-      appConfig.dbUser,
-      appConfig.dbPassword
+      dbHost,
+      dbPort,
+      dbName,
+      dbUser,
+      dbPassword
     );
-  } else if (appConfig.dbType === "mysql") {
+  } else if (dbType === "mysql") {
     currentAdapter = new MySQLAdapter(
-      appConfig.dbHost,
-      appConfig.dbPort,
-      appConfig.dbName,
-      appConfig.dbUser,
-      appConfig.dbPassword
+      dbHost,
+      dbPort,
+      dbName,
+      dbUser,
+      dbPassword
     );
   } else {
     currentAdapter = new SqlServerAdapter(
-      appConfig.dbHost,
-      appConfig.dbPort,
-      appConfig.dbName,
-      appConfig.dbUser,
-      appConfig.dbPassword
+      dbHost,
+      dbPort,
+      dbName,
+      dbUser,
+      dbPassword
     );
   }
 

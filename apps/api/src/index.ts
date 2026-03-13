@@ -12,9 +12,16 @@ import {
   loadSchemaGraph,
   clearSchemaCache
 } from "./schema.js";
-import { clearSchemaCollection } from "./qdrant.js";
+import { clearSchemaCollection, clearEndpointCollection } from "./qdrant.js";
 import { answerQuestion } from "./ask.js";
 import { isNonEmptyString, sanitizeErrorMessage } from "@auraia/shared";
+import {
+  fetchSwaggerSpec,
+  parseSwaggerSpec,
+  ingestEndpointsToQdrant,
+  loadEndpointGraph,
+  clearEndpointCache
+} from "./swagger.js";
 import { validateSql } from "./validation.js";
 import {
   getHistoryCollection,
@@ -429,12 +436,23 @@ app.setErrorHandler((error, _request, reply) => {
 
 type SaveConfigBody = {
   openAiApiKey?: string;
+  mode?: string;
   dbType?: DbType;
   dbHost?: string;
   dbPort?: number | string;
   dbName?: string;
   dbUser?: string;
   dbPassword?: string;
+  apiBaseUrl?: string;
+  apiAuthType?: string;
+  apiAuthToken?: string;
+  apiAuthApiKeyHeader?: string;
+  apiAuthApiKeyValue?: string;
+  apiAuthUsername?: string;
+  apiAuthPassword?: string;
+  apiReadOnly?: boolean;
+  swaggerUrl?: string;
+  swaggerContent?: string;
 };
 
 const parsePort = (value: number | string | undefined): number | null => {
@@ -458,12 +476,17 @@ app.get("/api/config", async (_request, reply) => {
   }
 
   reply.send({
+    mode: appConfig.mode ?? "database",
     dbType: appConfig.dbType,
     dbHost: appConfig.dbHost,
     dbPort: appConfig.dbPort,
     dbName: appConfig.dbName,
     dbUser: appConfig.dbUser,
-    openAiKeySet: appConfig.openAiApiKey.length > 0
+    openAiKeySet: appConfig.openAiApiKey.length > 0,
+    apiBaseUrl: appConfig.apiBaseUrl,
+    apiAuthType: appConfig.apiAuthType,
+    apiReadOnly: appConfig.apiReadOnly,
+    swaggerUrl: appConfig.swaggerUrl
   });
 });
 
@@ -520,6 +543,45 @@ app.post("/api/config", async (request, reply) => {
     reply.status(400).send({ errorMessage: "openAiApiKey obrigatoria." });
     return;
   }
+
+  const mode = body.mode === "api" ? "api" as const : "database" as const;
+
+  if (mode === "api") {
+    if (!isNonEmptyString(body.apiBaseUrl)) {
+      reply.status(400).send({ errorMessage: "apiBaseUrl obrigatoria para modo API." });
+      return;
+    }
+
+    const validAuthTypes = ["none", "bearer", "apikey", "basic"];
+    const authType = validAuthTypes.includes(body.apiAuthType ?? "")
+      ? (body.apiAuthType as "none" | "bearer" | "apikey" | "basic")
+      : "none";
+
+    const nextConfig: AppConfig = {
+      openAiApiKey: body.openAiApiKey.trim(),
+      mode: "api",
+      apiBaseUrl: body.apiBaseUrl.trim(),
+      apiAuthType: authType,
+      apiAuthToken: body.apiAuthToken,
+      apiAuthApiKeyHeader: body.apiAuthApiKeyHeader,
+      apiAuthApiKeyValue: body.apiAuthApiKeyValue,
+      apiAuthUsername: body.apiAuthUsername,
+      apiAuthPassword: body.apiAuthPassword,
+      apiReadOnly: body.apiReadOnly ?? true,
+      swaggerUrl: body.swaggerUrl,
+      swaggerContent: body.swaggerContent,
+      configuredAt: new Date()
+    };
+
+    await saveAppConfig(nextConfig);
+    clearConfigCache();
+    clearOpenAICache();
+    clearEndpointCache();
+    reply.send({ ok: true });
+    return;
+  }
+
+  // Database mode
   if (body.dbType !== "sqlserver" && body.dbType !== "oracle" && body.dbType !== "mysql") {
     reply.status(400).send({ errorMessage: "dbType invalido." });
     return;
@@ -536,6 +598,7 @@ app.post("/api/config", async (request, reply) => {
 
   const nextConfig: AppConfig = {
     openAiApiKey: body.openAiApiKey.trim(),
+    mode: "database",
     dbType: body.dbType,
     dbHost: body.dbHost.trim(),
     dbPort,
@@ -570,6 +633,75 @@ app.post("/api/schema/clear", async (_request, reply) => {
   await clearSchemaCollection();
   clearSchemaCache();
   reply.send({ ok: true });
+});
+
+// ================== Swagger / API Mode Routes ==================
+
+app.post("/api/config/test-api", async (request, reply) => {
+  const body = request.body as { apiBaseUrl?: string; apiAuthType?: string; apiAuthToken?: string; apiAuthApiKeyHeader?: string; apiAuthApiKeyValue?: string; apiAuthUsername?: string; apiAuthPassword?: string };
+  if (!isNonEmptyString(body.apiBaseUrl)) {
+    reply.status(400).send({ errorMessage: "apiBaseUrl obrigatoria." });
+    return;
+  }
+  try {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (body.apiAuthType === "bearer" && body.apiAuthToken) {
+      headers.Authorization = `Bearer ${body.apiAuthToken}`;
+    } else if (body.apiAuthType === "apikey" && body.apiAuthApiKeyValue) {
+      headers[body.apiAuthApiKeyHeader ?? "X-API-Key"] = body.apiAuthApiKeyValue;
+    } else if (body.apiAuthType === "basic" && body.apiAuthUsername) {
+      headers.Authorization = `Basic ${Buffer.from(`${body.apiAuthUsername}:${body.apiAuthPassword ?? ""}`).toString("base64")}`;
+    }
+    const response = await fetch(body.apiBaseUrl.trim(), { method: "GET", headers });
+    if (!response.ok && response.status >= 500) {
+      reply.status(400).send({ errorMessage: `API retornou HTTP ${response.status}.` });
+      return;
+    }
+    reply.send({ ok: true });
+  } catch (error) {
+    reply.status(400).send({ errorMessage: sanitizeErrorMessage((error as { message?: string })?.message ?? "Erro ao conectar na API.") });
+  }
+});
+
+app.post("/api/ingest/swagger", async (request, reply) => {
+  const body = request.body as { url?: string; content?: string };
+  let specContent: string;
+
+  if (isNonEmptyString(body.content)) {
+    specContent = body.content!;
+  } else if (isNonEmptyString(body.url)) {
+    specContent = await fetchSwaggerSpec(body.url!.trim());
+  } else {
+    reply.status(400).send({ errorMessage: "Informe url ou content do swagger spec." });
+    return;
+  }
+
+  const allEndpoints = parseSwaggerSpec(specContent);
+  const endpoints = allEndpoints.filter(e => e.method.toUpperCase() === "GET");
+  if (endpoints.length === 0) {
+    reply.status(400).send({ errorMessage: "Nenhum endpoint GET encontrado no swagger spec." });
+    return;
+  }
+
+  const endpointsIndexed = await ingestEndpointsToQdrant(endpoints);
+  clearEndpointCache();
+  reply.send({ endpointsIndexed });
+});
+
+app.get("/api/schema/endpoints", async (_request, reply) => {
+  const endpoints = await loadEndpointGraph();
+  reply.send({ endpoints });
+});
+
+app.post("/api/schema/endpoints/clear", async (_request, reply) => {
+  await clearEndpointCollection();
+  clearEndpointCache();
+  reply.send({ ok: true });
+});
+
+app.get("/api/config/mode", async (_request, reply) => {
+  const appConfig = await getAppConfig();
+  reply.send({ mode: appConfig?.mode ?? "database" });
 });
 
 app.post("/api/instructions", async (request, reply) => {
@@ -697,6 +829,14 @@ app.put("/api/settings/agents", async (request, reply) => {
         : current.sql.maxRetries,
       enabled: typeof body.sql?.enabled === "boolean" ? body.sql.enabled : current.sql.enabled
     },
+    http: {
+      model: isNonEmptyString(body.http?.model) ? body.http!.model : current.http.model,
+      temperature: body.http?.temperature !== undefined ? body.http.temperature : current.http.temperature,
+      maxRetries: Number.isFinite(body.http?.maxRetries)
+        ? Math.max(1, Math.min(10, Math.floor(body.http!.maxRetries)))
+        : current.http.maxRetries,
+      enabled: typeof body.http?.enabled === "boolean" ? body.http.enabled : current.http.enabled
+    },
     summary: {
       model: isNonEmptyString(body.summary?.model) ? body.summary!.model : current.summary.model,
       temperature: body.summary?.temperature !== undefined ? body.summary.temperature : current.summary.temperature,
@@ -727,8 +867,10 @@ app.post("/api/settings/reset-environment", async (_request, reply) => {
   clearConfigCache();
   clearSchemaCache();
   clearAgentsConfigCache();
+  clearEndpointCache();
 
   await clearSchemaCollection();
+  await clearEndpointCollection();
 
   const mongo = await getMongoClient();
   const db = mongo.db(config.mongo.db);
@@ -777,6 +919,8 @@ app.get("/api/history", async (request, reply) => {
       chatId: doc.chatId,
       question: doc.question,
       sql: doc.sql,
+      httpRequest: doc.httpRequest,
+      mode: doc.mode,
       rows: doc.rows ?? [],
       columns: doc.columns ?? [],
       chart: doc.chart,
@@ -886,6 +1030,8 @@ app.get("/api/chats/:chatId/messages", async (request, reply) => {
       chatId: doc.chatId,
       question: doc.question,
       sql: doc.sql,
+      httpRequest: doc.httpRequest,
+      mode: doc.mode,
       rows: doc.rows ?? [],
       columns: doc.columns ?? [],
       chart: doc.chart,
