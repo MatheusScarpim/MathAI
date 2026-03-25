@@ -222,7 +222,7 @@ export const validateSql = (
   if (dbType === "oracle") {
     return validateOracle(sql);
   }
-  if (dbType === "mysql") {
+  if (dbType === "mysql" || dbType === "postgresql") {
     return validateMySQL(sql);
   }
   return validateSqlServer(sql);

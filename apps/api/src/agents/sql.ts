@@ -260,41 +260,107 @@ const buildSystemContent = (
         ? "CRITICO - Estaciones del hemisferio sur (Brasil): Verano=Dic,Ene,Feb (meses 12,1,2); Invierno=Jun,Jul,Ago (meses 6,7,8); Otono=Mar,Abr,May; Primavera=Sep,Oct,Nov. NUNCA confundir estaciones."
         : "CRITICO - Estacoes do hemisferio sul (Brasil): Verao=Dez,Jan,Fev (meses 12,1,2); Inverno=Jun,Jul,Ago (meses 6,7,8); Outono=Mar,Abr,Mai; Primavera=Set,Out,Nov. NUNCA confundir estacoes.";
 
+  const textCompareRule = dbType === "oracle"
+    ? language === "en"
+      ? "CRITICAL - Text comparison: ALL string comparisons (=, IN, LIKE) MUST be accent-insensitive AND case-insensitive. " +
+        "Use NLSSORT on BOTH sides: NLSSORT(column,'NLS_SORT=BINARY_AI') = NLSSORT('literal','NLS_SORT=BINARY_AI'). " +
+        "For LIKE: NLSSORT(column,'NLS_SORT=BINARY_AI') LIKE NLSSORT('%text%','NLS_SORT=BINARY_AI'). " +
+        "For IN: use individual NLSSORT comparisons with OR instead of IN. " +
+        "This ensures 'SAÍDA' matches 'SAIDA', 'saída' matches 'SAIDA', etc. NEVER compare raw text."
+      : language === "es"
+        ? "CRITICO - Comparacion de texto: TODAS las comparaciones de strings (=, IN, LIKE) DEBEN ser accent-insensitive Y case-insensitive. " +
+          "Usa NLSSORT en AMBOS lados: NLSSORT(columna,'NLS_SORT=BINARY_AI') = NLSSORT('literal','NLS_SORT=BINARY_AI'). " +
+          "Para LIKE: NLSSORT(columna,'NLS_SORT=BINARY_AI') LIKE NLSSORT('%texto%','NLS_SORT=BINARY_AI'). " +
+          "Para IN: usa comparaciones individuales con NLSSORT y OR en vez de IN. " +
+          "Esto asegura que 'SAÍDA' coincida con 'SAIDA', etc. NUNCA compares texto sin normalizar."
+        : "CRITICO - Comparacao de texto: TODAS as comparacoes de strings (=, IN, LIKE) DEVEM ser accent-insensitive E case-insensitive. " +
+          "Use NLSSORT em AMBOS os lados: NLSSORT(coluna,'NLS_SORT=BINARY_AI') = NLSSORT('literal','NLS_SORT=BINARY_AI'). " +
+          "Para LIKE: NLSSORT(coluna,'NLS_SORT=BINARY_AI') LIKE NLSSORT('%texto%','NLS_SORT=BINARY_AI'). " +
+          "Para IN: use comparacoes individuais com NLSSORT e OR em vez de IN. " +
+          "Isso garante que 'SAÍDA' bata com 'SAIDA', 'saída' bata com 'SAIDA', etc. NUNCA compare texto cru."
+    : dbType === "mysql"
+    ? language === "en"
+      ? "CRITICAL - Text comparison: ALL string comparisons (=, IN, LIKE) MUST be accent-insensitive AND case-insensitive. " +
+        "Use COLLATE utf8mb4_unicode_ci on the column or comparison (e.g., column COLLATE utf8mb4_unicode_ci LIKE '%text%'). " +
+        "This ensures accented and unaccented characters match. NEVER compare raw text."
+      : language === "es"
+        ? "CRITICO - Comparacion de texto: TODAS las comparaciones de strings (=, IN, LIKE) DEBEN ser accent-insensitive Y case-insensitive. " +
+          "Usa COLLATE utf8mb4_unicode_ci en la columna o comparacion (ej., columna COLLATE utf8mb4_unicode_ci LIKE '%texto%'). " +
+          "NUNCA compares texto sin normalizar."
+        : "CRITICO - Comparacao de texto: TODAS as comparacoes de strings (=, IN, LIKE) DEVEM ser accent-insensitive E case-insensitive. " +
+          "Use COLLATE utf8mb4_unicode_ci na coluna ou comparacao (ex., coluna COLLATE utf8mb4_unicode_ci LIKE '%texto%'). " +
+          "NUNCA compare texto cru."
+    : dbType === "postgresql"
+    ? language === "en"
+      ? "CRITICAL - Text comparison: ALL string comparisons (=, IN, LIKE) MUST be case-insensitive. " +
+        "Use ILIKE instead of LIKE, and LOWER() for = and IN comparisons (e.g., LOWER(column) = LOWER('text')). " +
+        "For accent-insensitive search use unaccent() extension if available. NEVER compare raw text."
+      : language === "es"
+        ? "CRITICO - Comparacion de texto: TODAS las comparaciones de strings (=, IN, LIKE) DEBEN ser case-insensitive. " +
+          "Usa ILIKE en vez de LIKE, y LOWER() para = e IN (ej., LOWER(columna) = LOWER('texto')). " +
+          "Para busqueda accent-insensitive usa unaccent() si esta disponible. NUNCA compares texto sin normalizar."
+        : "CRITICO - Comparacao de texto: TODAS as comparacoes de strings (=, IN, LIKE) DEVEM ser case-insensitive. " +
+          "Use ILIKE em vez de LIKE, e LOWER() para = e IN (ex., LOWER(coluna) = LOWER('texto')). " +
+          "Para busca accent-insensitive use unaccent() se disponivel. NUNCA compare texto cru."
+    : language === "en"
+      ? "CRITICAL - Text comparison: ALL string comparisons (=, IN, LIKE) MUST be accent-insensitive AND case-insensitive. " +
+        "Use COLLATE Latin1_General_CI_AI on the column (e.g., column COLLATE Latin1_General_CI_AI LIKE '%text%'). " +
+        "This ensures accented and unaccented characters match. NEVER compare raw text."
+      : language === "es"
+        ? "CRITICO - Comparacion de texto: TODAS las comparaciones de strings (=, IN, LIKE) DEBEN ser accent-insensitive Y case-insensitive. " +
+          "Usa COLLATE Latin1_General_CI_AI en la columna (ej., columna COLLATE Latin1_General_CI_AI LIKE '%texto%'). " +
+          "NUNCA compares texto sin normalizar."
+        : "CRITICO - Comparacao de texto: TODAS as comparacoes de strings (=, IN, LIKE) DEVEM ser accent-insensitive E case-insensitive. " +
+          "Use COLLATE Latin1_General_CI_AI na coluna (ex., coluna COLLATE Latin1_General_CI_AI LIKE '%texto%'). " +
+          "NUNCA compare texto cru.";
+
   const base = dbType === "oracle"
     ? language === "en"
       ? "You are an Oracle SQL expert. Output only SELECT statements, no markdown or comments. " +
         "Rules: use FETCH FIRST n ROWS ONLY or ROWNUM <= n; no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
-        seasonRule
+        seasonRule + " " + textCompareRule
       : language === "es"
         ? "Eres un experto en Oracle SQL. Devuelve solo sentencias SELECT, sin markdown ni comentarios. " +
           "Reglas: usa FETCH FIRST n ROWS ONLY o ROWNUM <= n; no SELECT *; prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
-          seasonRule
+          seasonRule + " " + textCompareRule
         : "Voce e um especialista em Oracle SQL. Retorne apenas sentencas SELECT, sem markdown ou comentarios. " +
           "Regras: use FETCH FIRST n ROWS ONLY ou ROWNUM <= n; nao use SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
-          seasonRule
+          seasonRule + " " + textCompareRule
     : dbType === "mysql"
     ? language === "en"
       ? "You are a MySQL expert. Output only SELECT statements, no markdown or comments. " +
         "Rules: use LIMIT 100; no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
-        seasonRule
+        seasonRule + " " + textCompareRule
       : language === "es"
         ? "Eres un experto en MySQL. Devuelve solo sentencias SELECT, sin markdown ni comentarios. " +
           "Reglas: usa LIMIT 100; no SELECT *; prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
-          seasonRule
+          seasonRule + " " + textCompareRule
         : "Voce e um especialista em MySQL. Retorne apenas sentencas SELECT, sem markdown ou comentarios. " +
           "Regras: use LIMIT 100; nao use SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
-          seasonRule
+          seasonRule + " " + textCompareRule
+    : dbType === "postgresql"
+    ? language === "en"
+      ? "You are a PostgreSQL expert. Output only SELECT statements, no markdown or comments. " +
+        "Rules: use LIMIT 100; no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
+        seasonRule + " " + textCompareRule
+      : language === "es"
+        ? "Eres un experto en PostgreSQL. Devuelve solo sentencias SELECT, sin markdown ni comentarios. " +
+          "Reglas: usa LIMIT 100; no SELECT *; prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
+          seasonRule + " " + textCompareRule
+        : "Voce e um especialista em PostgreSQL. Retorne apenas sentencas SELECT, sem markdown ou comentarios. " +
+          "Regras: use LIMIT 100; nao use SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
+          seasonRule + " " + textCompareRule
     : language === "en"
       ? "You are a SQL Server expert. Output only T-SQL SELECT, no markdown or comments. " +
         "Rules: TOP (100); no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
-        seasonRule
+        seasonRule + " " + textCompareRule
       : language === "es"
         ? "Eres un experto en SQL Server. Devuelve solo T-SQL SELECT, sin markdown ni comentarios. " +
           "Reglas: TOP (100); no SELECT *; prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
-          seasonRule
+          seasonRule + " " + textCompareRule
         : "Voce e um especialista em SQL Server. Retorne apenas T-SQL SELECT, sem markdown ou comentarios. " +
           "Regras: TOP (100); nao use SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_. " +
-          seasonRule;
+          seasonRule + " " + textCompareRule;
 
   const instructionsLabel =
     language === "en" ? "Additional instructions:" : language === "es" ? "Instrucciones adicionales:" : "Instrucoes adicionais:";
@@ -390,6 +456,11 @@ const buildCorrectionSystemContent = (
       pt: "Regras MySQL: LIMIT n; sem SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_.",
       en: "MySQL rules: LIMIT n; no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_.",
       es: "Reglas MySQL: LIMIT n; sin SELECT *; prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_."
+    },
+    postgresql: {
+      pt: "Regras PostgreSQL: LIMIT n; sem SELECT *; proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_.",
+      en: "PostgreSQL rules: LIMIT n; no SELECT *; forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_.",
+      es: "Reglas PostgreSQL: LIMIT n; sin SELECT *; prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_."
     }
   };
 

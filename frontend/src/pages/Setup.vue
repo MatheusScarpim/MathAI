@@ -13,6 +13,17 @@
       </header>
 
       <div class="panel">
+        <div class="section-title">Nome do ambiente</div>
+        <label class="label">Identifique esta conexão</label>
+        <input
+          v-model="form.name"
+          class="input"
+          type="text"
+          placeholder="Ex: Produção, DW, Staging..."
+        />
+      </div>
+
+      <div class="panel">
         <div class="section-title">Modo de operação</div>
         <div class="toggle-group">
           <button
@@ -74,6 +85,13 @@
             @click="form.dbType = 'mysql'; form.dbPort = 3306"
           >
             MySQL
+          </button>
+          <button
+            class="toggle"
+            :class="{ active: form.dbType === 'postgresql' }"
+            @click="form.dbType = 'postgresql'; form.dbPort = 5432"
+          >
+            PostgreSQL
           </button>
         </div>
 
@@ -251,6 +269,7 @@ import type { AppMode, ApiAuthType, DbType } from '../types'
 const router = useRouter()
 
 const form = reactive({
+  name: '',
   openAiApiKey: '',
   mode: 'database' as AppMode,
   dbType: 'sqlserver' as DbType,
@@ -379,12 +398,15 @@ const onTestApi = async () => {
 }
 
 const onSave = async () => {
+  const envName = form.name.trim() || 'Default'
   saving.value = true
   try {
     if (form.mode === 'database') {
       const safeTableCount = Math.min(30, Math.max(1, Number(tableReferenceCount.value) || 8))
       tableReferenceCount.value = safeTableCount
-      await api.saveConfig({
+
+      const created = await api.createEnvironment({
+        name: envName,
         openAiApiKey: form.openAiApiKey.trim(),
         mode: 'database',
         dbType: form.dbType,
@@ -394,10 +416,11 @@ const onSave = async () => {
         dbUser: form.dbUser.trim(),
         dbPassword: form.dbPassword
       })
+
       await api.setSchemaLanguage(schemaLanguage.value)
       await api.setTableReferenceCount(safeTableCount)
-      setMessage('Configuração salva. Indexando schema...', 'ok')
-      await api.ingestSchema()
+      setMessage('Ambiente criado. Indexando schema...', 'ok')
+      await api.ingestSchemaForEnv(created.environmentId)
     } else {
       if (!form.apiBaseUrl.trim()) {
         setMessage('Informe a Base URL da API.', 'error')
@@ -410,7 +433,8 @@ const onSave = async () => {
         return
       }
 
-      await api.saveConfig({
+      await api.createEnvironment({
+        name: envName,
         openAiApiKey: form.openAiApiKey.trim(),
         mode: 'api',
         apiBaseUrl: form.apiBaseUrl.trim(),
@@ -421,9 +445,10 @@ const onSave = async () => {
         apiAuthUsername: form.apiAuthUsername || undefined,
         apiAuthPassword: form.apiAuthPassword || undefined,
         apiReadOnly: form.apiReadOnly,
-        swaggerUrl: form.swaggerUrl.trim() || undefined
+        swaggerUrl: form.swaggerUrl.trim() || undefined,
+        swaggerContent: form.swaggerContent.trim() || undefined
       })
-      setMessage('Configuração salva. Indexando endpoints...', 'ok')
+      setMessage('Ambiente criado. Indexando endpoints...', 'ok')
       await api.ingestSwagger({
         url: form.swaggerUrl.trim() || undefined,
         content: form.swaggerContent.trim() || undefined

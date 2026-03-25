@@ -12,7 +12,8 @@ const router = createRouter({
     { path: '/history', component: () => import('./pages/History.vue') },
     { path: '/schema', component: () => import('./pages/Schema.vue') },
     { path: '/instructions', component: () => import('./pages/Instructions.vue') },
-    { path: '/settings', component: () => import('./pages/Settings.vue') }
+    { path: '/settings', component: () => import('./pages/Settings.vue') },
+    { path: '/environments', component: () => import('./pages/Environments.vue') }
   ]
 })
 

@@ -233,9 +233,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, inject, onMounted, watch, type Ref } from 'vue'
 import { api } from '../services/api'
 import type { HistoryRecord } from '../types'
+
+const environmentVersion = inject<Ref<number>>('environmentVersion')
 
 const history = ref<HistoryRecord[]>([])
 const loading = ref(true)
@@ -330,7 +332,9 @@ const visiblePages = computed(() => {
   return pages
 })
 
-onMounted(async () => {
+async function loadHistory() {
+  loading.value = true
+  error.value = ''
   try {
     history.value = await api.getHistory()
   } catch (e: any) {
@@ -338,7 +342,16 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(loadHistory)
+
+// Quando troca de ambiente, recarrega historico
+if (environmentVersion) {
+  watch(environmentVersion, () => {
+    void loadHistory()
+  })
+}
 
 async function toggleFavorite(item: HistoryRecord) {
   const newValue = !item.favorite

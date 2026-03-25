@@ -12,6 +12,23 @@
         </div>
       </div>
 
+      <div v-if="environments.length > 1" class="env-selector">
+        <label class="env-label">Ambiente</label>
+        <select
+          v-model="selectedEnvironmentId"
+          class="env-select"
+          @change="onEnvironmentChange"
+        >
+          <option
+            v-for="env in environments"
+            :key="env.environmentId"
+            :value="env.environmentId"
+          >
+            {{ env.name }}
+          </option>
+        </select>
+      </div>
+
       <nav class="nav-menu">
         <router-link to="/chat" class="nav-item" :class="{ active: $route.path === '/chat' }">
           <span>Perguntar</span>
@@ -24,6 +41,9 @@
         </router-link>
         <router-link to="/instructions" class="nav-item" :class="{ active: $route.path === '/instructions' }">
           <span>Instruções</span>
+        </router-link>
+        <router-link to="/environments" class="nav-item" :class="{ active: $route.path === '/environments' }">
+          <span>Ambientes</span>
         </router-link>
         <router-link to="/settings" class="nav-item" :class="{ active: $route.path === '/settings' }">
           <span>Configurações</span>
@@ -45,23 +65,42 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from './services/api'
-import type { AppMode, DbType } from './types'
+import type { AppMode, DbType, EnvironmentSummary } from './types'
 
 const route = useRoute()
 const router = useRouter()
 const dbType = ref<DbType | null>(null)
 const appMode = ref<AppMode>('database')
+const environments = ref<EnvironmentSummary[]>([])
+const selectedEnvironmentId = ref<string | undefined>(undefined)
+const environmentVersion = ref(0)
+
+provide('selectedEnvironmentId', selectedEnvironmentId)
+provide('environmentVersion', environmentVersion)
+provide('environments', environments)
 
 const isSetupRoute = computed(() => route.path === '/setup')
 const statusText = computed(() => {
-  if (appMode.value === 'api') return 'API conectada'
-  if (dbType.value === 'oracle') return 'Oracle conectado'
-  if (dbType.value === 'mysql') return 'MySQL conectado'
-  return 'SQL Server conectado'
+  const env = environments.value.find(e => e.environmentId === selectedEnvironmentId.value)
+  const envName = env?.name ? ` (${env.name})` : ''
+  if (appMode.value === 'api') return `API conectada${envName}`
+  if (dbType.value === 'oracle') return `Oracle conectado${envName}`
+  if (dbType.value === 'mysql') return `MySQL conectado${envName}`
+  return `SQL Server conectado${envName}`
 })
+
+const onEnvironmentChange = async () => {
+  if (!selectedEnvironmentId.value) return
+  environmentVersion.value++
+  try {
+    const env = await api.getEnvironment(selectedEnvironmentId.value)
+    dbType.value = env.dbType ?? null
+    appMode.value = env.mode ?? 'database'
+  } catch { /* ignore */ }
+}
 
 const enforceSetupFlow = async () => {
   try {
@@ -75,6 +114,10 @@ const enforceSetupFlow = async () => {
       return
     }
     if (status.configured) {
+      environments.value = status.environments ?? []
+      if (environments.value.length > 0 && !selectedEnvironmentId.value) {
+        selectedEnvironmentId.value = environments.value[0]!.environmentId
+      }
       const cfg = await api.getConfig()
       dbType.value = cfg.dbType ?? null
       appMode.value = cfg.mode ?? 'database'
@@ -130,6 +173,43 @@ watch(() => route.path, () => {
 
 .logo-text .accent {
   color: var(--color-accent);
+}
+
+.env-selector {
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.env-label {
+  display: block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-gray-500);
+  margin-bottom: 0.375rem;
+}
+
+.env-select {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--color-gray-200);
+  font-size: 0.85rem;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.env-select:hover,
+.env-select:focus {
+  border-color: var(--color-accent);
+}
+
+.env-select option {
+  background: var(--bg-card);
+  color: var(--color-gray-200);
 }
 
 .nav-menu {

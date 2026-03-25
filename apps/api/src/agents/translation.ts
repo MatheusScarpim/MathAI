@@ -63,13 +63,18 @@ export const translateText = async (
   return translated ? translated.replace(/\s+/g, " ") : text;
 };
 
+export interface StandaloneResult {
+  question: string;
+  isNewTopic: boolean;
+}
+
 export const buildStandaloneQuestion = async (
   question: string,
   history: string[],
   targetLanguage: "pt" | "en" | "es"
-): Promise<string> => {
+): Promise<StandaloneResult> => {
   const trimmed = question.trim();
-  if (!trimmed) return question;
+  if (!trimmed) return { question, isNewTopic: false };
   const historySection = history.length
     ? history.map((item, index) => `${index + 1}) ${item}`).join("\n")
     : "";
@@ -81,7 +86,11 @@ export const buildStandaloneQuestion = async (
     "carry over the missing context and only change the time period.",
     "If the current question already includes a year/month/period, keep it unchanged.",
     "If the current question is already concrete, return it as-is.",
-    "Return only the question text without quotes or markdown."
+    "IMPORTANT: If the current question is about a completely different subject/topic than the history",
+    "(e.g., history is about sales but the question is about employees, or history is about revenue but the question is about inventory),",
+    "ignore the history entirely and return the question as-is.",
+    "Output format: Start with [NEW_TOPIC] if the question is unrelated to the history, otherwise start with [FOLLOW_UP].",
+    "Then on a new line, write only the question text without quotes or markdown."
   ].join(" ");
   const user = historySection
     ? `History:\n${historySection}\n\nCurrent question:\n${trimmed}`
@@ -104,6 +113,15 @@ export const buildStandaloneQuestion = async (
   if (shouldLogPrompts() && completion.usage) {
     console.info(`[tokens] standalone-question | input=${completion.usage.prompt_tokens} output=${completion.usage.completion_tokens} total=${completion.usage.total_tokens}`);
   }
-  const rewritten = completion.choices[0]?.message?.content?.trim();
-  return rewritten ? rewritten.replace(/\s+/g, " ") : question;
+  const raw = completion.choices[0]?.message?.content?.trim() ?? "";
+  const isNewTopic = raw.startsWith("[NEW_TOPIC]");
+  const cleaned = raw
+    .replace(/^\[NEW_TOPIC\]\s*/i, "")
+    .replace(/^\[FOLLOW_UP\]\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return {
+    question: cleaned || question,
+    isNewTopic
+  };
 };

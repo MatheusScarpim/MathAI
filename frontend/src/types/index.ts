@@ -112,10 +112,33 @@ export interface TableInfo {
   tags: string[]
 }
 
-export type DbType = 'sqlserver' | 'oracle' | 'mysql'
+export type DbType = 'sqlserver' | 'oracle' | 'mysql' | 'postgresql'
+
+export interface EnvironmentSummary {
+  environmentId: string
+  name: string
+}
+
+export interface EnvironmentView {
+  environmentId: string
+  name: string
+  mode: AppMode
+  dbType?: DbType
+  dbHost?: string
+  dbPort?: number
+  dbName?: string
+  dbUser?: string
+  apiBaseUrl?: string
+  apiAuthType?: ApiAuthType
+  apiReadOnly?: boolean
+  swaggerUrl?: string
+  configuredAt: string
+}
 
 export interface ConfigStatusResponse {
   configured: boolean
+  environmentCount?: number
+  environments?: EnvironmentSummary[]
 }
 
 export interface AppConfigView {

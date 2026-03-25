@@ -1,6 +1,6 @@
 import type { ColumnInfo, ForeignKeyInfo, TableChunk } from "@auraia/shared";
 import { getOpenAI, EMBEDDING_MODEL } from "./openai.js";
-import { qdrant, ensureSchemaCollection } from "./qdrant.js";
+import { qdrant, ensureSchemaCollection, getSchemaCollectionName } from "./qdrant.js";
 import { createHash } from "crypto";
 import type { DbAdapter } from "./db.js";
 
@@ -36,6 +36,8 @@ const loadSchemaFromSqlServer = async (adapter: DbAdapter): Promise<TableInfo[]>
     FROM sys.objects o
     INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
     WHERE o.type IN ('U','V')
+    AND s.name NOT IN ('sys', 'INFORMATION_SCHEMA', 'guest')
+    AND o.is_ms_shipped = 0
   `);
 
   const tablesById = new Map<number, TableInfo>();
@@ -302,6 +304,106 @@ const loadSchemaFromMySQL = async (adapter: DbAdapter): Promise<TableInfo[]> => 
   return Array.from(tablesByFullName.values());
 };
 
+// ================== PostgreSQL Schema ==================
+
+type PgTableRow = { table_schema: string; table_name: string; table_type: string };
+type PgColumnRow = { table_schema: string; table_name: string; column_name: string; data_type: string };
+type PgPkRow = { table_schema: string; table_name: string; column_name: string };
+type PgFkRow = { table_schema: string; table_name: string; column_name: string; foreign_table_schema: string; foreign_table_name: string; foreign_column_name: string };
+
+const loadSchemaFromPostgreSQL = async (adapter: DbAdapter): Promise<TableInfo[]> => {
+  const tablesResult = await adapter.query<PgTableRow>(`
+    SELECT table_schema, table_name, table_type
+    FROM information_schema.tables
+    WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+    AND table_type IN ('BASE TABLE', 'VIEW')
+  `);
+
+  let objectCounter = 1;
+  const tablesByFullName = new Map<string, TableInfo>();
+  for (const row of tablesResult.recordset) {
+    const fullName = `${row.table_schema}.${row.table_name}`;
+    const objectType = row.table_type === "VIEW" ? "V" as const : "U" as const;
+    tablesByFullName.set(fullName, {
+      schema: row.table_schema,
+      name: row.table_name,
+      fullName,
+      objectId: objectCounter++,
+      columns: [],
+      primaryKey: [],
+      foreignKeys: [],
+      tags: tagForTable(row.table_name, objectType)
+    });
+  }
+
+  const columnsResult = await adapter.query<PgColumnRow>(`
+    SELECT table_schema, table_name, column_name, data_type
+    FROM information_schema.columns
+    WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+    ORDER BY table_schema, table_name, ordinal_position
+  `);
+
+  for (const row of columnsResult.recordset) {
+    const fullName = `${row.table_schema}.${row.table_name}`;
+    const table = tablesByFullName.get(fullName);
+    if (!table) continue;
+    table.columns.push({ name: row.column_name, type: row.data_type });
+  }
+
+  const pkResult = await adapter.query<PgPkRow>(`
+    SELECT kcu.table_schema, kcu.table_name, kcu.column_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kcu
+      ON tc.constraint_name = kcu.constraint_name
+      AND tc.table_schema = kcu.table_schema
+      AND tc.table_name = kcu.table_name
+    WHERE tc.constraint_type = 'PRIMARY KEY'
+    AND tc.table_schema NOT IN ('pg_catalog', 'information_schema')
+  `);
+
+  for (const row of pkResult.recordset) {
+    const fullName = `${row.table_schema}.${row.table_name}`;
+    const table = tablesByFullName.get(fullName);
+    if (!table) continue;
+    table.primaryKey.push(row.column_name);
+  }
+
+  const fkResult = await adapter.query<PgFkRow>(`
+    SELECT
+      kcu.table_schema,
+      kcu.table_name,
+      kcu.column_name,
+      ccu.table_schema AS foreign_table_schema,
+      ccu.table_name AS foreign_table_name,
+      ccu.column_name AS foreign_column_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kcu
+      ON tc.constraint_name = kcu.constraint_name
+      AND tc.table_schema = kcu.table_schema
+    JOIN information_schema.constraint_column_usage ccu
+      ON tc.constraint_name = ccu.constraint_name
+      AND tc.table_schema = ccu.table_schema
+    WHERE tc.constraint_type = 'FOREIGN KEY'
+    AND tc.table_schema NOT IN ('pg_catalog', 'information_schema')
+  `);
+
+  for (const row of fkResult.recordset) {
+    const fullName = `${row.table_schema}.${row.table_name}`;
+    const table = tablesByFullName.get(fullName);
+    if (!table) continue;
+
+    const refFullName = `${row.foreign_table_schema}.${row.foreign_table_name}`;
+    table.foreignKeys.push({
+      fromTable: fullName,
+      fromColumn: row.column_name,
+      toTable: refFullName,
+      toColumn: row.foreign_column_name
+    });
+  }
+
+  return Array.from(tablesByFullName.values());
+};
+
 // ================== Unified ==================
 
 export const loadSchema = async (adapter: DbAdapter): Promise<TableInfo[]> => {
@@ -310,6 +412,9 @@ export const loadSchema = async (adapter: DbAdapter): Promise<TableInfo[]> => {
   }
   if (adapter.getDbType() === "mysql") {
     return loadSchemaFromMySQL(adapter);
+  }
+  if (adapter.getDbType() === "postgresql") {
+    return loadSchemaFromPostgreSQL(adapter);
   }
   return loadSchemaFromSqlServer(adapter);
 };
@@ -355,14 +460,11 @@ const buildChunkText = (table: TableInfo): string => {
 };
 
 export const ingestSchemaToQdrant = async (
-  tables: TableInfo[]
+  tables: TableInfo[],
+  environmentId?: string
 ): Promise<number> => {
-  await ensureSchemaCollection();
-
-  const toUuid = (value: string): string => {
-    const hash = createHash("sha1").update(value).digest("hex").slice(0, 32);
-    return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20)}`;
-  };
+  await ensureSchemaCollection(environmentId);
+  const collectionName = getSchemaCollectionName(environmentId);
 
   const batchSize = 20;
   for (let i = 0; i < tables.length; i += batchSize) {
@@ -390,7 +492,7 @@ export const ingestSchemaToQdrant = async (
       };
     });
 
-    await qdrant.upsert("schema_chunks", {
+    await qdrant.upsert(collectionName, {
       wait: true,
       points
     });
@@ -399,24 +501,47 @@ export const ingestSchemaToQdrant = async (
   return tables.length;
 };
 
-let cachedSchema: { tables: TableChunk[]; loadedAt: number } | null = null;
-
-export const clearSchemaCache = (): void => {
-  cachedSchema = null;
+const toUuid = (value: string): string => {
+  const hash = createHash("sha1").update(value).digest("hex").slice(0, 32);
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20)}`;
 };
 
-export const loadSchemaGraph = async (): Promise<TableChunk[]> => {
-  if (cachedSchema && Date.now() - cachedSchema.loadedAt < 5 * 60 * 1000) {
-    return cachedSchema.tables;
+export const deleteTableFromQdrant = async (
+  tableFullName: string,
+  environmentId?: string
+): Promise<void> => {
+  await ensureSchemaCollection(environmentId);
+  const collectionName = getSchemaCollectionName(environmentId);
+  const id = toUuid(tableFullName);
+  await qdrant.delete(collectionName, { wait: true, points: [id] });
+  clearSchemaCache(environmentId);
+};
+
+const schemaCacheByEnv = new Map<string, { tables: TableChunk[]; loadedAt: number }>();
+
+export const clearSchemaCache = (environmentId?: string): void => {
+  if (environmentId) {
+    schemaCacheByEnv.delete(environmentId);
+  } else {
+    schemaCacheByEnv.clear();
+  }
+};
+
+export const loadSchemaGraph = async (environmentId?: string): Promise<TableChunk[]> => {
+  const cacheKey = environmentId ?? "__legacy__";
+  const cached = schemaCacheByEnv.get(cacheKey);
+  if (cached && Date.now() - cached.loadedAt < 5 * 60 * 1000) {
+    return cached.tables;
   }
 
-  await ensureSchemaCollection();
+  await ensureSchemaCollection(environmentId);
+  const collectionName = getSchemaCollectionName(environmentId);
 
   const tables: TableChunk[] = [];
   let offset: string | number | undefined;
 
   do {
-    const result = await qdrant.scroll("schema_chunks", {
+    const result = await qdrant.scroll(collectionName, {
       limit: 100,
       offset,
       with_payload: true,
@@ -433,6 +558,6 @@ export const loadSchemaGraph = async (): Promise<TableChunk[]> => {
     offset = typeof next === "string" || typeof next === "number" ? next : undefined;
   } while (offset !== undefined);
 
-  cachedSchema = { tables, loadedAt: Date.now() };
+  schemaCacheByEnv.set(cacheKey, { tables, loadedAt: Date.now() });
   return tables;
 };

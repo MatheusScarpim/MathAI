@@ -9,7 +9,7 @@ import {
 } from "./mongo.js";
 import { validateSql } from "./validation.js";
 import { ensureSchemaCollection } from "./qdrant.js";
-import type { Filter } from "mongodb";
+import { ObjectId, type Filter } from "mongodb";
 import {
   findSemanticSql,
   getCachedValue,
@@ -397,9 +397,38 @@ export const answerQuestion = async (
   language: "pt" | "en" | "es" = "pt",
   schemaLanguage: "pt" | "en" | "es" = language,
   responseLanguage: "pt" | "en" | "es" = language,
-  emit?: StepEmitter
+  emit?: StepEmitter,
+  environmentId?: string,
+  historyId?: string
 ): Promise<AskResult> => {
-  await ensureSchemaCollection();
+  // Fallback: se não veio environmentId, buscar pelo historyId ou chatId no histórico
+  let resolvedEnvironmentId = environmentId;
+  if (!resolvedEnvironmentId) {
+    try {
+      const historyCollection = await getHistoryCollection();
+      let found: { environmentId?: string } | null = null;
+
+      if (historyId?.trim()) {
+        found = await historyCollection.findOne(
+          { _id: new ObjectId(historyId.trim()), environmentId: { $exists: true, $nin: [null as unknown as string, ""] } },
+          { projection: { environmentId: 1 } }
+        );
+      }
+
+      if (!found && chatId?.trim()) {
+        found = await historyCollection.findOne(
+          { chatId: chatId.trim(), environmentId: { $exists: true, $nin: [null as unknown as string, ""] } },
+          { sort: { createdAt: -1 }, projection: { environmentId: 1 } }
+        );
+      }
+
+      if (found?.environmentId) {
+        resolvedEnvironmentId = found.environmentId;
+      }
+    } catch { /* ignore, proceed without */ }
+  }
+
+  await ensureSchemaCollection(resolvedEnvironmentId);
   await ensureAliasInstruction();
 
   const normalizedQuestion = question.trim();
@@ -424,14 +453,16 @@ export const answerQuestion = async (
   // Step 2: Build standalone question from history (TranslationAgent)
   emit?.("step", { step: "building_context", label: "Construindo contexto..." });
   let concreteQuestion = translatedQuestion.trim() || normalizedQuestion;
+  let isNewTopic = false;
   if (normalizedChatId && agentsCfg.translation.enabled !== false) {
     const historyForRewrite = await loadHistoryForRewrite(normalizedChatId, resolvedSchemaLanguage);
     if (historyForRewrite.length) {
       try {
-        const rewritten = await buildStandaloneQuestion(translatedQuestion, historyForRewrite, resolvedSchemaLanguage);
-        if (rewritten.trim()) {
+        const result = await buildStandaloneQuestion(translatedQuestion, historyForRewrite, resolvedSchemaLanguage);
+        isNewTopic = result.isNewTopic;
+        if (result.question.trim()) {
           const currentYear = extractYearFromText(translatedQuestion) ?? extractYearFromText(normalizedQuestion);
-          concreteQuestion = enforceQuestionYear(rewritten, currentYear);
+          concreteQuestion = enforceQuestionYear(result.question, currentYear);
         }
       } catch {
         concreteQuestion = translatedQuestion.trim() || normalizedQuestion;
@@ -442,19 +473,21 @@ export const answerQuestion = async (
   const embeddingQuestion = concreteQuestion.trim() || normalizedQuestion;
 
   // Step 3: Check direct cache
-  const cacheKey = getCacheKey(normalizedQuestion, resolvedChatId, language, resolvedSchemaLanguage, resolvedResponseLanguage);
+  const cacheKey = getCacheKey(normalizedQuestion, resolvedChatId, language, resolvedSchemaLanguage, resolvedResponseLanguage, resolvedEnvironmentId);
   const cached = await getCachedValue<AskSuccessResponse>(cacheKey);
 
-  // Step 4: Generate embedding (SchemaAgent)
+  // Step 4: Generate embedding (SchemaAgent) — skip history if new topic detected
   emit?.("step", { step: "embedding", label: "Gerando embedding..." });
-  const embeddingInput = await buildEmbeddingInput(embeddingQuestion, resolvedChatId, resolvedSchemaLanguage);
+  const embeddingChatId = isNewTopic ? undefined : resolvedChatId;
+  const embeddingInput = await buildEmbeddingInput(embeddingQuestion, embeddingChatId, resolvedSchemaLanguage);
   const vector = await generateEmbedding(embeddingInput);
 
   const schemaQuestion = embeddingQuestion;
   const displayQuestion = normalizedQuestion;
 
   // ── Mode branching: delegate to API orchestrator if mode === "api" ──
-  const currentConfig = await getAppConfig();
+  const { getEnvironment } = await import("./appConfig.js");
+  const currentConfig = resolvedEnvironmentId ? await getEnvironment(resolvedEnvironmentId) : await getAppConfig();
   if (currentConfig?.mode === "api") {
     return answerQuestionApi(
       normalizedQuestion,
@@ -473,6 +506,7 @@ export const answerQuestion = async (
     emit?.("step", { step: "cache_hit", label: "Resultado encontrado no cache!" });
     const historyCollection = await getHistoryCollection();
     const historyResult = await historyCollection.insertOne({
+      environmentId: resolvedEnvironmentId,
       question: normalizedQuestion,
       embeddingQuestion,
       sql: cached.sql,
@@ -503,12 +537,12 @@ export const answerQuestion = async (
     };
   }
 
-  const adapter = await getAdapter();
+  const adapter = await getAdapter(resolvedEnvironmentId);
   const dbType = adapter.getDbType();
 
-  // Step 5: Check semantic cache (with number mismatch detection)
+  // Step 5: Check semantic cache (with mismatch detection)
   emit?.("step", { step: "checking_cache", label: "Verificando cache semantico..." });
-  const semanticMatch = await findSemanticSql(resolvedChatId, resolvedResponseLanguage, resolvedSchemaLanguage, vector, SEMANTIC_SIMILARITY_THRESHOLD);
+  const semanticMatch = await findSemanticSql(resolvedChatId, resolvedResponseLanguage, resolvedSchemaLanguage, vector, SEMANTIC_SIMILARITY_THRESHOLD, resolvedEnvironmentId);
 
   // Extract all numbers from question and cached SQL to detect mismatches
   const extractNumbers = (text: string): string[] => {
@@ -528,11 +562,57 @@ export const answerQuestion = async (
     return !cachedSqlNumbers.includes(num);
   });
 
-  if (hasNumberMismatch && shouldLogPrompts()) {
-    console.info(`[semantic-cache] Skipping cache due to number mismatch: question=[${questionNumbers.join(',')}], cachedSql=[${cachedSqlNumbers.join(',')}]`);
+  // ── Text-level mismatch detection (Jaccard similarity) ──
+  // Embedding similarity alone can miss differences between questions in
+  // the same domain (e.g., same table, different filters). We compute a
+  // Jaccard index on the meaningful terms of both questions; if overlap
+  // is too low the cache hit is discarded regardless of cosine score.
+  const TERM_SIMILARITY_THRESHOLD = 0.4;
+
+  const extractTerms = (text: string): Set<string> => {
+    const normalized = text
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[''"""`]/g, "");
+    const stopwords = new Set([
+      "o", "a", "os", "as", "de", "do", "da", "dos", "das", "em", "no", "na",
+      "nos", "nas", "por", "para", "com", "que", "qual", "quais", "foi", "sao",
+      "total", "todos", "todas", "some", "um", "uma", "ao", "aos", "se", "ou",
+      "e", "the", "of", "in", "and", "to", "what", "how", "was", "is", "are",
+      "were", "all", "from", "which", "me", "meu", "minha", "seu", "sua",
+    ]);
+    return new Set(
+      normalized.split(/\s+/).filter(w => w.length > 2 && !stopwords.has(w))
+    );
+  };
+
+  const jaccardSimilarity = (a: Set<string>, b: Set<string>): number => {
+    if (!a.size && !b.size) return 1;
+    let intersection = 0;
+    for (const term of a) {
+      if (b.has(term)) intersection++;
+    }
+    const union = a.size + b.size - intersection;
+    return union === 0 ? 1 : intersection / union;
+  };
+
+  let hasTermMismatch = false;
+  if (semanticMatch?.sql && semanticMatch.question) {
+    const newTerms = extractTerms(embeddingQuestion);
+    const cachedTerms = extractTerms(semanticMatch.question);
+    const termSim = jaccardSimilarity(newTerms, cachedTerms);
+    hasTermMismatch = termSim < TERM_SIMILARITY_THRESHOLD;
   }
 
-  if (semanticMatch?.sql && !hasNumberMismatch) {
+  const shouldSkipCache = hasNumberMismatch || hasTermMismatch;
+
+  if (shouldSkipCache && shouldLogPrompts()) {
+    const reason = hasNumberMismatch ? "number" : "term";
+    console.info(`[semantic-cache] Skipping cache due to ${reason} mismatch: question="${embeddingQuestion}", cached="${semanticMatch?.question ?? ""}"`);
+  }
+
+  if (semanticMatch?.sql && !shouldSkipCache) {
     const validation = validateSql(semanticMatch.sql, dbType);
     if (validation.ok) {
       try {
@@ -577,6 +657,7 @@ export const answerQuestion = async (
 
         const historyCollection = await getHistoryCollection();
         const historyResult = await historyCollection.insertOne({
+          environmentId: resolvedEnvironmentId,
           question: normalizedQuestion,
           embeddingQuestion,
           sql: semanticMatch.sql,
@@ -601,7 +682,7 @@ export const answerQuestion = async (
           }
         };
         await setCachedValue(cacheKey, responseData);
-        await setSemanticEntry(resolvedChatId, resolvedResponseLanguage, resolvedSchemaLanguage, { embedding: vector, sql: semanticMatch.sql, question: normalizedQuestion, createdAt: new Date().toISOString() });
+        await setSemanticEntry(resolvedChatId, resolvedResponseLanguage, resolvedSchemaLanguage, { embedding: vector, sql: semanticMatch.sql, question: normalizedQuestion, createdAt: new Date().toISOString() }, resolvedEnvironmentId);
         return { ok: true, data: responseData };
       } catch { /* Fall back to LLM generation */ }
     }
@@ -610,7 +691,7 @@ export const answerQuestion = async (
   // Step 6: Search relevant tables (SchemaAgent)
   emit?.("step", { step: "searching_tables", label: "Buscando tabelas relevantes..." });
   const tableReferenceCount = await getTableReferenceCount();
-  const initialTables = await searchRelevantTables(vector, embeddingQuestion, tableReferenceCount);
+  const initialTables = await searchRelevantTables(vector, embeddingQuestion, tableReferenceCount, resolvedEnvironmentId);
   if (initialTables.length === 0) {
     return {
       ok: false,
@@ -620,10 +701,10 @@ export const answerQuestion = async (
 
   // Step 7: Expand tables context (SchemaAgent) — dynamic hops based on question complexity
   const hops = estimateQueryComplexity(embeddingQuestion, initialTables.length);
-  const context = await expandTables(initialTables, hops);
+  const context = await expandTables(initialTables, hops, resolvedEnvironmentId);
   const rawPeriod = findPeriodInText(schemaQuestion) ?? {};
   const currentPeriodText = formatPeriodText(rawPeriod, resolvedSchemaLanguage);
-  const historySnippet = currentPeriodText ? null : await buildHistorySnippet(resolvedChatId, resolvedSchemaLanguage);
+  const historySnippet = currentPeriodText || isNewTopic ? null : await buildHistorySnippet(resolvedChatId, resolvedSchemaLanguage);
   const periodHint = await buildPeriodHint(resolvedChatId, schemaQuestion, resolvedSchemaLanguage);
 
   // Step 8: Load instructions
@@ -772,6 +853,7 @@ export const answerQuestion = async (
 
           const historyCollection = await getHistoryCollection();
           const historyResult = await historyCollection.insertOne({
+            environmentId: resolvedEnvironmentId,
             question: normalizedQuestion, embeddingQuestion, sql,
             rows: queryResult.recordset ?? [], columns, chart, summary,
             createdAt: new Date(), favorite: false, tags: [], chatId: resolvedChatId,
@@ -791,7 +873,7 @@ export const answerQuestion = async (
             }
           };
           await setCachedValue(cacheKey, responseData);
-          await setSemanticEntry(resolvedChatId, resolvedResponseLanguage, resolvedSchemaLanguage, { embedding: vector, sql, question: normalizedQuestion, createdAt: new Date().toISOString() });
+          await setSemanticEntry(resolvedChatId, resolvedResponseLanguage, resolvedSchemaLanguage, { embedding: vector, sql, question: normalizedQuestion, createdAt: new Date().toISOString() }, resolvedEnvironmentId);
 
           if (shouldLogPrompts()) {
             const totalIn = (sqlUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0);
@@ -951,6 +1033,7 @@ export const answerQuestion = async (
 
       const historyCollection = await getHistoryCollection();
       const historyResult = await historyCollection.insertOne({
+        environmentId: resolvedEnvironmentId,
         question: normalizedQuestion,
         embeddingQuestion,
         sql,
@@ -975,7 +1058,7 @@ export const answerQuestion = async (
         }
       };
       await setCachedValue(cacheKey, responseData);
-      await setSemanticEntry(resolvedChatId, resolvedResponseLanguage, resolvedSchemaLanguage, { embedding: vector, sql, question: normalizedQuestion, createdAt: new Date().toISOString() });
+      await setSemanticEntry(resolvedChatId, resolvedResponseLanguage, resolvedSchemaLanguage, { embedding: vector, sql, question: normalizedQuestion, createdAt: new Date().toISOString() }, resolvedEnvironmentId);
 
       // Log total tokens
       if (shouldLogPrompts()) {
@@ -1013,6 +1096,7 @@ export const answerQuestion = async (
 
   const historyCollection = await getHistoryCollection();
   const historyResult = await historyCollection.insertOne({
+    environmentId: resolvedEnvironmentId,
     question: normalizedQuestion, embeddingQuestion, sql: lastSql ?? "",
     createdAt: new Date(), favorite: false, tags: [], chatId: resolvedChatId,
     language: resolvedSchemaLanguage, responseLanguage: resolvedResponseLanguage,

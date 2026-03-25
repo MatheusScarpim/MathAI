@@ -11,6 +11,7 @@ export type InstructionRecord = {
 
 export type HistoryRecord = {
   _id?: ObjectId;
+  environmentId?: string;
   chatId?: string;
   question: string;
   embeddingQuestion?: string;

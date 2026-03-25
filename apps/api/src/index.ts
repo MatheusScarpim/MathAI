@@ -10,7 +10,8 @@ import {
   ingestSchemaToQdrant,
   loadSchema,
   loadSchemaGraph,
-  clearSchemaCache
+  clearSchemaCache,
+  deleteTableFromQdrant
 } from "./schema.js";
 import { clearSchemaCollection, clearEndpointCollection } from "./qdrant.js";
 import { answerQuestion } from "./ask.js";
@@ -37,8 +38,15 @@ import {
   getAppConfig,
   isConfigured,
   saveAppConfig,
+  listEnvironments,
+  getEnvironment,
+  createEnvironment,
+  updateEnvironment,
+  deleteEnvironment,
+  clearEnvironmentCache,
   type AppConfig,
-  type DbType
+  type DbType,
+  type EnvironmentConfig
 } from "./appConfig.js";
 import { clearOpenAICache } from "./openai.js";
 import { clearAskCache } from "./cache.js";
@@ -72,7 +80,7 @@ await app.register(swaggerUi, {
     docExpansion: "list",
     deepLinking: false
   },
-  staticCSP: true
+  staticCSP: false
 });
 
 const VALID_LANGUAGES = ["pt", "en", "es"] as const;
@@ -177,6 +185,7 @@ type AskBody = {
   responseLanguage?: string;
   async?: boolean;
   webhookUrl?: string;
+  environmentId?: string;
 };
 
 type NormalizedAskPayload = {
@@ -186,6 +195,7 @@ type NormalizedAskPayload = {
   schemaLanguage: (typeof VALID_LANGUAGES)[number];
   responseLanguage: (typeof VALID_LANGUAGES)[number];
   webhookUrl?: string;
+  environmentId?: string;
 };
 
 const isValidLanguage = (value: string | undefined): value is (typeof VALID_LANGUAGES)[number] =>
@@ -217,7 +227,8 @@ const normalizeAskPayload = async (body: AskBody): Promise<NormalizedAskPayload>
     questionLanguage,
     schemaLanguage,
     responseLanguage,
-    webhookUrl: body.webhookUrl?.trim()
+    webhookUrl: body.webhookUrl?.trim(),
+    environmentId: body.environmentId?.trim()
   };
 };
 
@@ -292,7 +303,9 @@ const processAskJob = async (
       payload.chatId,
       payload.questionLanguage,
       payload.schemaLanguage,
-      payload.responseLanguage
+      payload.responseLanguage,
+      undefined,
+      payload.environmentId
     );
 
     if (!result.ok) {
@@ -465,7 +478,12 @@ const parsePort = (value: number | string | undefined): number | null => {
 };
 
 app.get("/api/config/status", async (_request, reply) => {
-  reply.send({ configured: await isConfigured() });
+  const environments = await listEnvironments();
+  reply.send({
+    configured: environments.length > 0,
+    environmentCount: environments.length,
+    environments: environments.map(e => ({ environmentId: e.environmentId, name: e.name }))
+  });
 });
 
 app.get("/api/config", async (_request, reply) => {
@@ -616,22 +634,203 @@ app.post("/api/config", async (request, reply) => {
   reply.send({ ok: true });
 });
 
-app.post("/api/ingest/schema", async (_request, reply) => {
-  const adapter = await getAdapter();
+// ================== Environment CRUD ==================
+
+type EnvironmentBody = {
+  name?: string;
+  openAiApiKey?: string;
+  mode?: string;
+  dbType?: DbType;
+  dbHost?: string;
+  dbPort?: number | string;
+  dbName?: string;
+  dbUser?: string;
+  dbPassword?: string;
+  apiBaseUrl?: string;
+  apiAuthType?: string;
+  apiAuthToken?: string;
+  apiAuthApiKeyHeader?: string;
+  apiAuthApiKeyValue?: string;
+  apiAuthUsername?: string;
+  apiAuthPassword?: string;
+  apiReadOnly?: boolean;
+  swaggerUrl?: string;
+  swaggerContent?: string;
+};
+
+const sanitizeEnvironment = (env: EnvironmentConfig) => ({
+  environmentId: env.environmentId,
+  name: env.name,
+  mode: env.mode,
+  dbType: env.dbType,
+  dbHost: env.dbHost,
+  dbPort: env.dbPort,
+  dbName: env.dbName,
+  dbUser: env.dbUser,
+  apiBaseUrl: env.apiBaseUrl,
+  apiAuthType: env.apiAuthType,
+  apiReadOnly: env.apiReadOnly,
+  swaggerUrl: env.swaggerUrl,
+  configuredAt: env.configuredAt
+});
+
+app.get("/api/environments", async (_request, reply) => {
+  const environments = await listEnvironments();
+  reply.send({ environments: environments.map(sanitizeEnvironment) });
+});
+
+app.get("/api/environments/:id", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const env = await getEnvironment(id);
+  if (!env) {
+    reply.status(404).send({ errorMessage: "Ambiente nao encontrado." });
+    return;
+  }
+  reply.send(sanitizeEnvironment(env));
+});
+
+app.post("/api/environments", async (request, reply) => {
+  const body = request.body as EnvironmentBody;
+  if (!isNonEmptyString(body.name)) {
+    reply.status(400).send({ errorMessage: "name obrigatorio." });
+    return;
+  }
+  if (!isNonEmptyString(body.openAiApiKey)) {
+    reply.status(400).send({ errorMessage: "openAiApiKey obrigatoria." });
+    return;
+  }
+
+  const mode = body.mode === "api" ? "api" : "database";
+  const env = await createEnvironment({
+    name: body.name!.trim(),
+    openAiApiKey: body.openAiApiKey!.trim(),
+    mode: mode as AppConfig["mode"],
+    dbType: body.dbType,
+    dbHost: body.dbHost?.trim(),
+    dbPort: typeof body.dbPort === "string" ? Number.parseInt(body.dbPort, 10) : body.dbPort,
+    dbName: body.dbName?.trim(),
+    dbUser: body.dbUser?.trim(),
+    dbPassword: body.dbPassword,
+    apiBaseUrl: body.apiBaseUrl?.trim(),
+    apiAuthType: body.apiAuthType as AppConfig["apiAuthType"],
+    apiAuthToken: body.apiAuthToken,
+    apiAuthApiKeyHeader: body.apiAuthApiKeyHeader,
+    apiAuthApiKeyValue: body.apiAuthApiKeyValue,
+    apiAuthUsername: body.apiAuthUsername,
+    apiAuthPassword: body.apiAuthPassword,
+    apiReadOnly: body.apiReadOnly,
+    swaggerUrl: body.swaggerUrl?.trim(),
+    swaggerContent: body.swaggerContent,
+    configuredAt: new Date()
+  });
+
+  reply.status(201).send(sanitizeEnvironment(env));
+});
+
+app.put("/api/environments/:id", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const body = request.body as EnvironmentBody;
+
+  const updates: Partial<EnvironmentConfig> = {};
+  if (body.name !== undefined) updates.name = body.name.trim();
+  if (body.openAiApiKey !== undefined) updates.openAiApiKey = body.openAiApiKey.trim();
+  if (body.mode !== undefined) updates.mode = (body.mode === "api" ? "api" : "database") as AppConfig["mode"];
+  if (body.dbType !== undefined) updates.dbType = body.dbType;
+  if (body.dbHost !== undefined) updates.dbHost = body.dbHost.trim();
+  if (body.dbPort !== undefined) updates.dbPort = typeof body.dbPort === "string" ? Number.parseInt(body.dbPort, 10) : body.dbPort;
+  if (body.dbName !== undefined) updates.dbName = body.dbName.trim();
+  if (body.dbUser !== undefined) updates.dbUser = body.dbUser.trim();
+  if (body.dbPassword !== undefined) updates.dbPassword = body.dbPassword;
+  if (body.apiBaseUrl !== undefined) updates.apiBaseUrl = body.apiBaseUrl.trim();
+  if (body.apiAuthType !== undefined) updates.apiAuthType = body.apiAuthType as AppConfig["apiAuthType"];
+  if (body.apiAuthToken !== undefined) updates.apiAuthToken = body.apiAuthToken;
+  if (body.apiAuthApiKeyHeader !== undefined) updates.apiAuthApiKeyHeader = body.apiAuthApiKeyHeader;
+  if (body.apiAuthApiKeyValue !== undefined) updates.apiAuthApiKeyValue = body.apiAuthApiKeyValue;
+  if (body.apiAuthUsername !== undefined) updates.apiAuthUsername = body.apiAuthUsername;
+  if (body.apiAuthPassword !== undefined) updates.apiAuthPassword = body.apiAuthPassword;
+  if (body.apiReadOnly !== undefined) updates.apiReadOnly = body.apiReadOnly;
+  if (body.swaggerUrl !== undefined) updates.swaggerUrl = body.swaggerUrl.trim();
+  if (body.swaggerContent !== undefined) updates.swaggerContent = body.swaggerContent;
+
+  const env = await updateEnvironment(id, updates);
+  if (!env) {
+    reply.status(404).send({ errorMessage: "Ambiente nao encontrado." });
+    return;
+  }
+
+  await closeAdapter(id);
+  clearEnvironmentCache();
+  reply.send(sanitizeEnvironment(env));
+});
+
+app.delete("/api/environments/:id", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const deleted = await deleteEnvironment(id);
+  if (!deleted) {
+    reply.status(404).send({ errorMessage: "Ambiente nao encontrado." });
+    return;
+  }
+
+  await closeAdapter(id);
+  await clearSchemaCollection(id);
+  clearSchemaCache(id);
+  reply.send({ ok: true });
+});
+
+app.post("/api/environments/:id/test-db", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const env = await getEnvironment(id);
+  if (!env) {
+    reply.status(404).send({ errorMessage: "Ambiente nao encontrado." });
+    return;
+  }
+
+  if (!env.dbType || !env.dbHost || !env.dbName || !env.dbUser) {
+    reply.status(400).send({ errorMessage: "Configuracao de banco incompleta." });
+    return;
+  }
+
+  const result = await testConnection(
+    env.dbType,
+    env.dbHost,
+    typeof env.dbPort === "number" ? env.dbPort : 1433,
+    env.dbName,
+    env.dbUser,
+    env.dbPassword ?? ""
+  );
+
+  reply.send(result);
+});
+
+// ================== Schema (with optional environmentId) ==================
+
+app.post("/api/ingest/schema", async (request, reply) => {
+  const body = request.body as { environmentId?: string } | null;
+  const envId = body?.environmentId;
+  const adapter = await getAdapter(envId);
   const tables = await loadSchema(adapter);
-  const tablesIndexed = await ingestSchemaToQdrant(tables);
-  clearSchemaCache();
+  const tablesIndexed = await ingestSchemaToQdrant(tables, envId);
+  clearSchemaCache(envId);
   reply.send({ tablesIndexed });
 });
 
-app.get("/api/schema/tables", async () => {
-  const tables = await loadSchemaGraph();
+app.get("/api/schema/tables", async (request) => {
+  const query = request.query as { environmentId?: string };
+  const tables = await loadSchemaGraph(query.environmentId);
   return { tables };
 });
 
-app.post("/api/schema/clear", async (_request, reply) => {
-  await clearSchemaCollection();
-  clearSchemaCache();
+app.post("/api/schema/clear", async (request, reply) => {
+  const body = request.body as { environmentId?: string } | null;
+  await clearSchemaCollection(body?.environmentId);
+  clearSchemaCache(body?.environmentId);
+  reply.send({ ok: true });
+});
+
+app.delete("/api/schema/tables/:tableFullName", async (request, reply) => {
+  const { tableFullName } = request.params as { tableFullName: string };
+  const query = request.query as { environmentId?: string };
+  await deleteTableFromQdrant(decodeURIComponent(tableFullName), query.environmentId);
   reply.send({ ok: true });
 });
 
@@ -1116,7 +1315,8 @@ app.post(
           schemaLanguage: { type: "string", enum: LANGUAGE_ENUM },
           responseLanguage: { type: "string", enum: LANGUAGE_ENUM },
           async: { type: "boolean" },
-          webhookUrl: { type: "string", format: "uri" }
+          webhookUrl: { type: "string", format: "uri" },
+          environmentId: { type: "string", description: "ID do ambiente a ser usado" }
         },
         required: ["question"]
       },
@@ -1197,7 +1397,9 @@ app.post(
       payload.chatId,
       payload.questionLanguage,
       payload.schemaLanguage,
-      payload.responseLanguage
+      payload.responseLanguage,
+      undefined,
+      payload.environmentId
     );
     if (!result.ok) {
       reply.status(400).send(result.error);
@@ -1222,7 +1424,8 @@ app.post(
           chatId: { type: "string", maxLength: 64 },
           language: { type: "string", enum: LANGUAGE_ENUM },
           schemaLanguage: { type: "string", enum: LANGUAGE_ENUM },
-          responseLanguage: { type: "string", enum: LANGUAGE_ENUM }
+          responseLanguage: { type: "string", enum: LANGUAGE_ENUM },
+          environmentId: { type: "string", description: "ID do ambiente a ser usado" }
         },
         required: ["question"]
       }
@@ -1271,7 +1474,8 @@ app.post(
         payload.questionLanguage,
         payload.schemaLanguage,
         payload.responseLanguage,
-        emit
+        emit,
+        payload.environmentId
       );
 
       if (result.ok) {

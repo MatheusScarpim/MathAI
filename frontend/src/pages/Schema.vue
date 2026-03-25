@@ -189,6 +189,17 @@
                 {{ getTableInstructions(table.tableFullName).length }}
                 {{ pluralize(getTableInstructions(table.tableFullName).length, 'instrução', 'instruções') }}
               </span>
+              <button
+                class="btn-remove-table"
+                @click.stop="onDeleteTable(table.tableFullName)"
+                :disabled="deletingTable === table.tableFullName"
+                title="Remover tabela do índice"
+              >
+                <span v-if="deletingTable === table.tableFullName" class="spinner-sm"></span>
+                <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+              </button>
               <svg
                 width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                 :class="{ rotated: expandedTable === table.tableFullName }"
@@ -275,10 +286,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive, watch } from 'vue'
+import { ref, computed, inject, onMounted, reactive, watch, type Ref } from 'vue'
 import { api } from '../services/api'
 import type { TableInfo, Instruction, EndpointInfo, AppMode } from '../types'
 
+const selectedEnvironmentId = inject<Ref<string | undefined>>('selectedEnvironmentId')
+const environmentVersion = inject<Ref<number>>('environmentVersion')
 const mode = ref<AppMode>('database')
 const tables = ref<TableInfo[]>([])
 const endpoints = ref<EndpointInfo[]>([])
@@ -292,6 +305,7 @@ const errorMessage = ref('')
 const search = ref('')
 const expandedTable = ref<string | null>(null)
 const newInstructions = reactive<Record<string, string>>({})
+const deletingTable = ref<string | null>(null)
 const schemaLanguage = ref<'pt' | 'en' | 'es'>('pt')
 const schemaLanguageLoaded = ref(false)
 
@@ -329,6 +343,13 @@ onMounted(async () => {
   await Promise.all([loadData(), loadSchemaLanguage()])
 })
 
+// Quando troca de ambiente, recarrega tabelas/endpoints
+if (environmentVersion) {
+  watch(environmentVersion, () => {
+    void loadData()
+  })
+}
+
 watch(schemaLanguage, async (value, previous) => {
   if (!schemaLanguageLoaded.value || value === previous) return
   try {
@@ -351,8 +372,9 @@ async function loadData() {
       endpoints.value = endpointsRes.endpoints
       instructions.value = instructionsRes
     } else {
+      const envId = selectedEnvironmentId?.value
       const [tablesRes, instructionsRes] = await Promise.all([
-        api.getTables(),
+        envId ? api.getTablesForEnv(envId) : api.getTables(),
         api.getInstructions()
       ])
       tables.value = tablesRes.tables
@@ -388,7 +410,8 @@ async function onReindex() {
       const res = await api.ingestSwagger({})
       successMessage.value = `${res.endpointsIndexed} ${pluralize(res.endpointsIndexed, 'endpoint indexado', 'endpoints indexados')} com sucesso!`
     } else {
-      const res = await api.ingestSchema()
+      const envId = selectedEnvironmentId?.value
+      const res = envId ? await api.ingestSchemaForEnv(envId) : await api.ingestSchema()
       successMessage.value = `${res.tablesIndexed} ${pluralize(res.tablesIndexed, 'tabela indexada', 'tabelas indexadas')} com sucesso!`
     }
     await loadData()
@@ -416,7 +439,8 @@ async function onClear() {
       successMessage.value = 'Endpoints zerados com sucesso!'
       endpoints.value = []
     } else {
-      await api.clearSchema()
+      const envId = selectedEnvironmentId?.value
+      await api.clearSchema(envId)
       successMessage.value = 'Esquema zerado com sucesso!'
       tables.value = []
     }
@@ -426,6 +450,28 @@ async function onClear() {
     errorMessage.value = e.message || 'Erro ao zerar'
   } finally {
     clearing.value = false
+  }
+}
+
+async function onDeleteTable(tableFullName: string) {
+  if (deletingTable.value) return
+  if (!confirm(`Remover "${tableFullName}" do índice?`)) return
+
+  deletingTable.value = tableFullName
+  successMessage.value = ''
+  errorMessage.value = ''
+
+  try {
+    const envId = selectedEnvironmentId?.value
+    await api.deleteTable(tableFullName, envId)
+    tables.value = tables.value.filter(t => t.tableFullName !== tableFullName)
+    if (expandedTable.value === tableFullName) expandedTable.value = null
+    successMessage.value = `Tabela "${tableFullName}" removida do índice!`
+    setTimeout(() => { successMessage.value = '' }, 3000)
+  } catch (e: any) {
+    errorMessage.value = e.message || 'Erro ao remover tabela'
+  } finally {
+    deletingTable.value = null
   }
 }
 
@@ -770,6 +816,41 @@ function formatDate(dateStr: string): string {
 .instruction-badge {
   background: rgba(16, 185, 129, 0.2);
   color: var(--color-accent);
+}
+
+.btn-remove-table {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--color-gray-500);
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.btn-remove-table:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #f87171;
+}
+
+.btn-remove-table:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.spinner-sm {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: var(--color-gray-400);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
 
 .table-actions svg {

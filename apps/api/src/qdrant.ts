@@ -11,48 +11,80 @@ export const qdrant = new QdrantClient({
   url: config.qdrantUrl
 });
 
-export const ensureSchemaCollection = async (): Promise<void> => {
+// ================== Schema collection (per environment) ==================
+
+const getSchemaCollectionName = (environmentId?: string): string =>
+  environmentId ? `schema_chunks_${environmentId}` : "schema_chunks";
+
+const ensuredSchemaCollections = new Set<string>();
+
+export const ensureSchemaCollection = async (environmentId?: string): Promise<void> => {
+  const collectionName = getSchemaCollectionName(environmentId);
+  if (ensuredSchemaCollections.has(collectionName)) return;
+
   const collections = await qdrant.getCollections();
-  const exists = collections.collections.some((c) => c.name === "schema_chunks");
+  const exists = collections.collections.some((c) => c.name === collectionName);
   if (exists) {
+    ensuredSchemaCollections.add(collectionName);
     return;
   }
 
   const vectorSize = VECTOR_SIZE_BY_MODEL[EMBEDDING_MODEL] ?? 1536;
-  await qdrant.createCollection("schema_chunks", {
+  await qdrant.createCollection(collectionName, {
     vectors: {
       size: vectorSize,
       distance: "Cosine"
     }
   });
+  ensuredSchemaCollections.add(collectionName);
 };
 
-export const clearSchemaCollection = async (): Promise<void> => {
+export const clearSchemaCollection = async (environmentId?: string): Promise<void> => {
+  const collectionName = getSchemaCollectionName(environmentId);
   const collections = await qdrant.getCollections();
-  const exists = collections.collections.some((c) => c.name === "schema_chunks");
+  const exists = collections.collections.some((c) => c.name === collectionName);
   if (!exists) return;
-  await qdrant.deleteCollection("schema_chunks");
+  await qdrant.deleteCollection(collectionName);
+  ensuredSchemaCollections.delete(collectionName);
 };
 
-/* ── Endpoint collection (API mode) ──────────────────────── */
+export { getSchemaCollectionName };
 
-export const ensureEndpointCollection = async (): Promise<void> => {
+/* ── Endpoint collection (API mode, per environment) ──────────────────────── */
+
+const getEndpointCollectionName = (environmentId?: string): string =>
+  environmentId ? `endpoint_chunks_${environmentId}` : "endpoint_chunks";
+
+const ensuredEndpointCollections = new Set<string>();
+
+export const ensureEndpointCollection = async (environmentId?: string): Promise<void> => {
+  const collectionName = getEndpointCollectionName(environmentId);
+  if (ensuredEndpointCollections.has(collectionName)) return;
+
   const collections = await qdrant.getCollections();
-  const exists = collections.collections.some((c) => c.name === "endpoint_chunks");
-  if (exists) return;
+  const exists = collections.collections.some((c) => c.name === collectionName);
+  if (exists) {
+    ensuredEndpointCollections.add(collectionName);
+    return;
+  }
 
   const vectorSize = VECTOR_SIZE_BY_MODEL[EMBEDDING_MODEL] ?? 1536;
-  await qdrant.createCollection("endpoint_chunks", {
+  await qdrant.createCollection(collectionName, {
     vectors: {
       size: vectorSize,
       distance: "Cosine"
     }
   });
+  ensuredEndpointCollections.add(collectionName);
 };
 
-export const clearEndpointCollection = async (): Promise<void> => {
+export const clearEndpointCollection = async (environmentId?: string): Promise<void> => {
+  const collectionName = getEndpointCollectionName(environmentId);
   const collections = await qdrant.getCollections();
-  const exists = collections.collections.some((c) => c.name === "endpoint_chunks");
+  const exists = collections.collections.some((c) => c.name === collectionName);
   if (!exists) return;
-  await qdrant.deleteCollection("endpoint_chunks");
+  await qdrant.deleteCollection(collectionName);
+  ensuredEndpointCollections.delete(collectionName);
 };
+
+export { getEndpointCollectionName };

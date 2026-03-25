@@ -237,9 +237,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, inject, onMounted, watch, type Ref } from 'vue'
 import { api } from '../services/api'
 import type { AskResponse } from '../types'
+
+const selectedEnvironmentId = inject<Ref<string | undefined>>('selectedEnvironmentId')
+const environmentVersion = inject<Ref<number>>('environmentVersion')
 
 type ChatEntry = {
   id: string
@@ -326,7 +329,8 @@ async function ask() {
         chatId: chatId.value,
         language: language.value,
         schemaLanguage: schemaLanguage.value,
-        responseLanguage: language.value
+        responseLanguage: language.value,
+        environmentId: selectedEnvironmentId?.value
       })
     })
 
@@ -418,6 +422,13 @@ function resetConversation() {
   entries.value = []
   chatId.value = createChatId()
   question.value = ''
+}
+
+// Quando troca de ambiente, reseta a conversa
+if (environmentVersion) {
+  watch(environmentVersion, () => {
+    resetConversation()
+  })
 }
 
 function copyContent(entry: ChatEntry, text: string) {

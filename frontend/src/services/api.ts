@@ -12,7 +12,8 @@ import type {
   ResetEnvironmentResponse,
   AgentsConfig,
   AppMode,
-  EndpointInfo
+  EndpointInfo,
+  EnvironmentView
 } from '../types'
 
 const API_BASE = '/api'
@@ -80,8 +81,18 @@ export const api = {
     return request('/schema/tables')
   },
 
-  async clearSchema(): Promise<{ ok: boolean }> {
-    return request('/schema/clear', { method: 'POST' })
+  async clearSchema(environmentId?: string): Promise<{ ok: boolean }> {
+    return request('/schema/clear', {
+      method: 'POST',
+      body: environmentId ? JSON.stringify({ environmentId }) : undefined
+    })
+  },
+
+  async deleteTable(tableFullName: string, environmentId?: string): Promise<{ ok: boolean }> {
+    const qs = environmentId ? `?environmentId=${encodeURIComponent(environmentId)}` : ''
+    return request(`/schema/tables/${encodeURIComponent(tableFullName)}${qs}`, {
+      method: 'DELETE'
+    })
   },
 
   // Settings
@@ -128,13 +139,57 @@ export const api = {
     })
   },
 
+  // Environments
+  async listEnvironments(): Promise<{ environments: EnvironmentView[] }> {
+    return request('/environments')
+  },
+
+  async getEnvironment(id: string): Promise<EnvironmentView> {
+    return request(`/environments/${id}`)
+  },
+
+  async createEnvironment(payload: Record<string, unknown>): Promise<EnvironmentView> {
+    return request('/environments', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+  },
+
+  async updateEnvironment(id: string, payload: Record<string, unknown>): Promise<EnvironmentView> {
+    return request(`/environments/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    })
+  },
+
+  async deleteEnvironment(id: string): Promise<{ ok: boolean }> {
+    return request(`/environments/${id}`, { method: 'DELETE' })
+  },
+
+  async testEnvironmentDb(id: string): Promise<{ ok: boolean; error?: string }> {
+    return request(`/environments/${id}/test-db`, { method: 'POST' })
+  },
+
+  // Schema (with optional environmentId)
+  async ingestSchemaForEnv(environmentId: string): Promise<IngestResponse> {
+    return request('/ingest/schema', {
+      method: 'POST',
+      body: JSON.stringify({ environmentId })
+    })
+  },
+
+  async getTablesForEnv(environmentId: string): Promise<{ tables: TableInfo[] }> {
+    return request(`/schema/tables?environmentId=${encodeURIComponent(environmentId)}`)
+  },
+
   // Ask (main endpoint)
   async ask(
     question: string,
     chatId?: string,
     language: 'pt' | 'en' | 'es' = 'pt',
     schemaLanguage: 'pt' | 'en' | 'es' = 'pt',
-    responseLanguage?: 'pt' | 'en' | 'es'
+    responseLanguage?: 'pt' | 'en' | 'es',
+    environmentId?: string
   ): Promise<AskResponse> {
     const res = await fetch(`${API_BASE}/ask`, {
       method: 'POST',
@@ -146,7 +201,8 @@ export const api = {
         chatId,
         language,
         schemaLanguage,
-        responseLanguage
+        responseLanguage,
+        environmentId
       })
     })
     const payload = await res.json().catch(() => null)

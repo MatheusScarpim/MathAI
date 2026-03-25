@@ -20,7 +20,7 @@ RUN apt-get update \
   && ln -s /opt/oracle/instantclient_* /opt/oracle/instantclient
 
 ENV ORACLE_CLIENT_LIB_DIR=/opt/oracle/instantclient
-ENV LD_LIBRARY_PATH=/opt/oracle/instantclient:${LD_LIBRARY_PATH}
+ENV LD_LIBRARY_PATH=/opt/oracle/instantclient
 
 COPY apps/api apps/api
 COPY packages/shared packages/shared

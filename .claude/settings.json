@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(echo \"exit: $?\")"
+      "Bash(echo \"exit: $?\")",
+      "Bash(ls -la /c/Users/matheus.cuan/Documents/Github/AuraIa/apps/api/src/*.ts)"
     ]
   }
 }

@@ -1,7 +1,8 @@
 import sql from "mssql";
 import OracleDB from "oracledb";
 import mysql from "mysql2/promise";
-import { getAppConfig, type DbType } from "./appConfig.js";
+import pg from "pg";
+import { getEnvironment, type DbType } from "./appConfig.js";
 
 let oracleClientInitialized = false;
 
@@ -62,7 +63,7 @@ class SqlServerAdapter implements DbAdapter {
 
   async connect(): Promise<void> {
     if (this.pool) return;
-    this.pool = await sql.connect({
+    this.pool = new sql.ConnectionPool({
       user: this.user,
       password: this.password,
       server: this.host,
@@ -80,17 +81,34 @@ class SqlServerAdapter implements DbAdapter {
       connectionTimeout: 15000,
       requestTimeout: 20000
     });
+    await this.pool.connect();
   }
 
   async query<T = Record<string, unknown>>(sqlText: string): Promise<QueryResult<T>> {
     if (!this.pool) await this.connect();
-    const result = await this.pool!.request().query<T>(sqlText);
-    const columns = result.recordset?.columns
-      ? Object.keys(result.recordset.columns)
-      : result.recordset?.[0]
-        ? Object.keys(result.recordset[0] as Record<string, unknown>)
-        : [];
-    return { recordset: result.recordset ?? [], columns };
+    try {
+      const result = await this.pool!.request().query<T>(sqlText);
+      const columns = result.recordset?.columns
+        ? Object.keys(result.recordset.columns)
+        : result.recordset?.[0]
+          ? Object.keys(result.recordset[0] as Record<string, unknown>)
+          : [];
+      return { recordset: result.recordset ?? [], columns };
+    } catch (error: unknown) {
+      const code = (error as { code?: string }).code;
+      if (code === "ECONNCLOSED" || code === "ENOTOPEN") {
+        this.pool = null;
+        await this.connect();
+        const result = await this.pool!.request().query<T>(sqlText);
+        const columns = result.recordset?.columns
+          ? Object.keys(result.recordset.columns)
+          : result.recordset?.[0]
+            ? Object.keys(result.recordset[0] as Record<string, unknown>)
+            : [];
+        return { recordset: result.recordset ?? [], columns };
+      }
+      throw error;
+    }
   }
 
   async close(): Promise<void> {
@@ -247,10 +265,70 @@ class MySQLAdapter implements DbAdapter {
   }
 }
 
-// ================== Factory ==================
+// ================== PostgreSQL Adapter ==================
 
-let currentAdapter: DbAdapter | null = null;
-let currentConfigHash: string | null = null;
+class PostgreSQLAdapter implements DbAdapter {
+  private pool: pg.Pool | null = null;
+  private host: string;
+  private port: number;
+  private database: string;
+  private user: string;
+  private password: string;
+
+  constructor(host: string, port: number, database: string, user: string, password: string) {
+    this.host = host;
+    this.port = port;
+    this.database = database;
+    this.user = user;
+    this.password = password;
+  }
+
+  async connect(): Promise<void> {
+    if (this.pool) return;
+    this.pool = new pg.Pool({
+      host: this.host,
+      port: this.port,
+      database: this.database,
+      user: this.user,
+      password: this.password,
+      max: 5,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 15000
+    });
+  }
+
+  async query<T = Record<string, unknown>>(sqlText: string): Promise<QueryResult<T>> {
+    if (!this.pool) await this.connect();
+    const result = await this.pool!.query(sqlText);
+    const recordset = (result.rows ?? []) as T[];
+    const columns = result.fields
+      ? result.fields.map((f) => f.name)
+      : recordset.length > 0
+        ? Object.keys(recordset[0] as Record<string, unknown>)
+        : [];
+    return { recordset, columns };
+  }
+
+  async close(): Promise<void> {
+    if (this.pool) {
+      await this.pool.end();
+      this.pool = null;
+    }
+  }
+
+  getDbType(): DbType {
+    return "postgresql";
+  }
+}
+
+// ================== Adapter Pool (per environment) ==================
+
+type AdapterEntry = {
+  adapter: DbAdapter;
+  configHash: string;
+};
+
+const adapterPool = new Map<string, AdapterEntry>();
 
 const buildConfigHash = (
   dbType: string,
@@ -261,72 +339,101 @@ const buildConfigHash = (
   password: string
 ): string => `${dbType}:${host}:${port}:${name}:${user}:${password}`;
 
-export const getAdapter = async (): Promise<DbAdapter> => {
-  const appConfig = await getAppConfig();
-  if (!appConfig) {
-    throw new Error("App not configured. Please complete setup first.");
-  }
-
-  const dbType = appConfig.dbType ?? "sqlserver";
-  const dbHost = appConfig.dbHost ?? "localhost";
-  const dbPort = appConfig.dbPort ?? 1433;
-  const dbName = appConfig.dbName ?? "";
-  const dbUser = appConfig.dbUser ?? "";
-  const dbPassword = appConfig.dbPassword ?? "";
-
-  const hash = buildConfigHash(
-    dbType,
-    dbHost,
-    dbPort,
-    dbName,
-    dbUser,
-    dbPassword
-  );
-
-  if (currentAdapter && currentConfigHash === hash) {
-    return currentAdapter;
-  }
-
-  if (currentAdapter) {
-    await currentAdapter.close();
-  }
-
+const createAdapter = (
+  dbType: DbType,
+  host: string,
+  port: number,
+  name: string,
+  user: string,
+  password: string
+): DbAdapter => {
   if (dbType === "oracle") {
-    currentAdapter = new OracleAdapter(
-      dbHost,
-      dbPort,
-      dbName,
-      dbUser,
-      dbPassword
-    );
-  } else if (dbType === "mysql") {
-    currentAdapter = new MySQLAdapter(
-      dbHost,
-      dbPort,
-      dbName,
-      dbUser,
-      dbPassword
-    );
-  } else {
-    currentAdapter = new SqlServerAdapter(
-      dbHost,
-      dbPort,
-      dbName,
-      dbUser,
-      dbPassword
-    );
+    return new OracleAdapter(host, port, name, user, password);
   }
-
-  await currentAdapter.connect();
-  currentConfigHash = hash;
-  return currentAdapter;
+  if (dbType === "mysql") {
+    return new MySQLAdapter(host, port, name, user, password);
+  }
+  if (dbType === "postgresql") {
+    return new PostgreSQLAdapter(host, port, name, user, password);
+  }
+  return new SqlServerAdapter(host, port, name, user, password);
 };
 
-export const closeAdapter = async (): Promise<void> => {
-  if (currentAdapter) {
-    await currentAdapter.close();
-    currentAdapter = null;
-    currentConfigHash = null;
+export const getAdapter = async (environmentId?: string): Promise<DbAdapter> => {
+  if (!environmentId) {
+    // Legacy fallback: use first environment
+    const { getAppConfig } = await import("./appConfig.js");
+    const appConfig = await getAppConfig();
+    if (!appConfig) {
+      throw new Error("App not configured. Please complete setup first.");
+    }
+
+    const dbType = appConfig.dbType ?? "sqlserver";
+    const dbHost = appConfig.dbHost ?? "localhost";
+    const dbPort = appConfig.dbPort ?? 1433;
+    const dbName = appConfig.dbName ?? "";
+    const dbUser = appConfig.dbUser ?? "";
+    const dbPassword = appConfig.dbPassword ?? "";
+
+    const hash = buildConfigHash(dbType, dbHost, dbPort, dbName, dbUser, dbPassword);
+    const key = "__legacy__";
+    const existing = adapterPool.get(key);
+
+    if (existing && existing.configHash === hash) {
+      return existing.adapter;
+    }
+    if (existing) {
+      await existing.adapter.close();
+    }
+
+    const adapter = createAdapter(dbType, dbHost, dbPort, dbName, dbUser, dbPassword);
+    await adapter.connect();
+    adapterPool.set(key, { adapter, configHash: hash });
+    return adapter;
+  }
+
+  const envConfig = await getEnvironment(environmentId);
+  if (!envConfig) {
+    throw new Error(`Environment "${environmentId}" not found.`);
+  }
+
+  const dbType = envConfig.dbType ?? "sqlserver";
+  const dbHost = envConfig.dbHost ?? "localhost";
+  const dbPort = envConfig.dbPort ?? 1433;
+  const dbName = envConfig.dbName ?? "";
+  const dbUser = envConfig.dbUser ?? "";
+  const dbPassword = envConfig.dbPassword ?? "";
+
+  const hash = buildConfigHash(dbType, dbHost, dbPort, dbName, dbUser, dbPassword);
+  const existing = adapterPool.get(environmentId);
+
+  if (existing && existing.configHash === hash) {
+    return existing.adapter;
+  }
+  if (existing) {
+    await existing.adapter.close();
+  }
+
+  const adapter = createAdapter(dbType, dbHost, dbPort, dbName, dbUser, dbPassword);
+  await adapter.connect();
+  adapterPool.set(environmentId, { adapter, configHash: hash });
+  return adapter;
+};
+
+export const closeAdapter = async (environmentId?: string): Promise<void> => {
+  if (environmentId) {
+    const entry = adapterPool.get(environmentId);
+    if (entry) {
+      await entry.adapter.close();
+      adapterPool.delete(environmentId);
+    }
+    return;
+  }
+
+  // Close all adapters
+  for (const [key, entry] of adapterPool) {
+    await entry.adapter.close();
+    adapterPool.delete(key);
   }
 };
 
@@ -339,14 +446,7 @@ export const testConnection = async (
   user: string,
   password: string
 ): Promise<{ ok: true } | { ok: false; error: string }> => {
-  let adapter: DbAdapter;
-  if (dbType === "oracle") {
-    adapter = new OracleAdapter(host, port, name, user, password);
-  } else if (dbType === "mysql") {
-    adapter = new MySQLAdapter(host, port, name, user, password);
-  } else {
-    adapter = new SqlServerAdapter(host, port, name, user, password);
-  }
+  const adapter = createAdapter(dbType, host, port, name, user, password);
 
   try {
     await adapter.connect();

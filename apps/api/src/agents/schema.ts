@@ -1,5 +1,5 @@
 import type { TableChunk } from "@auraia/shared";
-import { qdrant } from "../qdrant.js";
+import { qdrant, getSchemaCollectionName } from "../qdrant.js";
 import { loadSchemaGraph } from "../schema.js";
 import { getOpenAI, getEmbeddingModel, getSqlModelMini } from "../openai.js";
 import { getHistoryCollection } from "../mongo.js";
@@ -36,10 +36,11 @@ export const estimateQueryComplexity = (question: string, initialTableCount: num
 
 export const expandTables = async (
   initial: TableChunk[],
-  maxHops: number = 2
+  maxHops: number = 2,
+  environmentId?: string
 ): Promise<ExpandedContext> => {
   const maxTablesFinal = 10;
-  const allTables = await loadSchemaGraph();
+  const allTables = await loadSchemaGraph(environmentId);
   const byName = new Map(allTables.map((table) => [table.tableFullName, table]));
 
   const adjacency = new Map<string, TableChunk[]>();
@@ -177,7 +178,8 @@ const scoreTableMatch = (questionTokens: string[], table: TableChunk): number =>
 export const searchRelevantTables = async (
   vector: number[],
   question: string,
-  maxTables: number = 8
+  maxTables: number = 8,
+  environmentId?: string
 ): Promise<TableChunk[]> => {
   const safeMaxTables = Number.isFinite(maxTables)
     ? Math.max(1, Math.min(30, Math.floor(maxTables)))
@@ -186,7 +188,8 @@ export const searchRelevantTables = async (
   // Fetch more candidates than needed for reranking (~15)
   const candidateLimit = Math.max(15, safeMaxTables + 7);
 
-  const search = await qdrant.search("schema_chunks", {
+  const collectionName = getSchemaCollectionName(environmentId);
+  const search = await qdrant.search(collectionName, {
     vector,
     limit: candidateLimit,
     with_payload: true
