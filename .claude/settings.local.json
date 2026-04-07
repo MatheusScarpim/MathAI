@@ -9,7 +9,8 @@
       "Bash(node_modules/.bin/tsc:*)",
       "Bash(npm install:*)",
       "Bash(docker push:*)",
-      "Bash(docker build:*)"
+      "Bash(docker build:*)",
+      "Bash(grep -v \"^$\")"
     ]
   }
 }

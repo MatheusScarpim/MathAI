@@ -35,11 +35,39 @@ const applyAuth = (
 
 /* ── URL helpers ─────────────────────────────────────────── */
 
+const PRIVATE_IP_RANGES = [
+  /^127\./,
+  /^10\./,
+  /^172\.(1[6-9]|2\d|3[01])\./,
+  /^192\.168\./,
+  /^169\.254\./,
+  /^0\./,
+  /^::1$/,
+  /^fc00:/i,
+  /^fd/i,
+  /^fe80:/i,
+  /^localhost$/i
+];
+
+const isPrivateHost = (hostname: string): boolean =>
+  PRIVATE_IP_RANGES.some((pattern) => pattern.test(hostname));
+
 const resolveUrl = (baseUrl: string, stepUrl: string): string => {
-  if (stepUrl.startsWith("http://") || stepUrl.startsWith("https://")) {
-    return stepUrl;
+  const resolved = stepUrl.startsWith("http://") || stepUrl.startsWith("https://")
+    ? stepUrl
+    : `${baseUrl.replace(/\/+$/, "")}/${stepUrl.replace(/^\/+/, "")}`;
+
+  try {
+    const parsed = new URL(resolved);
+    if (isPrivateHost(parsed.hostname)) {
+      throw new Error(`URL bloqueada: acesso a hosts privados nao e permitido (${parsed.hostname})`);
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("URL bloqueada")) throw err;
+    throw new Error(`URL invalida: ${resolved}`);
   }
-  return `${baseUrl.replace(/\/+$/, "")}/${stepUrl.replace(/^\/+/, "")}`;
+
+  return resolved;
 };
 
 /* ── Value extraction (simple dot-path) ──────────────────── */

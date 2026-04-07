@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import sql from "mssql";
 import OracleDB from "oracledb";
 import mysql from "mysql2/promise";
@@ -164,6 +165,7 @@ class OracleAdapter implements DbAdapter {
     let connection: OracleDB.Connection | null = null;
     try {
       connection = await this.pool!.getConnection();
+      connection.callTimeout = 20000;
       const result = await connection.execute<T>(sqlText, [], {
         outFormat: OracleDB.OUT_FORMAT_OBJECT,
         fetchArraySize: 500
@@ -243,6 +245,7 @@ class MySQLAdapter implements DbAdapter {
 
   async query<T = Record<string, unknown>>(sqlText: string): Promise<QueryResult<T>> {
     if (!this.pool) await this.connect();
+    await this.pool!.query("SET SESSION MAX_EXECUTION_TIME=20000");
     const [rows, fields] = await this.pool!.query(sqlText);
     const recordset = Array.isArray(rows) ? (rows as T[]) : [];
     const columns = Array.isArray(fields)
@@ -293,7 +296,8 @@ class PostgreSQLAdapter implements DbAdapter {
       password: this.password,
       max: 5,
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 15000
+      connectionTimeoutMillis: 15000,
+      statement_timeout: 20000
     });
   }
 
@@ -337,7 +341,10 @@ const buildConfigHash = (
   name: string,
   user: string,
   password: string
-): string => `${dbType}:${host}:${port}:${name}:${user}:${password}`;
+): string =>
+  createHash("sha256")
+    .update(`${dbType}:${host}:${port}:${name}:${user}:${password}`)
+    .digest("hex");
 
 const createAdapter = (
   dbType: DbType,

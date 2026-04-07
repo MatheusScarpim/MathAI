@@ -3,7 +3,7 @@
     <header class="page-header">
       <div>
         <h1>Ambientes</h1>
-        <p>Gerencie conexoes independentes a bancos de dados diferentes.</p>
+        <p>Gerencie conexões independentes a bancos de dados diferentes.</p>
       </div>
       <button class="btn-primary" @click="openNew">+ Novo ambiente</button>
     </header>
@@ -108,7 +108,7 @@
 
             <div class="field-row">
               <label class="field flex-grow">
-                Usuario
+                Usuário
                 <input v-model="form.dbUser" type="text" placeholder="sa" />
               </label>
               <label class="field flex-grow">
@@ -215,7 +215,7 @@ function openEdit(env: EnvironmentView) {
 
 async function onSave() {
   if (!form.value.name.trim()) {
-    formMessage.value = 'Nome obrigatorio.'
+    formMessage.value = 'Nome obrigatório.'
     formMessageType.value = 'error'
     return
   }
@@ -234,7 +234,7 @@ async function onSave() {
       await api.updateEnvironment(editing.value, payload)
     } else {
       if (!form.value.openAiApiKey.trim()) {
-        formMessage.value = 'OpenAI API Key obrigatoria para novo ambiente.'
+        formMessage.value = 'OpenAI API Key obrigatória para novo ambiente.'
         formMessageType.value = 'error'
         saving.value = false
         return
@@ -286,25 +286,25 @@ function onSelect(env: EnvironmentView) {
 }
 
 async function onTestDb(env: EnvironmentView) {
-  message.value = 'Testando conexao...'
+  message.value = 'Testando conexão...'
   messageType.value = 'ok'
   try {
     const res = await api.testEnvironmentDb(env.environmentId)
     if (res.ok) {
       messageType.value = 'ok'
-      message.value = `Conexao com "${env.name}" OK!`
+      message.value = `Conexão com "${env.name}" OK!`
     } else {
       messageType.value = 'error'
       message.value = `Falha: ${res.error ?? 'Erro desconhecido'}`
     }
   } catch (e: any) {
     messageType.value = 'error'
-    message.value = e.message || 'Erro ao testar conexao.'
+    message.value = e.message || 'Erro ao testar conexão.'
   }
 }
 
 async function onDelete(env: EnvironmentView) {
-  if (!confirm(`Excluir o ambiente "${env.name}"? Schema e cache desse ambiente serao apagados.`)) return
+  if (!confirm(`Excluir o ambiente "${env.name}"? Schema e cache desse ambiente serão apagados.`)) return
 
   try {
     await api.deleteEnvironment(env.environmentId)
@@ -314,7 +314,7 @@ async function onDelete(env: EnvironmentView) {
     await loadEnvs()
     syncGlobal()
     messageType.value = 'ok'
-    message.value = `Ambiente "${env.name}" excluido.`
+    message.value = `Ambiente "${env.name}" excluído.`
   } catch (e: any) {
     messageType.value = 'error'
     message.value = e.message || 'Erro ao excluir ambiente.'
@@ -357,6 +357,10 @@ onMounted(loadEnvs)
 .page-header h1 {
   font-size: 1.75rem;
   margin-bottom: 0.5rem;
+  background: linear-gradient(135deg, #f9fafb, #d1d5db);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .page-header p {
@@ -376,17 +380,25 @@ onMounted(loadEnvs)
 }
 
 .env-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   border-radius: 12px;
   padding: 1.25rem;
   display: grid;
   gap: 0.75rem;
-  transition: border-color 0.15s;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.env-card:hover {
+  border-color: var(--glass-border-hover);
+  box-shadow: var(--shadow-sm);
 }
 
 .env-card.selected {
   border-color: var(--color-accent);
+  box-shadow: var(--glow-accent);
 }
 
 .env-card-header {
@@ -404,7 +416,10 @@ onMounted(loadEnvs)
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   padding: 0.2rem 0.55rem;
   border-radius: 6px;
   color: var(--color-gray-400);
@@ -417,14 +432,15 @@ onMounted(loadEnvs)
   cursor: pointer;
   padding: 0.3rem 0.5rem;
   background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--glass-border);
   border-radius: 6px;
   width: fit-content;
-  transition: border-color 0.15s;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
 }
 
 .env-id:hover {
   border-color: var(--color-accent);
+  box-shadow: var(--glow-accent);
 }
 
 .env-id code {
@@ -458,24 +474,33 @@ onMounted(loadEnvs)
   border-radius: 6px;
   border: none;
   cursor: pointer;
+  transition: all 0.25s ease;
 }
 
 .btn-ghost {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   color: var(--color-gray-300);
 }
 
 .btn-ghost:hover {
   background: rgba(255, 255, 255, 0.12);
+  border-color: var(--glass-border-hover);
 }
 
 .btn-danger-ghost {
   background: rgba(220, 38, 38, 0.1);
   color: #fca5a5;
+  border: 1px solid rgba(220, 38, 38, 0.15);
+  transition: all 0.25s ease;
 }
 
 .btn-danger-ghost:hover {
   background: rgba(220, 38, 38, 0.2);
+  box-shadow: 0 0 16px rgba(220, 38, 38, 0.15);
+  border-color: rgba(220, 38, 38, 0.3);
 }
 
 /* Modal */
@@ -483,6 +508,8 @@ onMounted(loadEnvs)
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -490,8 +517,10 @@ onMounted(loadEnvs)
 }
 
 .modal {
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(var(--glass-blur-strong));
+  -webkit-backdrop-filter: blur(var(--glass-blur-strong));
+  border: 1px solid var(--glass-border);
   border-radius: 14px;
   padding: 1.75rem;
   width: 100%;
@@ -516,10 +545,16 @@ onMounted(loadEnvs)
 .field input {
   width: 100%;
   padding: 0.55rem 0.7rem;
-  background: var(--bg-main);
-  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--glass-border);
   border-radius: 8px;
   color: var(--color-gray-100);
+  transition: border-color 0.25s ease;
+}
+
+.field input:focus {
+  border-color: var(--glass-border-hover);
+  outline: none;
 }
 
 .field-row {
@@ -539,18 +574,25 @@ onMounted(loadEnvs)
 .toggle {
   padding: 0.45rem 0.85rem;
   border-radius: 6px;
-  border: 1px solid var(--border-color);
-  background: transparent;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
   color: var(--color-gray-400);
   cursor: pointer;
   font-size: 0.85rem;
-  transition: all 0.15s;
+  transition: all 0.25s ease;
+}
+
+.toggle:hover {
+  border-color: var(--glass-border-hover);
 }
 
 .toggle.active {
   background: rgba(16, 185, 129, 0.15);
   border-color: var(--color-accent);
   color: var(--color-accent);
+  box-shadow: var(--glow-accent);
 }
 
 .modal-actions {
@@ -567,33 +609,54 @@ onMounted(loadEnvs)
   padding: 0.65rem 1.1rem;
   cursor: pointer;
   font-size: 0.9rem;
+  transition: all 0.25s ease;
 }
 
 .btn-primary {
-  background: var(--color-accent);
+  background: linear-gradient(135deg, var(--color-accent), var(--color-accent-dark, #059669));
   color: #fff;
+  box-shadow: var(--glow-accent);
+}
+
+.btn-primary:hover {
+  box-shadow: 0 0 28px rgba(16, 185, 129, 0.25);
 }
 
 .btn-primary:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 .btn-secondary {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   color: var(--color-gray-100);
+}
+
+.btn-secondary:hover {
+  border-color: var(--glass-border-hover);
 }
 
 .message {
   font-size: 0.9rem;
+  padding: 0.6rem 0.85rem;
+  border-radius: 8px;
+  transition: all 0.25s ease;
 }
 
 .message.ok {
   color: var(--color-accent-light);
+  background: rgba(16, 185, 129, 0.06);
+  border: 1px solid rgba(16, 185, 129, 0.12);
 }
 
 .message.error {
   color: #fda4af;
+  background: rgba(220, 38, 38, 0.06);
+  border: 1px solid rgba(220, 38, 38, 0.12);
 }
 
 @media (max-width: 640px) {

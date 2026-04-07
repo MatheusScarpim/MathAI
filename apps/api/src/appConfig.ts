@@ -64,8 +64,13 @@ type StoredConfig = Omit<
 
 // ================== Encryption ==================
 
+if (!process.env.CONFIG_SECRET) {
+  console.error("[FATAL] Variavel de ambiente obrigatoria nao definida: CONFIG_SECRET");
+  process.exit(1);
+}
+
 const ENCRYPTION_KEY = scryptSync(
-  process.env.CONFIG_SECRET ?? "auraia-default-secret-key-2024",
+  process.env.CONFIG_SECRET,
   "auraia-salt",
   32
 );
@@ -220,8 +225,8 @@ export const listEnvironments = async (): Promise<EnvironmentConfig[]> => {
       const env = decryptEnvironment(doc);
       envCache.set(env.environmentId, env);
       environments.push(env);
-    } catch {
-      // Skip corrupted entries
+    } catch (err) {
+      console.error(`[listEnvironments] Failed to decrypt environment "${doc.environmentId}":`, err);
     }
   }
   return environments;

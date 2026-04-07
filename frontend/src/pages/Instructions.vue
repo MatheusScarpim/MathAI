@@ -235,6 +235,10 @@ function formatDate(dateStr: string): string {
 .page-header h1 {
   font-size: 1.75rem;
   margin-bottom: 0.5rem;
+  background: linear-gradient(135deg, var(--color-gray-50, #f9fafb), var(--color-gray-300, #d1d5db));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .page-header p {
@@ -263,19 +267,22 @@ function formatDate(dateStr: string): string {
 .add-form textarea {
   width: 100%;
   padding: 1rem;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
   border-radius: 10px;
   font-family: var(--font-body);
   font-size: 0.9rem;
   color: var(--color-gray-200);
   resize: vertical;
   outline: none;
-  transition: border-color 0.2s;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: all 0.25s ease;
 }
 
 .add-form textarea:focus {
   border-color: var(--color-accent);
+  box-shadow: var(--glow-accent);
 }
 
 .add-form textarea::placeholder {
@@ -299,18 +306,20 @@ function formatDate(dateStr: string): string {
   align-items: center;
   gap: 0.5rem;
   padding: 0.625rem 1.25rem;
-  background: var(--color-accent);
+  background: linear-gradient(135deg, var(--color-accent), var(--color-accent-dark, #059669));
   border: none;
   border-radius: 8px;
   font-size: 0.9rem;
   font-weight: 500;
   color: white;
   cursor: pointer;
-  transition: all 0.15s;
+  box-shadow: var(--glow-accent);
+  transition: all 0.25s ease;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: var(--color-accent-light);
+  background: linear-gradient(135deg, var(--color-accent-light, #34d399), var(--color-accent));
+  box-shadow: 0 0 28px rgba(16, 185, 129, 0.25);
 }
 
 .btn-primary:disabled {
@@ -322,7 +331,7 @@ function formatDate(dateStr: string): string {
   width: 16px;
   height: 16px;
   border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: white;
+  border-top-color: var(--color-accent, #10b981);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -338,6 +347,9 @@ function formatDate(dateStr: string): string {
   padding: 1rem 1.25rem;
   border-radius: 10px;
   margin-bottom: 1.5rem;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: all 0.25s ease;
 }
 
 .success-card {
@@ -362,7 +374,7 @@ function formatDate(dateStr: string): string {
 }
 
 .loading .spinner {
-  border-color: var(--border-color);
+  border-color: var(--glass-border);
   border-top-color: var(--color-accent);
 }
 
@@ -381,9 +393,11 @@ function formatDate(dateStr: string): string {
 .empty-state {
   text-align: center;
   padding: 3rem 2rem;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
   border-radius: 12px;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
 }
 
 .empty-state.small {
@@ -407,9 +421,17 @@ function formatDate(dateStr: string): string {
   align-items: flex-start;
   gap: 0.75rem;
   padding: 1rem 1.25rem;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
   border-radius: 10px;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: all 0.25s ease;
+}
+
+.instruction-card:hover {
+  border-color: var(--glass-border-hover);
+  box-shadow: var(--shadow-sm);
 }
 
 .instruction-content {
@@ -417,7 +439,9 @@ function formatDate(dateStr: string): string {
 }
 
 .instruction-card.global {
-  border-left: 3px solid var(--color-accent);
+  border-left: 3px solid transparent;
+  border-image: linear-gradient(to bottom, var(--color-accent), #06b6d4) 1;
+  border-image-slice: 0 0 0 1;
 }
 
 .instruction-card.table {
@@ -433,6 +457,7 @@ function formatDate(dateStr: string): string {
   font-weight: 500;
   color: #a78bfa;
   margin-bottom: 0.5rem;
+  box-shadow: 0 0 12px rgba(139, 92, 246, 0.15);
 }
 
 .instruction-card p {
@@ -453,11 +478,11 @@ function formatDate(dateStr: string): string {
   width: 32px;
   height: 32px;
   background: none;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--glass-border);
   border-radius: 6px;
   color: var(--color-gray-500);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.25s ease;
   flex-shrink: 0;
 }
 
@@ -465,6 +490,7 @@ function formatDate(dateStr: string): string {
   background: rgba(239, 68, 68, 0.1);
   border-color: rgba(239, 68, 68, 0.3);
   color: #f87171;
+  box-shadow: 0 0 16px rgba(239, 68, 68, 0.15);
 }
 
 .examples-section h2 {
@@ -483,18 +509,21 @@ function formatDate(dateStr: string): string {
   align-items: flex-start;
   gap: 0.625rem;
   padding: 0.875rem 1rem;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
   border-radius: 8px;
   font-size: 0.85rem;
   color: var(--color-gray-400);
   cursor: pointer;
-  transition: all 0.15s;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: all 0.25s ease;
 }
 
 .example-card:hover {
   border-color: var(--color-accent);
   color: var(--color-accent);
+  box-shadow: var(--glow-accent);
 }
 
 .example-card svg {

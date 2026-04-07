@@ -5,10 +5,10 @@
   --color-primary-light: #2a6b7a;
 
   /* Cinza grafite */
-  --color-gray-900: #1a1d21;
-  --color-gray-800: #2d3139;
-  --color-gray-700: #3d4250;
-  --color-gray-600: #4d5366;
+  --color-gray-900: #0c0e12;
+  --color-gray-800: #1a1d24;
+  --color-gray-700: #282c35;
+  --color-gray-600: #3b4150;
   --color-gray-500: #6b7280;
   --color-gray-400: #9ca3af;
   --color-gray-300: #d1d5db;
@@ -16,29 +16,50 @@
   --color-gray-100: #f3f4f6;
   --color-gray-50: #f9fafb;
 
-  /* Verde menta (acentos de confianca) */
+  /* Verde menta (acentos de confiança) */
   --color-accent: #10b981;
   --color-accent-light: #34d399;
   --color-accent-dark: #059669;
 
+  /* Cyan complementar */
+  --color-cyan: #22d3ee;
+  --color-cyan-dim: rgba(34, 211, 238, 0.15);
+
   /* Backgrounds */
-  --bg-gradient: linear-gradient(135deg, #0f1419 0%, #1a2632 50%, #0f1419 100%);
+  --bg-gradient: linear-gradient(145deg, #0a0d12 0%, #111827 40%, #0f172a 70%, #0a0d12 100%);
   --bg-card: rgba(255, 255, 255, 0.03);
   --bg-card-hover: rgba(255, 255, 255, 0.06);
+
+  /* Glass */
+  --glass-bg: rgba(15, 23, 42, 0.6);
+  --glass-bg-strong: rgba(15, 23, 42, 0.75);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-border-hover: rgba(255, 255, 255, 0.14);
+  --glass-blur: 16px;
+  --glass-blur-strong: 24px;
+
+  /* Glows */
+  --glow-accent: 0 0 20px rgba(16, 185, 129, 0.15);
+  --glow-accent-strong: 0 0 30px rgba(16, 185, 129, 0.25);
+  --glow-cyan: 0 0 20px rgba(34, 211, 238, 0.12);
 
   /* Tipografia */
   --font-display: 'Space Grotesk', sans-serif;
   --font-body: 'IBM Plex Sans', sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
 
-  /* Espacamento */
+  /* Espaçamento */
   --container-max: 1200px;
   --section-padding: 6rem;
 
   /* Bordas e sombras */
   --border-radius: 12px;
   --border-radius-lg: 20px;
-  --border-color: rgba(255, 255, 255, 0.08);
+  --border-color: rgba(255, 255, 255, 0.07);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.3);
   --shadow-lg: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  --shadow-glow: 0 0 40px rgba(16, 185, 129, 0.08);
 }
 
 * {
@@ -59,7 +80,7 @@ body {
   min-height: 100vh;
 }
 
-/* Pattern de fundo com pontos */
+/* Dot grid pattern */
 body::before {
   content: '';
   position: fixed;
@@ -67,8 +88,21 @@ body::before {
   left: 0;
   width: 100%;
   height: 100%;
-  background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,0.03) 1px, transparent 0);
-  background-size: 40px 40px;
+  background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,0.025) 1px, transparent 0);
+  background-size: 32px 32px;
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* Ambient glow */
+body::after {
+  content: '';
+  position: fixed;
+  top: -20%;
+  right: -10%;
+  width: 600px;
+  height: 600px;
+  background: radial-gradient(circle, rgba(16, 185, 129, 0.04) 0%, transparent 70%);
   pointer-events: none;
   z-index: -1;
 }
@@ -106,64 +140,106 @@ a:hover {
   font-family: var(--font-body);
   font-size: 1rem;
   font-weight: 500;
-  border-radius: 8px;
+  border-radius: 10px;
   border: none;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.25s ease;
+  position: relative;
 }
 
 .btn-primary {
-  background: var(--color-accent);
+  background: linear-gradient(135deg, var(--color-accent), var(--color-accent-dark));
   color: white;
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.25);
 }
 
 .btn-primary:hover {
-  background: var(--color-accent-light);
+  background: linear-gradient(135deg, var(--color-accent-light), var(--color-accent));
   transform: translateY(-2px);
-  box-shadow: 0 10px 30px rgba(16, 185, 129, 0.3);
+  box-shadow: 0 8px 25px rgba(16, 185, 129, 0.35);
 }
 
 .btn-secondary {
-  background: transparent;
+  background: var(--glass-bg);
   color: var(--color-gray-200);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(8px);
 }
 
 .btn-secondary:hover {
-  background: var(--bg-card-hover);
-  border-color: var(--color-gray-500);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--glass-border-hover);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Glass utility */
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--border-radius);
 }
 
 /* Card base */
 .card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
   border-radius: var(--border-radius);
   padding: 1.5rem;
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: all 0.25s ease;
 }
 
 .card:hover {
-  background: var(--bg-card-hover);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--glass-border-hover);
+  box-shadow: var(--shadow-sm);
 }
 
 /* Scrollbar customizada */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--color-gray-800);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-gray-600);
-  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-gray-500);
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* Animations */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 4px var(--color-accent), 0 0 8px rgba(16, 185, 129, 0.3); }
+  50% { box-shadow: 0 0 8px var(--color-accent), 0 0 16px rgba(16, 185, 129, 0.4); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+/* Focus ring global */
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--color-accent) !important;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.12), var(--glow-accent);
 }
 
 /* Responsivo */

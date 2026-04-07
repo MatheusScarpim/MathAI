@@ -11,13 +11,37 @@ const forbiddenKeywords = [
   "alter",
   "exec",
   "execute",
-  "xp_"
+  "xp_",
+  "sp_",
+  "into",
+  "grant",
+  "revoke",
+  "create",
+  "openrowset",
+  "openquery",
+  "opendatasource",
+  "load_file",
+  "outfile",
+  "infile",
+  "dbms_",
+  "utl_",
+  "call",
+  "set",
+  "declare",
+  "cursor",
+  "bulk"
 ];
+
+const hasInlineComment = (sql: string): boolean =>
+  /\/\*/.test(sql) || /--/.test(sql);
 
 const hasForbiddenKeyword = (sql: string): string | null => {
   const lower = sql.toLowerCase();
   for (const keyword of forbiddenKeywords) {
-    const pattern = new RegExp(`\\b${keyword}\\b`, "i");
+    const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = keyword.endsWith("_")
+      ? new RegExp(`${escaped}`, "i")
+      : new RegExp(`\\b${escaped}\\b`, "i");
     if (pattern.test(lower)) return keyword;
   }
   return null;
@@ -46,6 +70,13 @@ const validateSqlServer = (
 
   if (!trimmed) {
     return { ok: false, error: { errorMessage: "SQL vazio retornado pela IA." } };
+  }
+
+  if (hasInlineComment(trimmed)) {
+    return {
+      ok: false,
+      error: { sql, errorMessage: "Comentarios SQL nao sao permitidos (/* ou --)." }
+    };
   }
 
   if (!/^(with|select)\b/i.test(trimmed)) {
@@ -103,6 +134,13 @@ const validateOracle = (
 
   if (!trimmed) {
     return { ok: false, error: { errorMessage: "SQL vazio retornado pela IA." } };
+  }
+
+  if (hasInlineComment(trimmed)) {
+    return {
+      ok: false,
+      error: { sql, errorMessage: "Comentarios SQL nao sao permitidos (/* ou --)." }
+    };
   }
 
   if (!/^(with|select)\b/i.test(trimmed)) {
@@ -165,6 +203,13 @@ const validateMySQL = (
 
   if (!trimmed) {
     return { ok: false, error: { errorMessage: "SQL vazio retornado pela IA." } };
+  }
+
+  if (hasInlineComment(trimmed)) {
+    return {
+      ok: false,
+      error: { sql, errorMessage: "Comentarios SQL nao sao permitidos (/* ou --)." }
+    };
   }
 
   if (!/^(with|select)\b/i.test(trimmed)) {

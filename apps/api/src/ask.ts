@@ -19,6 +19,7 @@ import {
 } from "./cache.js";
 import { getAppConfig } from "./appConfig.js";
 import { answerQuestionApi } from "./askApi.js";
+import { config } from "./config.js";
 
 // Import agents
 import { translateText, buildStandaloneQuestion } from "./agents/translation.js";
@@ -106,6 +107,9 @@ const enforceQuestionYear = (question: string, year: number | null): string => {
 
 const truncate = (value: string, max: number): string =>
   value.length > max ? `${value.slice(0, max)}...` : value;
+
+const truncateRows = <T>(rows: T[]): T[] =>
+  rows.slice(0, config.historyMaxRows);
 
 const cosineSimilarity = (a: number[], b: number[]): number => {
   const length = Math.min(a.length, b.length);
@@ -510,7 +514,7 @@ export const answerQuestion = async (
       question: normalizedQuestion,
       embeddingQuestion,
       sql: cached.sql,
-      rows: cached.rows ?? [],
+      rows: truncateRows(cached.rows ?? []),
       columns: cached.columns ?? [],
       chart: cached.chart,
       summary: cached.summary,
@@ -661,7 +665,7 @@ export const answerQuestion = async (
           question: normalizedQuestion,
           embeddingQuestion,
           sql: semanticMatch.sql,
-          rows: result.recordset ?? [],
+          rows: truncateRows(result.recordset ?? []),
           columns,
           chart,
           summary,
@@ -855,7 +859,7 @@ export const answerQuestion = async (
           const historyResult = await historyCollection.insertOne({
             environmentId: resolvedEnvironmentId,
             question: normalizedQuestion, embeddingQuestion, sql,
-            rows: queryResult.recordset ?? [], columns, chart, summary,
+            rows: truncateRows(queryResult.recordset ?? []), columns, chart, summary,
             createdAt: new Date(), favorite: false, tags: [], chatId: resolvedChatId,
             language: resolvedSchemaLanguage, responseLanguage: resolvedResponseLanguage,
             success: true, elapsedMs, rowCount, embedding: vector
@@ -1037,7 +1041,7 @@ export const answerQuestion = async (
         question: normalizedQuestion,
         embeddingQuestion,
         sql,
-        rows: queryResult.recordset ?? [],
+        rows: truncateRows(queryResult.recordset ?? []),
         columns,
         chart,
         summary,

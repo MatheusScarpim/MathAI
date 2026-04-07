@@ -1,29 +1,29 @@
 <template>
   <div class="settings-page">
     <header class="page-header">
-      <h1>Configuracoes</h1>
-      <p>Gerencie os agentes de IA e redefina o ambiente quando precisar recomecar do zero.</p>
+      <h1>Configurações</h1>
+      <p>Gerencie os agentes de IA e redefina o ambiente quando precisar recomeçar do zero.</p>
     </header>
 
     <section class="agents-section">
       <div class="section-title-row">
-        <h2>Configuracao de Agentes</h2>
+        <h2>Configuração de Agentes</h2>
         <button class="btn-secondary" :disabled="loadingAgents" @click="loadAgentsConfig">
           Recarregar
         </button>
       </div>
 
-      <p class="section-description">Ajuste modelos e parametros usados por cada agente.</p>
+      <p class="section-description">Ajuste modelos e parâmetros usados por cada agente.</p>
 
       <p v-if="agentsMessage" class="message" :class="agentsMessageType">{{ agentsMessage }}</p>
 
-      <div v-if="loadingAgents" class="loading">Carregando configuracoes dos agentes...</div>
+      <div v-if="loadingAgents" class="loading">Carregando configurações dos agentes...</div>
 
       <template v-else-if="agentsConfig">
         <div class="agents-grid">
           <article class="agent-card">
             <h3>SQL</h3>
-            <p>Gera consultas SQL e faz retries quando necessario.</p>
+            <p>Gera consultas SQL e faz retries quando necessário.</p>
 
             <label>
               Modelo principal
@@ -43,7 +43,7 @@
                 min="0"
                 max="2"
                 step="0.1"
-                placeholder="vazio = padrao do modelo"
+                placeholder="vazio = padrão do modelo"
               />
             </label>
 
@@ -70,7 +70,7 @@
                 min="0"
                 max="2"
                 step="0.1"
-                placeholder="vazio = padrao do modelo"
+                placeholder="vazio = padrão do modelo"
               />
             </label>
 
@@ -107,7 +107,7 @@
           </article>
 
           <article class="agent-card">
-            <h3>Traducao</h3>
+            <h3>Tradução</h3>
             <p>Traduz pergunta e resumo conforme idioma de schema/resposta.</p>
 
             <label>
@@ -133,8 +133,8 @@
           </article>
 
           <article class="agent-card">
-            <h3>Grafico</h3>
-            <p>Infere visualizacao de dados para resposta tabular.</p>
+            <h3>Gráfico</h3>
+            <p>Infere visualização de dados para resposta tabular.</p>
 
             <label>
               Modelo
@@ -160,7 +160,7 @@
 
           <article class="agent-card">
             <h3>Planner</h3>
-            <p>Decomp&#245;e perguntas complexas em sub-consultas independentes.</p>
+            <p>Decompõe perguntas complexas em subconsultas independentes.</p>
 
             <label>
               Modelo
@@ -186,7 +186,7 @@
 
           <article class="agent-card">
             <h3>Embedding</h3>
-            <p>Gera embeddings para busca semantica de contexto e schema.</p>
+            <p>Gera embeddings para busca semântica de contexto e schema.</p>
 
             <label>
               Modelo
@@ -201,16 +201,70 @@
 
         <div class="actions-row">
           <button class="btn-primary" :disabled="savingAgents" @click="saveAgentsConfig">
-            {{ savingAgents ? 'Salvando...' : 'Salvar configuracoes de agentes' }}
+            {{ savingAgents ? 'Salvando...' : 'Salvar configurações de agentes' }}
           </button>
         </div>
       </template>
     </section>
 
+    <section class="auth-section">
+      <div class="section-title-row">
+        <h2>Autenticação</h2>
+      </div>
+      <p class="section-description">
+        Quando ativo, exige login com usuário e senha para acessar o sistema.
+      </p>
+
+      <div v-if="!authEnabled && !showAuthSetup" class="auth-toggle-row">
+        <button class="btn-primary" @click="showAuthSetup = true">Ativar autenticação</button>
+      </div>
+
+      <div v-if="!authEnabled && showAuthSetup" class="auth-setup-form">
+        <p class="auth-setup-hint">Crie o primeiro usuário para ativar a autenticação.</p>
+
+        <label class="label-field">
+          Usuário
+          <input v-model="newAuthUsername" type="text" placeholder="Mínimo 3 caracteres" />
+        </label>
+
+        <label class="label-field">
+          Senha
+          <input v-model="newAuthPassword" type="password" placeholder="Mínimo 8 caracteres (1 letra + 1 número)" />
+        </label>
+
+        <label class="label-field">
+          Confirmar senha
+          <input v-model="newAuthConfirm" type="password" placeholder="Repita a senha" />
+        </label>
+
+        <div class="auth-setup-actions">
+          <button
+            class="btn-primary"
+            :disabled="activatingAuth"
+            @click="onActivateAuth"
+          >
+            {{ activatingAuth ? 'Ativando...' : 'Criar usuário e ativar' }}
+          </button>
+          <button class="btn-secondary" @click="showAuthSetup = false">Cancelar</button>
+        </div>
+      </div>
+
+      <div v-if="authEnabled" class="auth-toggle-row">
+        <label class="toggle-line">
+          <span class="auth-active-badge">Autenticação ativa</span>
+        </label>
+        <button class="btn-danger-sm" :disabled="activatingAuth" @click="onDeactivateAuth">
+          {{ activatingAuth ? 'Desativando...' : 'Desativar autenticação' }}
+        </button>
+      </div>
+
+      <p v-if="authMessage" class="message" :class="authMessageType">{{ authMessage }}</p>
+    </section>
+
     <section class="danger-zone">
       <h2>Zona de risco</h2>
       <p>
-        Esta acao remove configuracao, historico, instrucoes, configuracoes e schema indexado.
+        Esta ação remove configuração, histórico, instruções, configurações e schema indexado.
         Depois disso, o sistema volta para o setup inicial.
       </p>
 
@@ -236,6 +290,7 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../services/api'
+import { setToken } from '../services/auth'
 import type { AgentsConfig } from '../types'
 
 const router = useRouter()
@@ -246,6 +301,15 @@ const agentsConfig = ref<AgentsConfig | null>(null)
 const sqlTemperatureInput = ref('')
 const agentsMessage = ref('')
 const agentsMessageType = ref<'ok' | 'error'>('ok')
+
+const authEnabled = ref(false)
+const showAuthSetup = ref(false)
+const newAuthUsername = ref('')
+const newAuthPassword = ref('')
+const newAuthConfirm = ref('')
+const activatingAuth = ref(false)
+const authMessage = ref('')
+const authMessageType = ref<'ok' | 'error'>('ok')
 
 const confirmText = ref('')
 const resetting = ref(false)
@@ -307,7 +371,7 @@ const loadAgentsConfig = async (): Promise<void> => {
     applyAgentsConfig(config)
   } catch (error) {
     agentsMessageType.value = 'error'
-    agentsMessage.value = (error as Error).message || 'Erro ao carregar configuracoes de agentes.'
+    agentsMessage.value = (error as Error).message || 'Erro ao carregar configurações de agentes.'
   } finally {
     loadingAgents.value = false
   }
@@ -363,10 +427,10 @@ const saveAgentsConfig = async (): Promise<void> => {
     const saved = await api.saveAgentsConfig(payload)
     applyAgentsConfig(saved)
     agentsMessageType.value = 'ok'
-    agentsMessage.value = 'Configuracoes de agentes salvas com sucesso.'
+    agentsMessage.value = 'Configurações de agentes salvas com sucesso.'
   } catch (error) {
     agentsMessageType.value = 'error'
-    agentsMessage.value = (error as Error).message || 'Erro ao salvar configuracoes de agentes.'
+    agentsMessage.value = (error as Error).message || 'Erro ao salvar configurações de agentes.'
   } finally {
     savingAgents.value = false
   }
@@ -390,8 +454,76 @@ const onResetEnvironment = async () => {
   }
 }
 
+const loadAuthStatus = async () => {
+  try {
+    const status = await api.getAuthStatus()
+    authEnabled.value = status.enabled
+  } catch { /* ignore */ }
+}
+
+const onActivateAuth = async () => {
+  authMessage.value = ''
+
+  if (!newAuthUsername.value || newAuthUsername.value.length < 3) {
+    authMessageType.value = 'error'
+    authMessage.value = 'Username deve ter pelo menos 3 caracteres.'
+    return
+  }
+  if (!newAuthPassword.value || newAuthPassword.value.length < 8) {
+    authMessageType.value = 'error'
+    authMessage.value = 'Senha deve ter pelo menos 8 caracteres.'
+    return
+  }
+  if (!/[a-zA-Z]/.test(newAuthPassword.value) || !/\d/.test(newAuthPassword.value)) {
+    authMessageType.value = 'error'
+    authMessage.value = 'Senha deve conter pelo menos 1 letra e 1 número.'
+    return
+  }
+  if (newAuthPassword.value !== newAuthConfirm.value) {
+    authMessageType.value = 'error'
+    authMessage.value = 'As senhas não coincidem.'
+    return
+  }
+
+  activatingAuth.value = true
+  try {
+    const registerResult = await api.register(newAuthUsername.value, newAuthPassword.value)
+    setToken(registerResult.token)
+    await api.toggleAuth(true)
+    authEnabled.value = true
+    showAuthSetup.value = false
+    newAuthUsername.value = ''
+    newAuthPassword.value = ''
+    newAuthConfirm.value = ''
+    authMessageType.value = 'ok'
+    authMessage.value = 'Autenticação ativada. Usuário criado com sucesso.'
+  } catch (error) {
+    authMessageType.value = 'error'
+    authMessage.value = (error as Error).message || 'Erro ao ativar autenticação.'
+  } finally {
+    activatingAuth.value = false
+  }
+}
+
+const onDeactivateAuth = async () => {
+  authMessage.value = ''
+  activatingAuth.value = true
+  try {
+    await api.toggleAuth(false)
+    authEnabled.value = false
+    authMessageType.value = 'ok'
+    authMessage.value = 'Autenticação desativada.'
+  } catch (error) {
+    authMessageType.value = 'error'
+    authMessage.value = (error as Error).message || 'Erro ao desativar autenticação.'
+  } finally {
+    activatingAuth.value = false
+  }
+}
+
 onMounted(() => {
   void loadAgentsConfig()
+  void loadAuthStatus()
 })
 </script>
 
@@ -407,6 +539,10 @@ onMounted(() => {
 .page-header h1 {
   font-size: 1.75rem;
   margin-bottom: 0.5rem;
+  background: linear-gradient(135deg, var(--color-gray-50, #f8fafc), var(--color-gray-300, #cbd5e1));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .page-header p {
@@ -414,10 +550,13 @@ onMounted(() => {
 }
 
 .agents-section {
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   border-radius: 12px;
   padding: 1.25rem;
+  transition: border-color 0.25s ease;
 }
 
 .section-title-row {
@@ -447,12 +586,20 @@ onMounted(() => {
 }
 
 .agent-card {
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--glass-border);
   border-radius: 10px;
   padding: 1rem;
-  background: rgba(255, 255, 255, 0.01);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
   display: grid;
   gap: 0.75rem;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.agent-card:hover {
+  border-color: var(--glass-border-hover);
+  box-shadow: var(--shadow-sm);
 }
 
 .agent-card h3 {
@@ -477,16 +624,61 @@ onMounted(() => {
 .confirm-line input {
   width: 100%;
   padding: 0.55rem 0.7rem;
-  background: var(--bg-main);
-  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--glass-border);
   border-radius: 8px;
   color: var(--color-gray-100);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.agent-card input[type='text']:focus,
+.agent-card input[type='number']:focus,
+.confirm-line input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
 }
 
 .toggle-line {
   display: flex !important;
   align-items: center;
   gap: 0.5rem;
+}
+
+.toggle-line input[type='checkbox'] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 2.5rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--glass-border);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.25s ease, border-color 0.25s ease;
+  flex-shrink: 0;
+}
+
+.toggle-line input[type='checkbox']::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 50%;
+  background: var(--color-gray-400);
+  transition: transform 0.25s ease, background 0.25s ease;
+}
+
+.toggle-line input[type='checkbox']:checked {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.toggle-line input[type='checkbox']:checked::after {
+  transform: translateX(1.1rem);
+  background: #fff;
 }
 
 .actions-row {
@@ -502,21 +694,39 @@ onMounted(() => {
   border-radius: 8px;
   padding: 0.65rem 1rem;
   cursor: pointer;
+  transition: box-shadow 0.25s ease, opacity 0.25s ease, background 0.25s ease;
 }
 
 .btn-primary {
-  background: var(--color-accent);
+  background: linear-gradient(135deg, var(--color-accent), var(--color-accent-dark, #059669));
   color: #fff;
+  box-shadow: var(--glow-accent);
+}
+
+.btn-primary:hover {
+  box-shadow: 0 0 28px rgba(16, 185, 129, 0.25);
 }
 
 .btn-secondary {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   color: var(--color-gray-100);
 }
 
+.btn-secondary:hover {
+  border-color: var(--glass-border-hover);
+}
+
 .btn-danger {
-  background: #dc2626;
+  background: linear-gradient(135deg, #dc2626, #991b1b);
   color: #fff;
+  box-shadow: 0 0 20px rgba(220, 38, 38, 0.15);
+}
+
+.btn-danger:hover {
+  box-shadow: 0 0 28px rgba(220, 38, 38, 0.25);
 }
 
 .btn-primary:disabled,
@@ -526,11 +736,107 @@ onMounted(() => {
   cursor: not-allowed;
 }
 
-.danger-zone {
-  background: rgba(127, 29, 29, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.35);
+.auth-section {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   border-radius: 12px;
   padding: 1.25rem;
+  transition: border-color 0.25s ease;
+}
+
+.auth-toggle-row {
+  margin-top: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.auth-active-badge {
+  color: var(--color-accent-light);
+  font-weight: 500;
+  text-shadow: 0 0 12px rgba(16, 185, 129, 0.3);
+}
+
+.btn-danger-sm {
+  border: 1px solid var(--glass-border);
+  background: rgba(127, 29, 29, 0.15);
+  color: #fca5a5;
+  border-radius: 8px;
+  padding: 0.45rem 0.85rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: background 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+}
+
+.btn-danger-sm:hover {
+  background: rgba(127, 29, 29, 0.3);
+  border-color: rgba(248, 113, 113, 0.35);
+  box-shadow: 0 0 16px rgba(220, 38, 38, 0.12);
+}
+
+.btn-danger-sm:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.auth-setup-form {
+  margin-top: 0.75rem;
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  padding: 1rem;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  display: grid;
+  gap: 0.75rem;
+  max-width: 380px;
+}
+
+.auth-setup-hint {
+  color: var(--color-gray-300);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.label-field {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--color-gray-300);
+  font-size: 0.92rem;
+}
+
+.label-field input {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  color: var(--color-gray-100);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.label-field input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
+}
+
+.auth-setup-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.danger-zone {
+  background: var(--glass-bg-strong);
+  border: 1px solid rgba(248, 113, 113, 0.25);
+  border-radius: 12px;
+  padding: 1.25rem;
+  box-shadow: 0 0 20px rgba(220, 38, 38, 0.06);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
 }
 
 .danger-zone h2 {
@@ -553,14 +859,21 @@ onMounted(() => {
 
 .message {
   margin-top: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  font-size: 0.92rem;
 }
 
 .message.ok {
   color: var(--color-accent-light);
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.15);
 }
 
 .message.error {
   color: #fda4af;
+  background: rgba(220, 38, 38, 0.08);
+  border: 1px solid rgba(220, 38, 38, 0.15);
 }
 
 @media (max-width: 640px) {

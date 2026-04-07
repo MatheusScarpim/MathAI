@@ -431,7 +431,7 @@ function truncateSQL(sql: string): string {
 
 <style scoped>
 .history-page {
-  padding: 2rem;
+  padding: 2rem 1.5rem;
   max-width: 900px;
   margin: 0 auto;
 }
@@ -446,6 +446,10 @@ function truncateSQL(sql: string): string {
 .page-header h1 {
   font-size: 1.75rem;
   margin-bottom: 0.5rem;
+  background: linear-gradient(135deg, var(--color-gray-50, #f8fafc), var(--color-gray-300, #cbd5e1));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .page-header p {
@@ -457,6 +461,12 @@ function truncateSQL(sql: string): string {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  padding: 1rem;
 }
 
 .filters-row {
@@ -472,16 +482,20 @@ function truncateSQL(sql: string): string {
   min-width: 200px;
   max-width: 300px;
   padding: 0.5rem 1rem;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   border-radius: 8px;
   font-size: 0.9rem;
   color: var(--color-gray-200);
   outline: none;
+  transition: all 0.25s ease;
 }
 
 .search-input:focus {
   border-color: var(--color-accent);
+  box-shadow: var(--glow-accent);
 }
 
 .filter-buttons {
@@ -505,31 +519,35 @@ function truncateSQL(sql: string): string {
 
 .date-input {
   padding: 0.375rem 0.75rem;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   border-radius: 6px;
   font-size: 0.85rem;
   color: var(--color-gray-200);
   outline: none;
+  transition: all 0.25s ease;
 }
 
 .date-input:focus {
   border-color: var(--color-accent);
+  box-shadow: var(--glow-accent);
 }
 
 .clear-dates-btn {
   padding: 0.375rem 0.75rem;
   background: none;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--glass-border);
   border-radius: 6px;
   font-size: 0.8rem;
   color: var(--color-gray-400);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.25s ease;
 }
 
 .clear-dates-btn:hover {
-  border-color: var(--color-gray-500);
+  border-color: var(--glass-border-hover);
   color: var(--color-gray-200);
 }
 
@@ -543,24 +561,27 @@ function truncateSQL(sql: string): string {
   align-items: center;
   gap: 0.375rem;
   padding: 0.5rem 1rem;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   border-radius: 8px;
   font-size: 0.85rem;
   color: var(--color-gray-400);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.25s ease;
 }
 
 .filter-btn:hover {
-  border-color: var(--color-gray-500);
+  border-color: var(--glass-border-hover);
   color: var(--color-gray-200);
 }
 
 .filter-btn.active {
-  background: rgba(16, 185, 129, 0.1);
-  border-color: rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.25);
   color: var(--color-accent);
+  box-shadow: var(--glow-accent);
 }
 
 .loading {
@@ -575,7 +596,7 @@ function truncateSQL(sql: string): string {
 .spinner {
   width: 20px;
   height: 20px;
-  border: 2px solid var(--border-color);
+  border: 2px solid var(--glass-border);
   border-top-color: var(--color-accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
@@ -585,15 +606,22 @@ function truncateSQL(sql: string): string {
   to { transform: rotate(360deg); }
 }
 
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
 .error-card {
   display: flex;
   align-items: center;
   gap: 0.75rem;
   padding: 1rem 1.25rem;
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid rgba(239, 68, 68, 0.2);
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.18);
   border-radius: 10px;
   color: #f87171;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
 }
 
 .empty-state {
@@ -607,11 +635,14 @@ function truncateSQL(sql: string): string {
   justify-content: center;
   width: 100px;
   height: 100px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   border-radius: 20px;
   color: var(--color-gray-600);
   margin-bottom: 1.5rem;
+  animation: float 4s ease-in-out infinite;
 }
 
 .empty-state h3 {
@@ -631,18 +662,22 @@ function truncateSQL(sql: string): string {
 
 .history-card {
   padding: 1.25rem;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   border-radius: 12px;
-  transition: all 0.2s;
+  transition: all 0.25s ease;
 }
 
 .history-card:hover {
-  border-color: var(--color-gray-600);
+  border-color: var(--glass-border-hover);
+  box-shadow: var(--shadow-sm);
 }
 
 .history-card.error {
-  border-color: rgba(239, 68, 68, 0.3);
+  border-color: rgba(239, 68, 68, 0.2);
+  box-shadow: 0 0 16px rgba(239, 68, 68, 0.08);
 }
 
 .card-header {
@@ -671,21 +706,21 @@ function truncateSQL(sql: string): string {
   width: 32px;
   height: 32px;
   background: none;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--glass-border);
   border-radius: 6px;
   color: var(--color-gray-500);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.25s ease;
 }
 
 .action-btn:hover {
-  border-color: var(--color-gray-500);
+  border-color: var(--glass-border-hover);
   color: var(--color-gray-200);
 }
 
 .action-btn.active {
-  background: rgba(251, 191, 36, 0.1);
-  border-color: rgba(251, 191, 36, 0.3);
+  background: rgba(251, 191, 36, 0.08);
+  border-color: rgba(251, 191, 36, 0.25);
   color: #fbbf24;
 }
 
@@ -706,7 +741,7 @@ function truncateSQL(sql: string): string {
 
 .summary {
   padding: 0.75rem 1rem;
-  background: rgba(16, 185, 129, 0.05);
+  background: rgba(16, 185, 129, 0.04);
   border-left: 3px solid var(--color-accent);
   border-radius: 0 6px 6px 0;
   font-size: 0.9rem;
@@ -716,7 +751,7 @@ function truncateSQL(sql: string): string {
 
 .error-message {
   padding: 0.75rem 1rem;
-  background: rgba(239, 68, 68, 0.1);
+  background: rgba(239, 68, 68, 0.08);
   border-left: 3px solid #ef4444;
   border-radius: 0 6px 6px 0;
   font-size: 0.9rem;
@@ -727,14 +762,15 @@ function truncateSQL(sql: string): string {
 .sql-preview {
   position: relative;
   padding: 0.75rem 1rem;
-  background: var(--color-gray-800);
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--glass-border);
   border-radius: 8px;
   margin-bottom: 0.75rem;
 }
 
 .sql-preview code {
   display: block;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   color: var(--color-gray-400);
   white-space: pre-wrap;
@@ -750,13 +786,15 @@ function truncateSQL(sql: string): string {
   justify-content: center;
   width: 28px;
   height: 28px;
-  background: var(--color-gray-700);
-  border: none;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   border-radius: 4px;
   color: var(--color-gray-400);
   cursor: pointer;
   opacity: 0;
-  transition: all 0.15s;
+  transition: all 0.25s ease;
 }
 
 .sql-preview:hover .copy-btn {
@@ -764,13 +802,14 @@ function truncateSQL(sql: string): string {
 }
 
 .copy-btn:hover {
-  background: var(--color-gray-600);
+  background: var(--glass-bg-strong);
+  border-color: var(--glass-border-hover);
   color: var(--color-gray-200);
 }
 
 .copy-btn.copied {
   opacity: 1;
-  background: rgba(16, 185, 129, 0.2);
+  background: rgba(16, 185, 129, 0.15);
   color: var(--color-accent-light);
 }
 
@@ -783,8 +822,8 @@ function truncateSQL(sql: string): string {
 
 .tag {
   padding: 0.25rem 0.5rem;
-  background: rgba(16, 185, 129, 0.1);
-  border: 1px solid rgba(16, 185, 129, 0.2);
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.18);
   border-radius: 4px;
   font-size: 0.75rem;
   color: var(--color-accent);
@@ -798,16 +837,18 @@ function truncateSQL(sql: string): string {
 .tag-editor input {
   flex: 1;
   padding: 0.375rem 0.625rem;
-  background: var(--color-gray-800);
-  border: 1px solid var(--border-color);
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--glass-border);
   border-radius: 6px;
   font-size: 0.8rem;
   color: var(--color-gray-200);
   outline: none;
+  transition: all 0.25s ease;
 }
 
 .tag-editor input:focus {
   border-color: var(--color-accent);
+  box-shadow: var(--glow-accent);
 }
 
 .add-tag-btn {
@@ -818,6 +859,7 @@ function truncateSQL(sql: string): string {
   font-size: 0.9rem;
   color: white;
   cursor: pointer;
+  transition: all 0.25s ease;
 }
 
 .edit-tags-btn {
@@ -826,7 +868,7 @@ function truncateSQL(sql: string): string {
   font-size: 0.8rem;
   color: var(--color-gray-500);
   cursor: pointer;
-  transition: color 0.15s;
+  transition: color 0.25s ease;
 }
 
 .edit-tags-btn:hover {
@@ -841,7 +883,7 @@ function truncateSQL(sql: string): string {
   gap: 0.5rem;
   margin-top: 2rem;
   padding-top: 1.5rem;
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid var(--glass-border);
 }
 
 .page-btn {
@@ -850,21 +892,24 @@ function truncateSQL(sql: string): string {
   justify-content: center;
   width: 36px;
   height: 36px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   border-radius: 8px;
   color: var(--color-gray-400);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.25s ease;
 }
 
 .page-btn:hover:not(:disabled) {
   border-color: var(--color-accent);
   color: var(--color-accent);
+  box-shadow: var(--glow-accent);
 }
 
 .page-btn:disabled {
-  opacity: 0.4;
+  opacity: 0.35;
   cursor: not-allowed;
 }
 
@@ -880,24 +925,27 @@ function truncateSQL(sql: string): string {
   min-width: 36px;
   height: 36px;
   padding: 0 0.5rem;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   border-radius: 8px;
   font-size: 0.9rem;
   color: var(--color-gray-400);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.25s ease;
 }
 
 .page-num:hover {
-  border-color: var(--color-gray-500);
+  border-color: var(--glass-border-hover);
   color: var(--color-gray-200);
 }
 
 .page-num.active {
-  background: var(--color-accent);
-  border-color: var(--color-accent);
+  background: linear-gradient(135deg, var(--color-accent), var(--color-accent-light, var(--color-accent)));
+  border-color: transparent;
   color: white;
+  box-shadow: var(--glow-accent);
 }
 
 .page-info {

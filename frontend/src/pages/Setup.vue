@@ -477,21 +477,21 @@ const onSave = async () => {
   position: absolute;
   border-radius: 999px;
   filter: blur(80px);
-  opacity: 0.22;
+  opacity: 0.28;
   pointer-events: none;
 }
 
 .glow-a {
-  width: 380px;
-  height: 380px;
+  width: 500px;
+  height: 500px;
   background: #10b981;
   top: -120px;
   right: -120px;
 }
 
 .glow-b {
-  width: 300px;
-  height: 300px;
+  width: 400px;
+  height: 400px;
   background: #22d3ee;
   bottom: -120px;
   left: -120px;
@@ -506,10 +506,14 @@ const onSave = async () => {
 }
 
 .hero {
-  background: rgba(9, 15, 22, 0.72);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(var(--glass-blur-strong));
+  -webkit-backdrop-filter: blur(var(--glass-blur-strong));
+  border: 1px solid var(--glass-border);
   border-radius: 16px;
   padding: 1.25rem;
+  box-shadow: var(--shadow-md);
+  transition: border-color 0.25s ease;
 }
 
 .eyebrow {
@@ -522,6 +526,10 @@ const onSave = async () => {
 .hero h1 {
   margin-top: 0.35rem;
   font-size: clamp(1.5rem, 2vw, 2rem);
+  background: linear-gradient(135deg, var(--color-accent-light), var(--color-cyan));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .subtitle {
@@ -530,10 +538,14 @@ const onSave = async () => {
 }
 
 .panel {
-  background: rgba(9, 15, 22, 0.72);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(var(--glass-blur-strong));
+  -webkit-backdrop-filter: blur(var(--glass-blur-strong));
+  border: 1px solid var(--glass-border);
   border-radius: 16px;
   padding: 1.25rem;
+  box-shadow: var(--shadow-md);
+  transition: border-color 0.25s ease;
 }
 
 .section-title {
@@ -552,17 +564,18 @@ const onSave = async () => {
 
 .input {
   width: 100%;
-  border: 1px solid var(--border-color);
-  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.03);
   color: var(--color-gray-100);
   border-radius: 10px;
   padding: 0.68rem 0.75rem;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
 }
 
 .input:focus {
   outline: none;
   border-color: var(--color-accent);
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.18);
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.18), var(--glow-accent);
 }
 
 .toggle-group {
@@ -572,18 +585,26 @@ const onSave = async () => {
 }
 
 .toggle {
-  border: 1px solid var(--border-color);
-  background: transparent;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
   color: var(--color-gray-300);
   border-radius: 10px;
   padding: 0.5rem 0.85rem;
   cursor: pointer;
+  transition: border-color 0.25s ease, background 0.25s ease, box-shadow 0.25s ease;
+}
+
+.toggle:hover {
+  border-color: var(--glass-border-hover);
 }
 
 .toggle.active {
   color: #fff;
   border-color: var(--color-accent);
   background: rgba(16, 185, 129, 0.15);
+  box-shadow: var(--glow-accent);
 }
 
 .grid {
@@ -607,16 +628,34 @@ const onSave = async () => {
   justify-items: end;
 }
 
+.footer .btn-primary {
+  background: linear-gradient(135deg, var(--color-accent), var(--color-accent-light));
+  box-shadow: var(--glow-accent);
+  transition: box-shadow 0.25s ease, transform 0.25s ease;
+}
+
+.footer .btn-primary:hover:not(:disabled) {
+  box-shadow: var(--glow-accent-strong);
+}
+
 .message {
   margin-top: 0.15rem;
 }
 
 .message.ok {
   color: var(--color-accent-light);
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
 }
 
 .message.error {
   color: #fb7185;
+  background: rgba(251, 113, 133, 0.08);
+  border: 1px solid rgba(251, 113, 133, 0.2);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
 }
 
 .oracle-hint {
@@ -627,9 +666,10 @@ const onSave = async () => {
   font-size: 0.85rem;
   color: #fcd34d;
   background: rgba(234, 179, 8, 0.08);
-  border: 1px solid rgba(234, 179, 8, 0.3);
+  border: 1px solid var(--glass-border);
   border-radius: 10px;
   padding: 0.75rem;
+  transition: border-color 0.25s ease;
 }
 
 .oracle-hint code {

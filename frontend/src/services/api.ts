@@ -16,13 +16,21 @@ import type {
   EnvironmentView
 } from '../types'
 
+import { getToken, clearToken } from './auth'
+
 const API_BASE = '/api'
+
+function authHeaders(): Record<string, string> {
+  const token = getToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
 
 async function request<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
   const headers: Record<string, string> = {
+    ...authHeaders(),
     ...(options.headers as Record<string, string> | undefined)
   }
   if (options.body !== undefined) {
@@ -30,9 +38,16 @@ async function request<T>(
   }
 
   const res = await fetch(`${API_BASE}${endpoint}`, {
+    credentials: 'include',
     headers,
     ...options
   })
+
+  if (res.status === 401) {
+    clearToken()
+    window.location.href = '/login'
+    throw new Error('Session expired')
+  }
 
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Request failed' }))
@@ -193,8 +208,10 @@ export const api = {
   ): Promise<AskResponse> {
     const res = await fetch(`${API_BASE}/ask`, {
       method: 'POST',
+      credentials: 'include',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        ...authHeaders()
       },
       body: JSON.stringify({
         question,
@@ -297,5 +314,31 @@ export const api = {
 
   async clearEndpoints(): Promise<{ ok: boolean }> {
     return request('/schema/endpoints/clear', { method: 'POST' })
+  },
+
+  // Auth
+  async getAuthStatus(): Promise<{ enabled: boolean }> {
+    return request('/auth/status')
+  },
+
+  async login(username: string, password: string): Promise<{ ok: boolean; token: string }> {
+    return request('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password })
+    })
+  },
+
+  async register(username: string, password: string): Promise<{ ok: boolean; token: string }> {
+    return request('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ username, password })
+    })
+  },
+
+  async toggleAuth(enabled: boolean): Promise<{ ok: boolean; enabled: boolean }> {
+    return request('/auth/toggle', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled })
+    })
   }
 }
