@@ -4,25 +4,25 @@ import {
   getHistoryCollection,
   getInstructionsCollection,
   getSettingsCollection
-} from "./mongo.js";
+} from "../core/mongo.js";
 import { validateHttpRequest } from "./httpValidation.js";
 import { executeHttpPlan } from "./httpExecutor.js";
-import { ensureEndpointCollection } from "./qdrant.js";
+import { ensureEndpointCollection } from "../core/qdrant.js";
 import {
   findSemanticSql,
   getCachedValue,
   getCacheKey,
   setCachedValue,
   setSemanticEntry
-} from "./cache.js";
-import { getAppConfig, type AppConfig } from "./appConfig.js";
+} from "../core/cache.js";
+import { getAppConfig, type AppConfig } from "../core/appConfig.js";
 
-import { searchRelevantEndpoints, expandEndpoints, searchEndpointsByText } from "./agents/endpoint.js";
-import { buildHttpPrompt, generateHttpRequest } from "./agents/http.js";
-import { summarizeResult } from "./agents/summary.js";
-import { inferChart, inferChartWithLLM } from "./agents/chart.js";
-import { translateText } from "./agents/translation.js";
-import { getAgentsConfig } from "./agentConfig.js";
+import { searchRelevantEndpoints, expandEndpoints, searchEndpointsByText } from "../agents/endpoint.js";
+import { buildHttpPrompt, generateHttpRequest } from "../agents/http.js";
+import { summarizeResult } from "../agents/summary.js";
+import { inferChart, inferChartWithLLM } from "../agents/chart.js";
+import { translateText } from "../agents/translation.js";
+import { getAgentsConfig } from "../core/agentConfig.js";
 import type { StepEmitter } from "./ask.js";
 
 /* ── Types ───────────────────────────────────────────────── */

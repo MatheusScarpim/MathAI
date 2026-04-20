@@ -10,7 +10,14 @@
       "Bash(npm install:*)",
       "Bash(docker push:*)",
       "Bash(docker build:*)",
-      "Bash(grep -v \"^$\")"
+      "Bash(grep -v \"^$\")",
+      "Bash(wc -l /c/Users/matheus.cuan/Documents/Github/AuraIa/frontend/src/pages/*.vue)",
+      "Bash(wc -l /c/Users/matheus.cuan/Documents/Github/AuraIa/apps/api/src/*.ts)",
+      "Bash(npm run:*)",
+      "Bash(wc:*)",
+      "Bash(ls \"C:/Users/matheus.cuan/Documents/Github/AuraIa/frontend/src/pages/\"Dashboard*)",
+      "Bash(ls \"C:/Users/matheus.cuan/Documents/Github/AuraIa/frontend/src/pages/\"Playground*)",
+      "Bash(npm info:*)"
     ]
   }
 }

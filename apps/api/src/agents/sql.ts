@@ -1,8 +1,9 @@
 import type { TableChunk } from "@auraia/shared";
-import { getOpenAI, getSqlModel, getSqlModelMini } from "../openai.js";
-import { getAgentsConfig } from "../agentConfig.js";
-import type { DbType } from "../appConfig.js";
+import { getOpenAI, getSqlModel, getSqlModelMini } from "../core/openai.js";
+import { getAgentsConfig } from "../core/agentConfig.js";
+import type { DbType } from "../core/appConfig.js";
 import type { ExpandedContext } from "./schema.js";
+import type { TableProfileMap } from "./profiler.js";
 
 type FewShotExample = {
   question: string;
@@ -163,12 +164,19 @@ export const buildPrompt = (
   errorContext: string | null,
   previousSql: string | null,
   language: "pt" | "en" | "es",
-  currentPeriod: string | null = null
+  currentPeriod: string | null = null,
+  tableProfiles?: TableProfileMap
 ): string => {
   const includeForeignKeys = context.joins.length === 0;
   const tableDetails = context.tables
     .map((table) => {
-      const cols = table.columns.map((c) => `${c.name}:${c.type}`).join(", ");
+      const colProfiles = tableProfiles?.get(table.tableFullName);
+      const cols = table.columns.map((c) => {
+        const profile = colProfiles?.find(p => p.name === c.name);
+        if (profile?.values?.length) return `${c.name}:${c.type}[${profile.values.join(",")}]`;
+        if (profile?.range) return `${c.name}:${c.type}[${profile.range}]`;
+        return `${c.name}:${c.type}`;
+      }).join(", ");
       const parts = [`Table ${table.tableFullName}`, `Cols ${cols}`];
       if (table.primaryKey.length) parts.push(`PK ${table.primaryKey.join(", ")}`);
       if (includeForeignKeys && table.foreignKeys.length) {

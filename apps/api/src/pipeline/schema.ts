@@ -1,8 +1,8 @@
 import type { ColumnInfo, ForeignKeyInfo, TableChunk } from "@auraia/shared";
-import { getOpenAI, EMBEDDING_MODEL } from "./openai.js";
-import { qdrant, ensureSchemaCollection, getSchemaCollectionName } from "./qdrant.js";
+import { getOpenAI, EMBEDDING_MODEL } from "../core/openai.js";
+import { qdrant, ensureSchemaCollection, getSchemaCollectionName } from "../core/qdrant.js";
 import { createHash } from "crypto";
-import type { DbAdapter } from "./db.js";
+import type { DbAdapter } from "../core/db.js";
 
 type TableInfo = {
   schema: string;

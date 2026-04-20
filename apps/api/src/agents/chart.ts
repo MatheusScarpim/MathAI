@@ -1,6 +1,6 @@
 import type { AskSuccessResponse } from "@auraia/shared";
-import { getOpenAI, getChartModel } from "../openai.js";
-import { getAgentsConfig } from "../agentConfig.js";
+import { getOpenAI, getChartModel } from "../core/openai.js";
+import { getAgentsConfig } from "../core/agentConfig.js";
 
 const shouldLogPrompts = (): boolean => {
   const flag = process.env.LOG_PROMPTS?.toLowerCase();

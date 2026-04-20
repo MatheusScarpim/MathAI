@@ -1,6 +1,6 @@
 import type { EndpointChunk, EndpointParameter } from "@auraia/shared";
-import { getOpenAI, EMBEDDING_MODEL } from "./openai.js";
-import { qdrant, ensureEndpointCollection } from "./qdrant.js";
+import { getOpenAI, EMBEDDING_MODEL } from "../core/openai.js";
+import { qdrant, ensureEndpointCollection } from "../core/qdrant.js";
 import { createHash } from "crypto";
 import YAML from "js-yaml";
 

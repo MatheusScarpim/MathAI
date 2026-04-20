@@ -13,7 +13,8 @@ import type {
   AgentsConfig,
   AppMode,
   EndpointInfo,
-  EnvironmentView
+  EnvironmentView,
+  StatsResponse
 } from '../types'
 
 import { getToken, clearToken } from './auth'
@@ -206,39 +207,23 @@ export const api = {
     responseLanguage?: 'pt' | 'en' | 'es',
     environmentId?: string
   ): Promise<AskResponse> {
-    const res = await fetch(`${API_BASE}/ask`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        ...authHeaders()
-      },
-      body: JSON.stringify({
-        question,
-        chatId,
-        language,
-        schemaLanguage,
-        responseLanguage,
-        environmentId
+    try {
+      const data = await request<AskResponse['data']>('/ask', {
+        method: 'POST',
+        body: JSON.stringify({
+          question, chatId, language, schemaLanguage, responseLanguage, environmentId
+        })
       })
-    })
-    const payload = await res.json().catch(() => null)
-
-    if (!res.ok) {
-      const errorMessage =
-        payload?.errorMessage ||
-        payload?.message ||
-        `HTTP ${res.status}`
+      return { ok: true, data }
+    } catch (err: any) {
       return {
         ok: false,
         error: {
-          errorMessage,
-          hint: payload?.hint
+          errorMessage: err?.message ?? 'Erro ao processar pergunta.',
+          hint: err?.hint
         }
       }
     }
-
-    return { ok: true, data: payload as AskResponse['data'] }
   },
 
   // Run custom SQL
@@ -340,5 +325,14 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ enabled })
     })
+  },
+
+  // Stats / Developer
+  async getStats(environmentId?: string, days = 30): Promise<StatsResponse> {
+    const params = new URLSearchParams()
+    if (environmentId) params.set('environmentId', environmentId)
+    if (days !== 30) params.set('days', String(days))
+    const qs = params.toString()
+    return request(`/stats${qs ? `?${qs}` : ''}`)
   }
 }

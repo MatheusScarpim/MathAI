@@ -1,6 +1,6 @@
-import { getOpenAI, getSqlModel, getSqlModelMini } from "../openai.js";
-import { getAgentsConfig } from "../agentConfig.js";
-import type { DbType } from "../appConfig.js";
+import { getOpenAI, getSqlModel, getSqlModelMini } from "../core/openai.js";
+import { getAgentsConfig } from "../core/agentConfig.js";
+import type { DbType } from "../core/appConfig.js";
 import type { ExpandedContext } from "./schema.js";
 
 // ============== TYPES ==============

@@ -207,6 +207,35 @@
               </div>
             </div>
 
+            <!-- Chart -->
+            <div v-if="entry.result.chart && entry.result.chart.data.length > 0" class="chart-card">
+              <div class="card-header">
+                <div class="card-title">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
+                  </svg>
+                  {{ entry.result.chart.title || 'Gráfico' }}
+                </div>
+              </div>
+              <BarChart
+                :data="entry.result.chart.data.map((d: any) => ({ category: String(d.category ?? d[entry.result!.chart!.xKey!] ?? ''), value: typeof d.value === 'number' ? d.value : (d[entry.result!.chart!.yKey!] ?? null) }))"
+                :title="entry.result.chart.title"
+                :height="200"
+              />
+            </div>
+
+            <!-- Pipeline Debug -->
+            <PipelineDebug
+              v-if="!entry.loading && (entry.steps.length > 0 || entry.result.tokenUsage)"
+              :steps="entry.steps"
+              :token-usage="entry.result.tokenUsage"
+              :cache-hit="entry.result.cacheHit"
+              :translated-question="entry.result.translatedQuestion"
+              :elapsed-ms="entry.result.elapsedMs"
+              :history-id="entry.result.historyId"
+              :chat-id="entry.result.chatId"
+            />
+
             <!-- Tags -->
             <div v-if="entry.result.historyId" class="tags-section">
               <label>Tags:</label>
@@ -239,7 +268,9 @@
 <script setup lang="ts">
 import { ref, inject, onMounted, watch, type Ref } from 'vue'
 import { api } from '../services/api'
-import type { AskResponse } from '../types'
+import type { AskResponse, PipelineStep } from '../types'
+import PipelineDebug from '../components/PipelineDebug.vue'
+import BarChart from '../components/BarChart.vue'
 
 const selectedEnvironmentId = inject<Ref<string | undefined>>('selectedEnvironmentId')
 const environmentVersion = inject<Ref<number>>('environmentVersion')
@@ -257,6 +288,7 @@ type ChatEntry = {
   isFavorite: boolean
   tags: string[]
   newTag: string
+  steps: PipelineStep[]
 }
 
 const question = ref('')
@@ -293,7 +325,8 @@ function makeEntry(questionText: string, lang: 'pt' | 'en' | 'es'): ChatEntry {
     copied: false,
     isFavorite: false,
     tags: [],
-    newTag: ''
+    newTag: '',
+    steps: []
   }
 }
 
@@ -365,6 +398,7 @@ async function ask() {
           switch (event) {
             case 'step':
               entry.stepLabel = parsed.label ?? ''
+              entry.steps.push({ step: parsed.step ?? '', label: parsed.label ?? '', timestamp: Date.now() })
               break
             case 'sql':
               entry.result = { ...(entry.result ?? {}), sql: parsed.sql } as any
@@ -856,7 +890,7 @@ function formatTime(timestamp: number): string {
   filter: drop-shadow(0 0 4px rgba(16, 185, 129, 0.3));
 }
 
-.sql-card, .table-card {
+.sql-card, .table-card, .chart-card {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
   border-radius: 12px;

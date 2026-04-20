@@ -1,5 +1,5 @@
-import { getOpenAI, getSummaryModel } from "../openai.js";
-import { getAgentsConfig } from "../agentConfig.js";
+import { getOpenAI, getSummaryModel } from "../core/openai.js";
+import { getAgentsConfig } from "../core/agentConfig.js";
 
 const shouldLogPrompts = (): boolean => {
   const flag = process.env.LOG_PROMPTS?.toLowerCase();

@@ -1,8 +1,8 @@
 import type { TableChunk } from "@auraia/shared";
-import { qdrant, getSchemaCollectionName } from "../qdrant.js";
-import { loadSchemaGraph } from "../schema.js";
-import { getOpenAI, getEmbeddingModel, getSqlModelMini } from "../openai.js";
-import { getHistoryCollection } from "../mongo.js";
+import { qdrant, getSchemaCollectionName } from "../core/qdrant.js";
+import { loadSchemaGraph } from "../pipeline/schema.js";
+import { getOpenAI, getEmbeddingModel, getSqlModelMini } from "../core/openai.js";
+import { getHistoryCollection } from "../core/mongo.js";
 
 export type ExpandedContext = {
   tables: TableChunk[];

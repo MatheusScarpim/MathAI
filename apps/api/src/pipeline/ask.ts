@@ -1,14 +1,13 @@
 import type { AskErrorResponse, AskSuccessResponse } from "@auraia/shared";
 import { sanitizeErrorMessage } from "@auraia/shared";
-import { getAdapter } from "./db.js";
+import { getAdapter } from "../core/db.js";
 import {
   getHistoryCollection,
   getInstructionsCollection,
-  getSettingsCollection,
   type HistoryRecord
-} from "./mongo.js";
-import { validateSql } from "./validation.js";
-import { ensureSchemaCollection } from "./qdrant.js";
+} from "../core/mongo.js";
+import { validateSql } from "../core/validation.js";
+import { ensureSchemaCollection } from "../core/qdrant.js";
 import { ObjectId, type Filter } from "mongodb";
 import {
   findSemanticSql,
@@ -16,19 +15,22 @@ import {
   getCacheKey,
   setCachedValue,
   setSemanticEntry
-} from "./cache.js";
-import { getAppConfig } from "./appConfig.js";
+} from "../core/cache.js";
+import { getAppConfig, getEnvironment } from "../core/appConfig.js";
 import { answerQuestionApi } from "./askApi.js";
-import { config } from "./config.js";
+import { config } from "../core/config.js";
+import { cosineSimilarity } from "../utils/math.js";
+import { getTableReferenceCountSetting } from "../helpers/settings.js";
 
 // Import agents
-import { translateText, buildStandaloneQuestion } from "./agents/translation.js";
-import { expandTables, searchRelevantTables, generateEmbedding, buildEmbeddingInput, estimateQueryComplexity } from "./agents/schema.js";
-import { buildPrompt, generateSql, generateCorrectedSql, classifyError, reflectOnError } from "./agents/sql.js";
-import { decomposeQuestion, combineSubQueries, type DecompositionPlan } from "./agents/planner.js";
-import { summarizeResult, extractYearFromSql } from "./agents/summary.js";
-import { inferChart, inferChartWithLLM } from "./agents/chart.js";
-import { getAgentsConfig } from "./agentConfig.js";
+import { translateText, buildStandaloneQuestion } from "../agents/translation.js";
+import { expandTables, searchRelevantTables, generateEmbedding, buildEmbeddingInput, estimateQueryComplexity } from "../agents/schema.js";
+import { buildPrompt, generateSql, generateCorrectedSql, classifyError, reflectOnError } from "../agents/sql.js";
+import { profileTables, type TableProfileMap } from "../agents/profiler.js";
+import { decomposeQuestion, combineSubQueries, type DecompositionPlan } from "../agents/planner.js";
+import { summarizeResult, extractYearFromSql } from "../agents/summary.js";
+import { inferChart, inferChartWithLLM } from "../agents/chart.js";
+import { getAgentsConfig } from "../core/agentConfig.js";
 
 type AskResult =
   | { ok: true; data: AskSuccessResponse }
@@ -51,18 +53,6 @@ let aliasInstructionEnsured = false;
 const shouldLogPrompts = (): boolean => {
   const flag = process.env.LOG_PROMPTS?.toLowerCase();
   return flag === "1" || flag === "true" || flag === "yes";
-};
-
-const getTableReferenceCount = async (): Promise<number> => {
-  try {
-    const collection = await getSettingsCollection();
-    const doc = await collection.findOne({ key: "tableReferenceCount" });
-    const value = typeof doc?.value === "number" ? doc.value : Number.parseInt(String(doc?.value ?? ""), 10);
-    if (!Number.isFinite(value)) return 8;
-    return Math.max(1, Math.min(30, Math.floor(value)));
-  } catch {
-    return 8;
-  }
 };
 
 // ============== HELPER FUNCTIONS ==============
@@ -110,23 +100,6 @@ const truncate = (value: string, max: number): string =>
 
 const truncateRows = <T>(rows: T[]): T[] =>
   rows.slice(0, config.historyMaxRows);
-
-const cosineSimilarity = (a: number[], b: number[]): number => {
-  const length = Math.min(a.length, b.length);
-  if (!length) return 0;
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < length; i += 1) {
-    const av = a[i] ?? 0;
-    const bv = b[i] ?? 0;
-    dot += av * bv;
-    normA += av * av;
-    normB += bv * bv;
-  }
-  if (!normA || !normB) return 0;
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-};
 
 // ============== HISTORY & FEW-SHOT LOADERS ==============
 
@@ -490,7 +463,6 @@ export const answerQuestion = async (
   const displayQuestion = normalizedQuestion;
 
   // ── Mode branching: delegate to API orchestrator if mode === "api" ──
-  const { getEnvironment } = await import("./appConfig.js");
   const currentConfig = resolvedEnvironmentId ? await getEnvironment(resolvedEnvironmentId) : await getAppConfig();
   if (currentConfig?.mode === "api") {
     return answerQuestionApi(
@@ -694,7 +666,7 @@ export const answerQuestion = async (
 
   // Step 6: Search relevant tables (SchemaAgent)
   emit?.("step", { step: "searching_tables", label: "Buscando tabelas relevantes..." });
-  const tableReferenceCount = await getTableReferenceCount();
+  const tableReferenceCount = await getTableReferenceCountSetting();
   const initialTables = await searchRelevantTables(vector, embeddingQuestion, tableReferenceCount, resolvedEnvironmentId);
   if (initialTables.length === 0) {
     return {
@@ -706,6 +678,13 @@ export const answerQuestion = async (
   // Step 7: Expand tables context (SchemaAgent) — dynamic hops based on question complexity
   const hops = estimateQueryComplexity(embeddingQuestion, initialTables.length);
   const context = await expandTables(initialTables, hops, resolvedEnvironmentId);
+
+  // Step 7.5: Profile tables to discover real column values for low-cardinality columns
+  let tableProfiles: TableProfileMap = new Map();
+  try {
+    tableProfiles = await profileTables(context.tables, adapter, dbType, resolvedEnvironmentId);
+  } catch { /* non-critical, proceed without profiles */ }
+
   const rawPeriod = findPeriodInText(schemaQuestion) ?? {};
   const currentPeriodText = formatPeriodText(rawPeriod, resolvedSchemaLanguage);
   const historySnippet = currentPeriodText || isNewTopic ? null : await buildHistorySnippet(resolvedChatId, resolvedSchemaLanguage);
@@ -780,7 +759,7 @@ export const answerQuestion = async (
     let decompositionFailed = false;
 
     for (const subQ of decompositionPlan.subQuestions) {
-      const subPrompt = buildPrompt(subQ.question, context, null, fewShotExamples, null, null, resolvedSchemaLanguage, currentPeriodText);
+      const subPrompt = buildPrompt(subQ.question, context, null, fewShotExamples, null, null, resolvedSchemaLanguage, currentPeriodText, tableProfiles);
       const subPromptWithPeriod = periodHint
         ? `${subPrompt}\n\n${resolvedSchemaLanguage === "en" ? `Fixed period from chat history: ${periodHint}` : resolvedSchemaLanguage === "es" ? `Periodo fijo del historial del chat: ${periodHint}` : `Periodo fixo do historico do chat: ${periodHint}`}`
         : subPrompt;
@@ -901,7 +880,7 @@ export const answerQuestion = async (
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const isRetry = attempt > 0 && lastClassifiedError && lastReflection && lastSql;
 
-    const prompt = buildPrompt(schemaQuestion, context, historySnippet, fewShotExamples, lastError, lastSql, resolvedSchemaLanguage, currentPeriodText);
+    const prompt = buildPrompt(schemaQuestion, context, historySnippet, fewShotExamples, lastError, lastSql, resolvedSchemaLanguage, currentPeriodText, tableProfiles);
     const promptWithPeriod = periodHint
       ? `${prompt}\n\n${resolvedSchemaLanguage === "en" ? `Fixed period from chat history: ${periodHint}` : resolvedSchemaLanguage === "es" ? `Periodo fijo del historial del chat: ${periodHint}` : `Periodo fixo do historico do chat: ${periodHint}`}`
       : prompt;

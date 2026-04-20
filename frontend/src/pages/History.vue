@@ -102,9 +102,12 @@
       >
         <div class="card-header">
           <div class="card-meta">
+            <span class="status-badge" :class="item.success !== false ? 'success' : 'fail'">
+              {{ item.success !== false ? 'OK' : 'ERRO' }}
+            </span>
             <span class="date">{{ formatDate(item.createdAt) }}</span>
-            <span v-if="item.elapsedMs" class="time">{{ item.elapsedMs }}ms</span>
-            <span v-if="item.rowCount !== undefined" class="rows">
+            <span v-if="item.elapsedMs" class="time-badge">{{ item.elapsedMs }}ms</span>
+            <span v-if="item.rowCount !== undefined" class="rows-badge">
               {{ item.rowCount }} {{ pluralize(item.rowCount, 'linha', 'linhas') }}
             </span>
           </div>
@@ -689,9 +692,49 @@ function truncateSQL(sql: string): string {
 
 .card-meta {
   display: flex;
-  gap: 1rem;
+  align-items: center;
+  gap: 0.75rem;
   font-size: 0.8rem;
   color: var(--color-gray-500);
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.status-badge.success {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--color-accent);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+.status-badge.fail {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+.time-badge {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  padding: 0.1rem 0.4rem;
+  background: rgba(34, 211, 238, 0.08);
+  border: 1px solid rgba(34, 211, 238, 0.15);
+  border-radius: 4px;
+  color: var(--color-cyan);
+}
+
+.rows-badge {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
 }
 
 .card-actions {

@@ -219,3 +219,23 @@ export interface AgentsConfig {
   embedding: EmbeddingAgentConfig
   planner?: AgentConfig
 }
+
+// ── Developer features ──
+
+export interface PipelineStep {
+  step: string
+  label: string
+  timestamp: number
+}
+
+export interface StatsResponse {
+  totalQueries: number
+  successRate: number
+  cacheHitRate: number
+  avgElapsedMs: number
+  totalTokens: { input: number; output: number; total: number }
+  queriesPerDay: Array<{ date: string; count: number; errors: number }>
+  topErrors: Array<{ message: string; count: number }>
+  environmentBreakdown: Array<{ envId: string; count: number }>
+  days: number
+}

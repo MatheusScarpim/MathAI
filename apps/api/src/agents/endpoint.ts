@@ -1,6 +1,6 @@
 import type { EndpointChunk } from "@auraia/shared";
-import { qdrant } from "../qdrant.js";
-import { loadEndpointGraph } from "../swagger.js";
+import { qdrant } from "../core/qdrant.js";
+import { loadEndpointGraph } from "../pipeline/swagger.js";
 
 /* ── Types ───────────────────────────────────────────────── */
 

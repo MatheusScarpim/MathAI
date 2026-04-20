@@ -1,6 +1,6 @@
 import type { HttpRequestPlan } from "@auraia/shared";
-import { getOpenAI } from "../openai.js";
-import { getAgentsConfig } from "../agentConfig.js";
+import { getOpenAI } from "../core/openai.js";
+import { getAgentsConfig } from "../core/agentConfig.js";
 import type { ExpandedEndpointContext } from "./endpoint.js";
 
 /* ── Types ───────────────────────────────────────────────── */

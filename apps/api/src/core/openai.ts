@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { getAppConfig } from "./appConfig.js";
+import { getAppConfig, getEnvironment } from "./appConfig.js";
 import { getAgentsConfig } from "./agentConfig.js";
 
 export const EMBEDDING_MODEL = "text-embedding-3-small";
@@ -29,25 +29,33 @@ export const getEmbeddingModel = async (): Promise<string> =>
 export const getPlannerModel = async (): Promise<string> =>
   (await getAgentsConfig()).planner?.model ?? SQL_MODEL_MINI;
 
-let cachedClient: OpenAI | null = null;
-let cachedKey: string | null = null;
+const clientCache = new Map<string, OpenAI>();
 
-export const getOpenAI = async (): Promise<OpenAI> => {
-  const appConfig = await getAppConfig();
-  if (!appConfig) {
+export const getOpenAI = async (environmentId?: string): Promise<OpenAI> => {
+  let apiKey: string | undefined;
+
+  if (environmentId) {
+    const env = await getEnvironment(environmentId);
+    apiKey = env?.openAiApiKey;
+  }
+
+  if (!apiKey) {
+    const appConfig = await getAppConfig();
+    apiKey = appConfig?.openAiApiKey;
+  }
+
+  if (!apiKey) {
     throw new Error("App not configured. Please complete setup first.");
   }
 
-  if (cachedClient && cachedKey === appConfig.openAiApiKey) {
-    return cachedClient;
-  }
+  const existing = clientCache.get(apiKey);
+  if (existing) return existing;
 
-  cachedClient = new OpenAI({ apiKey: appConfig.openAiApiKey });
-  cachedKey = appConfig.openAiApiKey;
-  return cachedClient;
+  const client = new OpenAI({ apiKey });
+  clientCache.set(apiKey, client);
+  return client;
 };
 
 export const clearOpenAICache = (): void => {
-  cachedClient = null;
-  cachedKey = null;
+  clientCache.clear();
 };
