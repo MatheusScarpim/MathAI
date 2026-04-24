@@ -643,7 +643,11 @@ export const answerQuestion = async (
           summary,
           createdAt: new Date(), favorite: false, tags: [], chatId: resolvedChatId,
           language: resolvedSchemaLanguage, responseLanguage: resolvedResponseLanguage,
-          success: true, elapsedMs, rowCount, embedding: vector
+          success: true, elapsedMs, rowCount, embedding: vector,
+          tokenUsage: {
+            summary: summaryUsage.total_tokens ? { inputTokens: summaryUsage.prompt_tokens ?? 0, outputTokens: summaryUsage.completion_tokens ?? 0, totalTokens: summaryUsage.total_tokens ?? 0 } : undefined,
+            total: { inputTokens: summaryUsage.prompt_tokens ?? 0, outputTokens: summaryUsage.completion_tokens ?? 0, totalTokens: summaryUsage.total_tokens ?? 0 }
+          }
         });
 
         const responseData: AskSuccessResponse = {
@@ -652,7 +656,6 @@ export const answerQuestion = async (
           summary, cacheHit: true, chart, responseLanguage: resolvedResponseLanguage,
           translatedQuestion: schemaQuestion,
           tokenUsage: {
-            sql: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
             summary: summaryUsage.total_tokens ? { inputTokens: summaryUsage.prompt_tokens ?? 0, outputTokens: summaryUsage.completion_tokens ?? 0, totalTokens: summaryUsage.total_tokens ?? 0 } : undefined,
             total: { inputTokens: summaryUsage.prompt_tokens ?? 0, outputTokens: summaryUsage.completion_tokens ?? 0, totalTokens: summaryUsage.total_tokens ?? 0 }
           }
@@ -735,21 +738,22 @@ export const answerQuestion = async (
   let lastSql: string | null = null;
   let lastClassifiedError: ReturnType<typeof classifyError> | null = null;
   let lastReflection: string | null = null;
-  let sqlUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } = {};
-  let summaryUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } = {};
+  type UsageBucket = { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  const sqlMiniUsage: UsageBucket = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  const sqlLargeUsage: UsageBucket = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  const summaryUsage: UsageBucket = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   let forceLargeModel = false;
 
-  const accumulateUsage = (usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }) => {
-    if (!usage) return;
-    sqlUsage = {
-      prompt_tokens: (sqlUsage.prompt_tokens ?? 0) + (usage.prompt_tokens ?? 0),
-      completion_tokens: (sqlUsage.completion_tokens ?? 0) + (usage.completion_tokens ?? 0),
-      total_tokens: (sqlUsage.total_tokens ?? 0) + (usage.total_tokens ?? 0)
-    };
+  const addTo = (bucket: UsageBucket, usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }) => {
+    const pt = usage.prompt_tokens ?? 0;
+    const ct = usage.completion_tokens ?? 0;
+    bucket.prompt_tokens += pt;
+    bucket.completion_tokens += ct;
+    bucket.total_tokens += usage.total_tokens ?? (pt + ct);
   };
+  const accumulateMiniUsage = (usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }) => { if (usage) addTo(sqlMiniUsage, usage); };
+  const accumulateLargeUsage = (usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }) => { if (usage) addTo(sqlLargeUsage, usage); };
 
-  // Include planner tokens in SQL usage tracking
-  accumulateUsage(plannerUsage);
 
   // ── Decomposed query path: generate SQL for each sub-question, then combine ──
   if (decompositionPlan?.needsDecomposition && decompositionPlan.subQuestions.length >= 2) {
@@ -766,7 +770,7 @@ export const answerQuestion = async (
 
       emit?.("step", { step: "generating_sub_sql", label: `Gerando SQL: ${subQ.focus}...` });
       const subResult = await generateSql(subPromptWithPeriod, instructionText, resolvedSchemaLanguage, dbType, false, false);
-      accumulateUsage(subResult.usage);
+      accumulateLargeUsage(subResult.usage);
 
       const subValidation = validateSql(subResult.sql, dbType);
       if (!subValidation.ok) {
@@ -781,7 +785,7 @@ export const answerQuestion = async (
       emit?.("step", { step: "combining_sql", label: "Combinando sub-consultas..." });
       try {
         const combined = await combineSubQueries(decompositionPlan, subSqls, resolvedSchemaLanguage, dbType, instructionText);
-        accumulateUsage(combined.usage);
+        accumulateLargeUsage(combined.usage);
 
         const combinedValidation = validateSql(combined.sql, dbType);
         if (combinedValidation.ok) {
@@ -820,11 +824,7 @@ export const answerQuestion = async (
             const settled = summaryResultSettled.value as { summary?: string; usage?: typeof summaryUsage };
             summary = settled.summary;
             if (settled.usage) {
-              summaryUsage = {
-                prompt_tokens: (summaryUsage.prompt_tokens ?? 0) + (settled.usage.prompt_tokens ?? 0),
-                completion_tokens: (summaryUsage.completion_tokens ?? 0) + (settled.usage.completion_tokens ?? 0),
-                total_tokens: (summaryUsage.total_tokens ?? 0) + (settled.usage.total_tokens ?? 0)
-              };
+              addTo(summaryUsage, settled.usage);
             }
           }
 
@@ -841,7 +841,14 @@ export const answerQuestion = async (
             rows: truncateRows(queryResult.recordset ?? []), columns, chart, summary,
             createdAt: new Date(), favorite: false, tags: [], chatId: resolvedChatId,
             language: resolvedSchemaLanguage, responseLanguage: resolvedResponseLanguage,
-            success: true, elapsedMs, rowCount, embedding: vector
+            success: true, elapsedMs, rowCount, embedding: vector,
+            tokenUsage: {
+              planner: plannerUsage.total_tokens ? { inputTokens: plannerUsage.prompt_tokens ?? 0, outputTokens: plannerUsage.completion_tokens ?? 0, totalTokens: plannerUsage.total_tokens ?? 0 } : undefined,
+              sqlMini: sqlMiniUsage.total_tokens ? { inputTokens: sqlMiniUsage.prompt_tokens ?? 0, outputTokens: sqlMiniUsage.completion_tokens ?? 0, totalTokens: sqlMiniUsage.total_tokens ?? 0 } : undefined,
+              sqlLarge: sqlLargeUsage.total_tokens ? { inputTokens: sqlLargeUsage.prompt_tokens ?? 0, outputTokens: sqlLargeUsage.completion_tokens ?? 0, totalTokens: sqlLargeUsage.total_tokens ?? 0 } : undefined,
+              summary: summaryUsage.total_tokens ? { inputTokens: summaryUsage.prompt_tokens ?? 0, outputTokens: summaryUsage.completion_tokens ?? 0, totalTokens: summaryUsage.total_tokens ?? 0 } : undefined,
+              total: { inputTokens: (plannerUsage.prompt_tokens ?? 0) + (sqlMiniUsage.prompt_tokens ?? 0) + (sqlLargeUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0), outputTokens: (plannerUsage.completion_tokens ?? 0) + (sqlMiniUsage.completion_tokens ?? 0) + (sqlLargeUsage.completion_tokens ?? 0) + (summaryUsage.completion_tokens ?? 0), totalTokens: (plannerUsage.total_tokens ?? 0) + (sqlMiniUsage.total_tokens ?? 0) + (sqlLargeUsage.total_tokens ?? 0) + (summaryUsage.total_tokens ?? 0) }
+            }
           });
 
           const responseData: AskSuccessResponse = {
@@ -850,17 +857,19 @@ export const answerQuestion = async (
             summary, cacheHit: false, chart, responseLanguage: resolvedResponseLanguage,
             translatedQuestion: schemaQuestion,
             tokenUsage: {
-              sql: { inputTokens: sqlUsage.prompt_tokens ?? 0, outputTokens: sqlUsage.completion_tokens ?? 0, totalTokens: sqlUsage.total_tokens ?? 0 },
+              planner: plannerUsage.total_tokens ? { inputTokens: plannerUsage.prompt_tokens ?? 0, outputTokens: plannerUsage.completion_tokens ?? 0, totalTokens: plannerUsage.total_tokens ?? 0 } : undefined,
+              sqlMini: sqlMiniUsage.total_tokens ? { inputTokens: sqlMiniUsage.prompt_tokens ?? 0, outputTokens: sqlMiniUsage.completion_tokens ?? 0, totalTokens: sqlMiniUsage.total_tokens ?? 0 } : undefined,
+              sqlLarge: sqlLargeUsage.total_tokens ? { inputTokens: sqlLargeUsage.prompt_tokens ?? 0, outputTokens: sqlLargeUsage.completion_tokens ?? 0, totalTokens: sqlLargeUsage.total_tokens ?? 0 } : undefined,
               summary: summaryUsage.total_tokens ? { inputTokens: summaryUsage.prompt_tokens ?? 0, outputTokens: summaryUsage.completion_tokens ?? 0, totalTokens: summaryUsage.total_tokens ?? 0 } : undefined,
-              total: { inputTokens: (sqlUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0), outputTokens: (sqlUsage.completion_tokens ?? 0) + (summaryUsage.completion_tokens ?? 0), totalTokens: (sqlUsage.total_tokens ?? 0) + (summaryUsage.total_tokens ?? 0) }
+              total: { inputTokens: (plannerUsage.prompt_tokens ?? 0) + (sqlMiniUsage.prompt_tokens ?? 0) + (sqlLargeUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0), outputTokens: (plannerUsage.completion_tokens ?? 0) + (sqlMiniUsage.completion_tokens ?? 0) + (sqlLargeUsage.completion_tokens ?? 0) + (summaryUsage.completion_tokens ?? 0), totalTokens: (plannerUsage.total_tokens ?? 0) + (sqlMiniUsage.total_tokens ?? 0) + (sqlLargeUsage.total_tokens ?? 0) + (summaryUsage.total_tokens ?? 0) }
             }
           };
           await setCachedValue(cacheKey, responseData);
           await setSemanticEntry(resolvedChatId, resolvedResponseLanguage, resolvedSchemaLanguage, { embedding: vector, sql, question: normalizedQuestion, createdAt: new Date().toISOString() }, resolvedEnvironmentId);
 
           if (shouldLogPrompts()) {
-            const totalIn = (sqlUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0);
-            const totalOut = (sqlUsage.completion_tokens ?? 0) + (summaryUsage.completion_tokens ?? 0);
+            const totalIn = (plannerUsage.prompt_tokens ?? 0) + (sqlMiniUsage.prompt_tokens ?? 0) + (sqlLargeUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0);
+            const totalOut = (plannerUsage.completion_tokens ?? 0) + (sqlMiniUsage.completion_tokens ?? 0) + (sqlLargeUsage.completion_tokens ?? 0) + (summaryUsage.completion_tokens ?? 0);
             console.info(`[tokens] === TOTAL REQUEST (decomposed) === | input=${totalIn} output=${totalOut} total=${totalIn + totalOut}`);
           }
 
@@ -898,7 +907,7 @@ export const answerQuestion = async (
         lastClassifiedError!,
         lastReflection!
       );
-      accumulateUsage(result.usage);
+      accumulateLargeUsage(result.usage);
     } else {
       // First attempt: use mini model with escalation
       const useMini = !forceLargeModel;
@@ -910,7 +919,7 @@ export const answerQuestion = async (
         useMini,
         useMini
       );
-      accumulateUsage(result.usage);
+      if (useMini) accumulateMiniUsage(result.usage); else accumulateLargeUsage(result.usage);
 
       if (useMini && result.escalated) {
         forceLargeModel = true;
@@ -922,7 +931,7 @@ export const answerQuestion = async (
           false,
           false
         );
-        accumulateUsage(result.usage);
+        accumulateLargeUsage(result.usage);
       }
     }
 
@@ -940,7 +949,7 @@ export const answerQuestion = async (
         false,
         false
       );
-      accumulateUsage(retry.usage);
+      accumulateLargeUsage(retry.usage);
       lastSql = retry.sql;
       validation = validateSql(retry.sql, dbType);
     }
@@ -957,7 +966,7 @@ export const answerQuestion = async (
           emit?.("step", { step: "reflecting", label: "Analisando erro..." });
           const reflectionResult = await reflectOnError(lastSql ?? "", lastClassifiedError, schemaQuestion, resolvedSchemaLanguage);
           lastReflection = reflectionResult.reflection;
-          accumulateUsage(reflectionResult.usage);
+          accumulateMiniUsage(reflectionResult.usage);
         } catch {
           lastReflection = lastError;
         }
@@ -1000,11 +1009,7 @@ export const answerQuestion = async (
         const settled = summaryResultSettled.value as { summary?: string; usage?: typeof summaryUsage };
         summary = settled.summary;
         if (settled.usage) {
-          summaryUsage = {
-            prompt_tokens: (summaryUsage.prompt_tokens ?? 0) + (settled.usage.prompt_tokens ?? 0),
-            completion_tokens: (summaryUsage.completion_tokens ?? 0) + (settled.usage.completion_tokens ?? 0),
-            total_tokens: (summaryUsage.total_tokens ?? 0) + (settled.usage.total_tokens ?? 0)
-          };
+          addTo(summaryUsage, settled.usage);
         }
       }
 
@@ -1026,7 +1031,14 @@ export const answerQuestion = async (
         summary,
         createdAt: new Date(), favorite: false, tags: [], chatId: resolvedChatId,
         language: resolvedSchemaLanguage, responseLanguage: resolvedResponseLanguage,
-        success: true, elapsedMs, rowCount, embedding: vector
+        success: true, elapsedMs, rowCount, embedding: vector,
+        tokenUsage: {
+          planner: plannerUsage.total_tokens ? { inputTokens: plannerUsage.prompt_tokens ?? 0, outputTokens: plannerUsage.completion_tokens ?? 0, totalTokens: plannerUsage.total_tokens ?? 0 } : undefined,
+          sqlMini: sqlMiniUsage.total_tokens > 0 ? { inputTokens: sqlMiniUsage.prompt_tokens, outputTokens: sqlMiniUsage.completion_tokens, totalTokens: sqlMiniUsage.total_tokens } : undefined,
+          sqlLarge: sqlLargeUsage.total_tokens > 0 ? { inputTokens: sqlLargeUsage.prompt_tokens, outputTokens: sqlLargeUsage.completion_tokens, totalTokens: sqlLargeUsage.total_tokens } : undefined,
+          summary: summaryUsage.total_tokens > 0 ? { inputTokens: summaryUsage.prompt_tokens, outputTokens: summaryUsage.completion_tokens, totalTokens: summaryUsage.total_tokens } : undefined,
+          total: { inputTokens: (plannerUsage.prompt_tokens ?? 0) + sqlMiniUsage.prompt_tokens + sqlLargeUsage.prompt_tokens + summaryUsage.prompt_tokens, outputTokens: (plannerUsage.completion_tokens ?? 0) + sqlMiniUsage.completion_tokens + sqlLargeUsage.completion_tokens + summaryUsage.completion_tokens, totalTokens: (plannerUsage.total_tokens ?? 0) + sqlMiniUsage.total_tokens + sqlLargeUsage.total_tokens + summaryUsage.total_tokens }
+        }
       });
 
       const responseData: AskSuccessResponse = {
@@ -1035,9 +1047,11 @@ export const answerQuestion = async (
         summary, cacheHit: false, chart, responseLanguage: resolvedResponseLanguage,
         translatedQuestion: schemaQuestion,
         tokenUsage: {
-          sql: { inputTokens: sqlUsage.prompt_tokens ?? 0, outputTokens: sqlUsage.completion_tokens ?? 0, totalTokens: sqlUsage.total_tokens ?? 0 },
-          summary: summaryUsage.total_tokens ? { inputTokens: summaryUsage.prompt_tokens ?? 0, outputTokens: summaryUsage.completion_tokens ?? 0, totalTokens: summaryUsage.total_tokens ?? 0 } : undefined,
-          total: { inputTokens: (sqlUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0), outputTokens: (sqlUsage.completion_tokens ?? 0) + (summaryUsage.completion_tokens ?? 0), totalTokens: (sqlUsage.total_tokens ?? 0) + (summaryUsage.total_tokens ?? 0) }
+          planner: plannerUsage.total_tokens ? { inputTokens: plannerUsage.prompt_tokens ?? 0, outputTokens: plannerUsage.completion_tokens ?? 0, totalTokens: plannerUsage.total_tokens ?? 0 } : undefined,
+          sqlMini: sqlMiniUsage.total_tokens > 0 ? { inputTokens: sqlMiniUsage.prompt_tokens, outputTokens: sqlMiniUsage.completion_tokens, totalTokens: sqlMiniUsage.total_tokens } : undefined,
+          sqlLarge: sqlLargeUsage.total_tokens > 0 ? { inputTokens: sqlLargeUsage.prompt_tokens, outputTokens: sqlLargeUsage.completion_tokens, totalTokens: sqlLargeUsage.total_tokens } : undefined,
+          summary: summaryUsage.total_tokens > 0 ? { inputTokens: summaryUsage.prompt_tokens, outputTokens: summaryUsage.completion_tokens, totalTokens: summaryUsage.total_tokens } : undefined,
+          total: { inputTokens: (plannerUsage.prompt_tokens ?? 0) + sqlMiniUsage.prompt_tokens + sqlLargeUsage.prompt_tokens + summaryUsage.prompt_tokens, outputTokens: (plannerUsage.completion_tokens ?? 0) + sqlMiniUsage.completion_tokens + sqlLargeUsage.completion_tokens + summaryUsage.completion_tokens, totalTokens: (plannerUsage.total_tokens ?? 0) + sqlMiniUsage.total_tokens + sqlLargeUsage.total_tokens + summaryUsage.total_tokens }
         }
       };
       await setCachedValue(cacheKey, responseData);
@@ -1045,8 +1059,8 @@ export const answerQuestion = async (
 
       // Log total tokens
       if (shouldLogPrompts()) {
-        const totalIn = (sqlUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0);
-        const totalOut = (sqlUsage.completion_tokens ?? 0) + (summaryUsage.completion_tokens ?? 0);
+        const totalIn = (plannerUsage.prompt_tokens ?? 0) + (sqlMiniUsage.prompt_tokens ?? 0) + (sqlLargeUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0);
+        const totalOut = (plannerUsage.completion_tokens ?? 0) + (sqlMiniUsage.completion_tokens ?? 0) + (sqlLargeUsage.completion_tokens ?? 0) + (summaryUsage.completion_tokens ?? 0);
         console.info(`[tokens] === TOTAL REQUEST === | input=${totalIn} output=${totalOut} total=${totalIn + totalOut}`);
       }
 
@@ -1063,7 +1077,7 @@ export const answerQuestion = async (
           emit?.("step", { step: "reflecting", label: "Analisando erro..." });
           const reflectionResult = await reflectOnError(sql, lastClassifiedError, schemaQuestion, resolvedSchemaLanguage);
           lastReflection = reflectionResult.reflection;
-          accumulateUsage(reflectionResult.usage);
+          accumulateMiniUsage(reflectionResult.usage);
         } catch {
           lastReflection = rawError;
         }
@@ -1083,7 +1097,14 @@ export const answerQuestion = async (
     question: normalizedQuestion, embeddingQuestion, sql: lastSql ?? "",
     createdAt: new Date(), favorite: false, tags: [], chatId: resolvedChatId,
     language: resolvedSchemaLanguage, responseLanguage: resolvedResponseLanguage,
-    success: false, errorMessage: lastError ?? "Erro ao gerar SQL.", elapsedMs: 0, rowCount: 0, embedding: vector
+    success: false, errorMessage: lastError ?? "Erro ao gerar SQL.", elapsedMs: 0, rowCount: 0, embedding: vector,
+    tokenUsage: {
+      planner: plannerUsage.total_tokens ? { inputTokens: plannerUsage.prompt_tokens ?? 0, outputTokens: plannerUsage.completion_tokens ?? 0, totalTokens: plannerUsage.total_tokens ?? 0 } : undefined,
+      sqlMini: sqlMiniUsage.total_tokens ? { inputTokens: sqlMiniUsage.prompt_tokens ?? 0, outputTokens: sqlMiniUsage.completion_tokens ?? 0, totalTokens: sqlMiniUsage.total_tokens ?? 0 } : undefined,
+      sqlLarge: sqlLargeUsage.total_tokens ? { inputTokens: sqlLargeUsage.prompt_tokens ?? 0, outputTokens: sqlLargeUsage.completion_tokens ?? 0, totalTokens: sqlLargeUsage.total_tokens ?? 0 } : undefined,
+      summary: summaryUsage.total_tokens ? { inputTokens: summaryUsage.prompt_tokens ?? 0, outputTokens: summaryUsage.completion_tokens ?? 0, totalTokens: summaryUsage.total_tokens ?? 0 } : undefined,
+      total: { inputTokens: (plannerUsage.prompt_tokens ?? 0) + (sqlMiniUsage.prompt_tokens ?? 0) + (sqlLargeUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0), outputTokens: (plannerUsage.completion_tokens ?? 0) + (sqlMiniUsage.completion_tokens ?? 0) + (sqlLargeUsage.completion_tokens ?? 0) + (summaryUsage.completion_tokens ?? 0), totalTokens: (plannerUsage.total_tokens ?? 0) + (sqlMiniUsage.total_tokens ?? 0) + (sqlLargeUsage.total_tokens ?? 0) + (summaryUsage.total_tokens ?? 0) }
+    }
   });
 
   return {
@@ -1094,9 +1115,11 @@ export const answerQuestion = async (
       summary: fallbackSummary, chart: undefined, responseLanguage: resolvedResponseLanguage,
       translatedQuestion: schemaQuestion,
       tokenUsage: {
-        sql: { inputTokens: sqlUsage.prompt_tokens ?? 0, outputTokens: sqlUsage.completion_tokens ?? 0, totalTokens: sqlUsage.total_tokens ?? 0 },
+        planner: plannerUsage.total_tokens ? { inputTokens: plannerUsage.prompt_tokens ?? 0, outputTokens: plannerUsage.completion_tokens ?? 0, totalTokens: plannerUsage.total_tokens ?? 0 } : undefined,
+        sqlMini: sqlMiniUsage.total_tokens ? { inputTokens: sqlMiniUsage.prompt_tokens ?? 0, outputTokens: sqlMiniUsage.completion_tokens ?? 0, totalTokens: sqlMiniUsage.total_tokens ?? 0 } : undefined,
+        sqlLarge: sqlLargeUsage.total_tokens ? { inputTokens: sqlLargeUsage.prompt_tokens ?? 0, outputTokens: sqlLargeUsage.completion_tokens ?? 0, totalTokens: sqlLargeUsage.total_tokens ?? 0 } : undefined,
         summary: summaryUsage.total_tokens ? { inputTokens: summaryUsage.prompt_tokens ?? 0, outputTokens: summaryUsage.completion_tokens ?? 0, totalTokens: summaryUsage.total_tokens ?? 0 } : undefined,
-        total: { inputTokens: (sqlUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0), outputTokens: (sqlUsage.completion_tokens ?? 0) + (summaryUsage.completion_tokens ?? 0), totalTokens: (sqlUsage.total_tokens ?? 0) + (summaryUsage.total_tokens ?? 0) }
+        total: { inputTokens: (plannerUsage.prompt_tokens ?? 0) + (sqlMiniUsage.prompt_tokens ?? 0) + (sqlLargeUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0), outputTokens: (plannerUsage.completion_tokens ?? 0) + (sqlMiniUsage.completion_tokens ?? 0) + (sqlLargeUsage.completion_tokens ?? 0) + (summaryUsage.completion_tokens ?? 0), totalTokens: (plannerUsage.total_tokens ?? 0) + (sqlMiniUsage.total_tokens ?? 0) + (sqlLargeUsage.total_tokens ?? 0) + (summaryUsage.total_tokens ?? 0) }
       }
     }
   };

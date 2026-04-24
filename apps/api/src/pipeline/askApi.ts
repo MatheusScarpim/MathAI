@@ -472,7 +472,12 @@ export const answerQuestionApi = async (
         success: true,
         elapsedMs,
         rowCount,
-        embedding: vector
+        embedding: vector,
+        tokenUsage: {
+          sqlLarge: httpUsage.total_tokens ? { inputTokens: httpUsage.prompt_tokens ?? 0, outputTokens: httpUsage.completion_tokens ?? 0, totalTokens: httpUsage.total_tokens ?? 0 } : undefined,
+          summary: summaryUsage.total_tokens ? { inputTokens: summaryUsage.prompt_tokens ?? 0, outputTokens: summaryUsage.completion_tokens ?? 0, totalTokens: summaryUsage.total_tokens ?? 0 } : undefined,
+          total: { inputTokens: (httpUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0), outputTokens: (httpUsage.completion_tokens ?? 0) + (summaryUsage.completion_tokens ?? 0), totalTokens: (httpUsage.total_tokens ?? 0) + (summaryUsage.total_tokens ?? 0) }
+        }
       });
 
       const responseData: AskSuccessResponse = {
@@ -490,7 +495,7 @@ export const answerQuestionApi = async (
         responseLanguage: resolvedResponseLanguage,
         translatedQuestion: schemaQuestion,
         tokenUsage: {
-          sql: { inputTokens: httpUsage.prompt_tokens ?? 0, outputTokens: httpUsage.completion_tokens ?? 0, totalTokens: httpUsage.total_tokens ?? 0 },
+          sqlLarge: httpUsage.total_tokens ? { inputTokens: httpUsage.prompt_tokens ?? 0, outputTokens: httpUsage.completion_tokens ?? 0, totalTokens: httpUsage.total_tokens ?? 0 } : undefined,
           summary: summaryUsage.total_tokens
             ? { inputTokens: summaryUsage.prompt_tokens ?? 0, outputTokens: summaryUsage.completion_tokens ?? 0, totalTokens: summaryUsage.total_tokens ?? 0 }
             : undefined,
@@ -548,7 +553,12 @@ export const answerQuestionApi = async (
     errorMessage: lastError ?? "Erro ao gerar requisicao HTTP.",
     elapsedMs: 0,
     rowCount: 0,
-    embedding: vector
+    embedding: vector,
+    tokenUsage: {
+      sqlLarge: httpUsage.total_tokens ? { inputTokens: httpUsage.prompt_tokens ?? 0, outputTokens: httpUsage.completion_tokens ?? 0, totalTokens: httpUsage.total_tokens ?? 0 } : undefined,
+      summary: summaryUsage.total_tokens ? { inputTokens: summaryUsage.prompt_tokens ?? 0, outputTokens: summaryUsage.completion_tokens ?? 0, totalTokens: summaryUsage.total_tokens ?? 0 } : undefined,
+      total: { inputTokens: (httpUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0), outputTokens: (httpUsage.completion_tokens ?? 0) + (summaryUsage.completion_tokens ?? 0), totalTokens: (httpUsage.total_tokens ?? 0) + (summaryUsage.total_tokens ?? 0) }
+    }
   });
 
   return {
@@ -567,7 +577,7 @@ export const answerQuestionApi = async (
       responseLanguage: resolvedResponseLanguage,
       translatedQuestion: schemaQuestion,
       tokenUsage: {
-        sql: { inputTokens: httpUsage.prompt_tokens ?? 0, outputTokens: httpUsage.completion_tokens ?? 0, totalTokens: httpUsage.total_tokens ?? 0 },
+        sqlLarge: httpUsage.total_tokens ? { inputTokens: httpUsage.prompt_tokens ?? 0, outputTokens: httpUsage.completion_tokens ?? 0, totalTokens: httpUsage.total_tokens ?? 0 } : undefined,
         summary: summaryUsage.total_tokens
           ? { inputTokens: summaryUsage.prompt_tokens ?? 0, outputTokens: summaryUsage.completion_tokens ?? 0, totalTokens: summaryUsage.total_tokens ?? 0 }
           : undefined,

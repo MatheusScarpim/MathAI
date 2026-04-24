@@ -30,6 +30,14 @@ export interface HistoryRecord {
   errorMessage?: string
   elapsedMs?: number
   rowCount?: number
+  tokenUsage?: {
+    sql?: { inputTokens: number; outputTokens: number; totalTokens: number }
+    planner?: { inputTokens: number; outputTokens: number; totalTokens: number }
+    sqlMini?: { inputTokens: number; outputTokens: number; totalTokens: number }
+    sqlLarge?: { inputTokens: number; outputTokens: number; totalTokens: number }
+    summary?: { inputTokens: number; outputTokens: number; totalTokens: number }
+    total: { inputTokens: number; outputTokens: number; totalTokens: number }
+  }
 }
 
 export interface Instruction {
@@ -234,6 +242,10 @@ export interface StatsResponse {
   cacheHitRate: number
   avgElapsedMs: number
   totalTokens: { input: number; output: number; total: number }
+  tokenBreakdown: {
+    sql: { input: number; output: number; total: number }
+    summary: { input: number; output: number; total: number }
+  }
   queriesPerDay: Array<{ date: string; count: number; errors: number }>
   topErrors: Array<{ message: string; count: number }>
   environmentBreakdown: Array<{ envId: string; count: number }>

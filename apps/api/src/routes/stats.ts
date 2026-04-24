@@ -30,6 +30,10 @@ export default async function statsRoutes(app: FastifyInstance) {
           avgElapsedMs: number;
           totalInputTokens: number;
           totalOutputTokens: number;
+          sqlInputTokens: number;
+          sqlOutputTokens: number;
+          summaryInputTokens: number;
+          summaryOutputTokens: number;
         }>([
           { $match: baseMatch },
           {
@@ -56,7 +60,11 @@ export default async function statsRoutes(app: FastifyInstance) {
               },
               avgElapsedMs: { $avg: { $ifNull: ["$elapsedMs", 0] } },
               totalInputTokens: { $sum: { $ifNull: ["$tokenUsage.total.inputTokens", 0] } },
-              totalOutputTokens: { $sum: { $ifNull: ["$tokenUsage.total.outputTokens", 0] } }
+              totalOutputTokens: { $sum: { $ifNull: ["$tokenUsage.total.outputTokens", 0] } },
+              sqlInputTokens: { $sum: { $ifNull: ["$tokenUsage.sql.inputTokens", 0] } },
+              sqlOutputTokens: { $sum: { $ifNull: ["$tokenUsage.sql.outputTokens", 0] } },
+              summaryInputTokens: { $sum: { $ifNull: ["$tokenUsage.summary.inputTokens", 0] } },
+              summaryOutputTokens: { $sum: { $ifNull: ["$tokenUsage.summary.outputTokens", 0] } }
             }
           }
         ])
@@ -158,6 +166,18 @@ export default async function statsRoutes(app: FastifyInstance) {
         input: stats?.totalInputTokens ?? 0,
         output: stats?.totalOutputTokens ?? 0,
         total: (stats?.totalInputTokens ?? 0) + (stats?.totalOutputTokens ?? 0)
+      },
+      tokenBreakdown: {
+        sql: {
+          input: stats?.sqlInputTokens ?? 0,
+          output: stats?.sqlOutputTokens ?? 0,
+          total: (stats?.sqlInputTokens ?? 0) + (stats?.sqlOutputTokens ?? 0)
+        },
+        summary: {
+          input: stats?.summaryInputTokens ?? 0,
+          output: stats?.summaryOutputTokens ?? 0,
+          total: (stats?.summaryInputTokens ?? 0) + (stats?.summaryOutputTokens ?? 0)
+        }
       },
       queriesPerDay: perDay,
       topErrors: topErrors,

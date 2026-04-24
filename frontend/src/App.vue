@@ -202,7 +202,7 @@ watch(() => route.path, () => {
 <style scoped>
 .app-layout {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: 220px 1fr;
   min-height: 100vh;
 }
 

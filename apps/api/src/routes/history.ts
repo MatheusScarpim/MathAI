@@ -22,7 +22,8 @@ const mapHistoryDoc = (doc: HistoryRecord) => ({
   success: doc.success,
   errorMessage: doc.errorMessage,
   elapsedMs: doc.elapsedMs,
-  rowCount: doc.rowCount
+  rowCount: doc.rowCount,
+  tokenUsage: doc.tokenUsage
 });
 
 export default async function historyRoutes(app: FastifyInstance) {

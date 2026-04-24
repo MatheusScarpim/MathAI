@@ -93,21 +93,11 @@ export type AskSuccessResponse = {
     yKey?: string;
   };
   tokenUsage?: {
-    sql: {
-      inputTokens: number;
-      outputTokens: number;
-      totalTokens: number;
-    };
-    summary?: {
-      inputTokens: number;
-      outputTokens: number;
-      totalTokens: number;
-    };
-    total: {
-      inputTokens: number;
-      outputTokens: number;
-      totalTokens: number;
-    };
+    planner?: { inputTokens: number; outputTokens: number; totalTokens: number };
+    sqlMini?: { inputTokens: number; outputTokens: number; totalTokens: number };
+    sqlLarge?: { inputTokens: number; outputTokens: number; totalTokens: number };
+    summary?: { inputTokens: number; outputTokens: number; totalTokens: number };
+    total: { inputTokens: number; outputTokens: number; totalTokens: number };
   };
 };
 

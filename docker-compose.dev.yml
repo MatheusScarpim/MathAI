@@ -1,11 +1,11 @@
-name: mathai
+name: mathai-dev
 
 services:
   api:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    container_name: mathai-api
+    container_name: mathai-api-dev
     working_dir: /app
     command: npm --workspace apps/api run dev
     env_file:
@@ -25,7 +25,7 @@ services:
 
   frontend:
     image: node:20-alpine
-    container_name: mathai-frontend
+    container_name: mathai-frontend-dev
     working_dir: /app
     command: sh -c "npm install && npm run dev"
     environment:
@@ -40,7 +40,7 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.16.2
-    container_name: mathai-qdrant
+    container_name: mathai-qdrant-dev
     restart: unless-stopped
     ports:
       - "${QDRANT_HTTP_PORT:-6333}:6333"
@@ -50,7 +50,7 @@ services:
 
   mongo:
     image: mongo:7
-    container_name: mathai-mongo
+    container_name: mathai-mongo-dev
     restart: unless-stopped
     ports:
       - "${MONGO_PORT:-27017}:27017"
@@ -64,7 +64,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: mathai-redis
+    container_name: mathai-redis-dev
     restart: unless-stopped
     ports:
       - "${REDIS_PORT:-6379}:6379"

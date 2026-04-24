@@ -98,85 +98,168 @@
         v-for="item in paginatedHistory"
         :key="item.id"
         class="history-card"
-        :class="{ error: !item.success }"
+       :class="{ 'card-error': item.success === false }"
       >
-        <div class="card-header">
+       <!-- Header row: meta + actions -->
+        <div class="card-top">
           <div class="card-meta">
-            <span class="status-badge" :class="item.success !== false ? 'success' : 'fail'">
-              {{ item.success !== false ? 'OK' : 'ERRO' }}
-            </span>
+           <span class="status-dot" :class="item.success !== false ? 'dot-ok' : 'dot-fail'"></span>
             <span class="date">{{ formatDate(item.createdAt) }}</span>
-            <span v-if="item.elapsedMs" class="time-badge">{{ item.elapsedMs }}ms</span>
-            <span v-if="item.rowCount !== undefined" class="rows-badge">
+           <span v-if="item.elapsedMs" class="pill pill-time">{{ item.elapsedMs }}ms</span>
+            <span v-if="item.rowCount !== undefined" class="pill pill-rows">
               {{ item.rowCount }} {{ pluralize(item.rowCount, 'linha', 'linhas') }}
             </span>
-          </div>
-          <div class="card-actions">
-            <button
-              class="action-btn"
-              :class="{ active: item.favorite }"
-              @click="toggleFavorite(item)"
-              title="Favorito"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" :fill="item.favorite ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2">
-                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        <div class="question">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-          </svg>
-          {{ item.question }}
-        </div>
-
-        <div v-if="item.summary" class="summary">
-          {{ item.summary }}
-        </div>
-
-        <div v-if="item.errorMessage" class="error-message">
-          {{ item.errorMessage }}
-        </div>
-
-        <div class="sql-preview" v-if="item.sql">
-          <code>{{ truncateSQL(item.sql) }}</code>
-          <button
-            class="copy-btn"
-            :class="{ copied: copiedItemId === item.id }"
-            @click="copySQL(item.id, item.sql)"
-            :title="copiedItemId === item.id ? 'Copiado!' : 'Copiar SQL'"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+         </div>
+         <button
+class="fav-btn" :class="{ active: item.favorite }" @click="toggleFavorite(item)" title="Favorito">
+            <svg width="15" height="15" viewBox="0 0 24 24" :fill="item.favorite ? 'currentColor' : 'none'"
+              stroke="currentColor" stroke-width="2">
+              <polygon
+                points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
             </svg>
           </button>
         </div>
 
-        <div class="tags-row" v-if="item.tags && item.tags.length > 0">
-          <span v-for="tag in item.tags" :key="tag" class="tag">{{ tag }}</span>
+      <!-- Question -->
+        <p class="question">{{ item.question }}</p>
+
+      <!-- Summary -->
+        <div v-if="item.summary" class="summary-block">
+          <p class="summary-text" :class="{ 'summary-clamped': !expandedSummaryIds.has(item.id) }">
+            {{ item.summary }}
+         </p>
+          <button v-if="item.summary.length > 160" class="inline-toggle" @click="toggleSummary(item.id)">
+            {{ expandedSummaryIds.has(item.id) ? 'ver menos' : 'ver mais' }}
+          </button>
         </div>
 
-        <!-- Tag Editor -->
-        <div class="tag-editor" v-if="editingTagsId === item.id">
-          <input
-            v-model="newTag"
-            type="text"
-            placeholder="Nova tag..."
-            @keyup.enter="addTag(item)"
-          />
-          <button class="add-tag-btn" @click="addTag(item)">+</button>
+      <!-- Error -->
+        <div v-if="item.errorMessage" class="error-block">
+          {{ item.errorMessage }}
         </div>
-        <button
-          v-else
-          class="edit-tags-btn"
-          @click="editingTagsId = item.id"
-        >
-          + Adicionar tags
-        </button>
-      </div>
+
+      <!-- Collapsible details: SQL + Tokens -->
+        <div class="details-row" v-if="item.sql || item.tokenUsage">
+
+          <!-- SQL -->
+          <div v-if="item.sql" class="detail-section">
+            <button
+class="detail-toggle" :class="{ open: expandedSqlIds.has(item.id) }" @click="toggleSql(item.id)">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="16 18 22 12 16 6" />
+                <polyline points="8 6 2 12 8 18" />
+              </svg>
+              SQL
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+                class="chevron">
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+            <div class="detail-body" :class="{ expanded: expandedSqlIds.has(item.id) }">
+              <div class="detail-inner">
+                <div class="sql-actions">
+                  <button class="copy-inline" :class="{ copied: copiedItemId === item.id }"
+                    @click="copySQL(item.id, item.sql)"
+>
+                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                   {{ copiedItemId === item.id ? 'Copiado!' : 'Copiar' }}
+                 </button>
+                </div>
+               <pre class="sql-code">{{ item.sql }}</pre>
+              </div>
+            </div>
+          </div>
+
+        <!-- Tokens -->
+          <div v-if="item.tokenUsage" class="detail-section">
+            <button class="detail-toggle" :class="{ open: expandedTokenIds.has(item.id) }"
+              @click="toggleToken(item.id)">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="16" />
+                <line x1="8" y1="12" x2="16" y2="12" />
+              </svg>
+              Tokens
+              <span class="token-pill">{{ item.tokenUsage.total.totalTokens.toLocaleString() }}</span>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+                class="chevron">
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+            <div class="detail-body" :class="{ expanded: expandedTokenIds.has(item.id) }">
+              <div class="detail-inner">
+                <table class="token-table">
+                  <thead>
+                    <tr>
+                      <th>Agent</th>
+                      <th>In</th>
+                      <th>Out</th>
+                      <th>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="item.tokenUsage.planner">
+                      <td>Planner <small>gpt-5-mini</small></td>
+                      <td>{{ item.tokenUsage.planner.inputTokens.toLocaleString() }}</td>
+                      <td>{{ item.tokenUsage.planner.outputTokens.toLocaleString() }}</td>
+                      <td class="t-total">{{ item.tokenUsage.planner.totalTokens.toLocaleString() }}</td>
+                    </tr>
+                    <tr v-if="item.tokenUsage.sql && !item.tokenUsage.sqlMini">
+                      <td>SQL <small>gpt-5</small></td>
+                      <td>{{ item.tokenUsage.sql.inputTokens.toLocaleString() }}</td>
+                      <td>{{ item.tokenUsage.sql.outputTokens.toLocaleString() }}</td>
+                      <td class="t-total">{{ item.tokenUsage.sql.totalTokens.toLocaleString() }}</td>
+                    </tr>
+                    <tr v-if="item.tokenUsage.sqlMini">
+                      <td>SQL Mini <small>gpt-5-mini</small></td>
+                      <td>{{ item.tokenUsage.sqlMini.inputTokens.toLocaleString() }}</td>
+                      <td>{{ item.tokenUsage.sqlMini.outputTokens.toLocaleString() }}</td>
+                      <td class="t-total">{{ item.tokenUsage.sqlMini.totalTokens.toLocaleString() }}</td>
+                    </tr>
+                    <tr v-if="item.tokenUsage.sqlLarge">
+                      <td>SQL Large <small>gpt-5</small></td>
+                      <td>{{ item.tokenUsage.sqlLarge.inputTokens.toLocaleString() }}</td>
+                      <td>{{ item.tokenUsage.sqlLarge.outputTokens.toLocaleString() }}</td>
+                      <td class="t-total">{{ item.tokenUsage.sqlLarge.totalTokens.toLocaleString() }}</td>
+                    </tr>
+                    <tr v-if="item.tokenUsage.summary">
+                      <td>Summary <small>gpt-4o-mini</small></td>
+                      <td>{{ item.tokenUsage.summary.inputTokens.toLocaleString() }}</td>
+                      <td>{{ item.tokenUsage.summary.outputTokens.toLocaleString() }}</td>
+                      <td class="t-total">{{ item.tokenUsage.summary.totalTokens.toLocaleString() }}</td>
+                    </tr>
+                    <tr class="t-total-row">
+                      <td>Total</td>
+                      <td>{{ item.tokenUsage.total.inputTokens.toLocaleString() }}</td>
+                      <td>{{ item.tokenUsage.total.outputTokens.toLocaleString() }}</td>
+                      <td class="t-total">{{ item.tokenUsage.total.totalTokens.toLocaleString() }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Tags -->
+        <div class="card-footer">
+         <div class="tags-row" v-if="item.tags && item.tags.length > 0">
+            <span v-for="tag in item.tags" :key="tag" class="tag">{{ tag }}</span>
+          </div>
+         <div class="tag-editor" v-if="editingTagsId === item.id">
+           <input v-model="newTag" type="text" placeholder="Nova tag..." @keyup.enter="addTag(item)"
+              @blur="editingTagsId = null" />
+            <button class="add-tag-btn" @click="addTag(item)">+</button>
+          </div>
+         <button v-else class="edit-tags-btn" @click="editingTagsId = item.id">
+            + tag
+          </button>
+        </div>
+     </div>
 
       <!-- Pagination -->
       <div v-if="totalPages > 1" class="pagination">
@@ -249,6 +332,9 @@ const filter = ref<'all' | 'favorites' | 'errors'>('all')
 const editingTagsId = ref<string | null>(null)
 const newTag = ref('')
 const copiedItemId = ref<string | null>(null)
+const expandedSqlIds = ref(new Set<string>())
+const expandedTokenIds = ref(new Set<string>())
+const expandedSummaryIds = ref(new Set<string>())
 
 // Pagination
 const currentPage = ref(1)
@@ -414,6 +500,16 @@ async function copySQL(itemId: string, sql: string) {
   }
 }
 
+function toggleSql(id: string) {
+  const s = new Set(expandedSqlIds.value); s.has(id) ? s.delete(id) : s.add(id); expandedSqlIds.value = s
+}
+function toggleToken(id: string) {
+  const s = new Set(expandedTokenIds.value); s.has(id) ? s.delete(id) : s.add(id); expandedTokenIds.value = s
+}
+function toggleSummary(id: string) {
+  const s = new Set(expandedSummaryIds.value); s.has(id) ? s.delete(id) : s.add(id); expandedSummaryIds.value = s
+}
+
 function pluralize(count: number, singular: string, plural: string): string {
   return count === 1 ? singular : plural
 }
@@ -425,18 +521,13 @@ function formatDate(dateStr: string): string {
   }).format(new Date(dateStr))
 }
 
-function truncateSQL(sql: string): string {
-  const lines = sql.split('\n')
-  if (lines.length <= 3) return sql
-  return lines.slice(0, 3).join('\n') + '\n...'
-}
+
 </script>
 
 <style scoped>
 .history-page {
-  padding: 2rem 1.5rem;
-  max-width: 900px;
-  margin: 0 auto;
+  padding: 2rem 2rem 4rem;
+    max-width: 100%;
 }
 
 .page-header {
@@ -657,218 +748,374 @@ function truncateSQL(sql: string): string {
   color: var(--color-gray-500);
 }
 
+/* ── History list ─────────────────────────────────────────────────────────── */
 .history-list {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.875rem;
 }
 
 .history-card {
-  padding: 1.25rem;
+  position: relative;
+    padding: 1rem 1.25rem 0.75rem;
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   border: 1px solid var(--glass-border);
-  border-radius: 12px;
-  transition: all 0.25s ease;
+  border-radius: 14px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    overflow: hidden;
 }
 
+.history-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  height: 100%;
+  background: linear-gradient(180deg, var(--color-accent), var(--color-cyan));
+  opacity: 0.6;
+}
+
+.history-card.card-error::before {
+  background: #ef4444;
+  opacity: 0.5;
+}
 .history-card:hover {
   border-color: var(--glass-border-hover);
   box-shadow: var(--shadow-sm);
 }
 
-.history-card.error {
-  border-color: rgba(239, 68, 68, 0.2);
-  box-shadow: 0 0 16px rgba(239, 68, 68, 0.08);
-}
-
-.card-header {
+/* top row */
+.card-top {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 0.75rem;
+  justify-content: space-between;
+  margin-bottom: 0.625rem;
 }
 
 .card-meta {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  font-size: 0.8rem;
+  gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dot-ok {
+  background: var(--color-accent);
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, .15);
+}
+
+.dot-fail {
+  background: #ef4444;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, .15);
+}
+
+.date {
+  font-size: 0.78rem;
   color: var(--color-gray-500);
 }
 
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.15rem 0.5rem;
-  border-radius: 4px;
-  font-size: 0.65rem;
-  font-weight: 600;
+.pill {
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
   font-family: var(--font-mono);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 
-.status-badge.success {
-  background: rgba(16, 185, 129, 0.12);
-  color: var(--color-accent);
-  border: 1px solid rgba(16, 185, 129, 0.25);
-}
-
-.status-badge.fail {
-  background: rgba(239, 68, 68, 0.12);
-  color: #f87171;
-  border: 1px solid rgba(239, 68, 68, 0.25);
-}
-
-.time-badge {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  padding: 0.1rem 0.4rem;
-  background: rgba(34, 211, 238, 0.08);
+.pill-time {
+  background: rgba(34, 211, 238, 0.07);
   border: 1px solid rgba(34, 211, 238, 0.15);
-  border-radius: 4px;
   color: var(--color-cyan);
 }
 
-.rows-badge {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
+.pill-rows {
+  background: rgba(16, 185, 129, 0.07);
+  border: 1px solid rgba(16, 185, 129, 0.15);
+  color: var(--color-accent-light);
 }
 
-.card-actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.action-btn {
+.fav-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 30px;
+    height: 30px;
   background: none;
   border: 1px solid var(--glass-border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--color-gray-500);
   cursor: pointer;
-  transition: all 0.25s ease;
-}
-
-.action-btn:hover {
-  border-color: var(--glass-border-hover);
-  color: var(--color-gray-200);
-}
-
-.action-btn.active {
-  background: rgba(251, 191, 36, 0.08);
-  border-color: rgba(251, 191, 36, 0.25);
-  color: #fbbf24;
-}
-
-.question {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
-  font-size: 1rem;
-  color: var(--color-gray-100);
+  transition: all 0.2s;
+    flex-shrink: 0;
+  }
+    .fav-btn:hover {
+      border-color: var(--glass-border-hover);
+    color: #fbbf24;
+    }
+    .fav-btn.active {
+      background: rgba(251, 191, 36, .08);
+      border-color: rgba(251, 191, 36, .25);
+      color: #fbbf24;
+    }
+    /* question */
+    .question {
+    font-size: 0.975rem;
+      color: var(--color-gray-100);
+    margin: 0 0 0.625rem;
+      line-height: 1.5;
+    }
+    
+    /* summary */
+    .summary-block {
+      padding: 0.625rem 0.875rem;
+      background: rgba(16, 185, 129, 0.04);
+      border-left: 2.5px solid rgba(16, 185, 129, 0.5);
+      border-radius: 0 6px 6px 0;
   margin-bottom: 0.75rem;
 }
 
-.question svg {
-  flex-shrink: 0;
-  margin-top: 2px;
-  color: var(--color-accent);
-}
-
-.summary {
-  padding: 0.75rem 1rem;
-  background: rgba(16, 185, 129, 0.04);
-  border-left: 3px solid var(--color-accent);
-  border-radius: 0 6px 6px 0;
-  font-size: 0.9rem;
+.summary-text {
+  font-size: 0.875rem;
   color: var(--color-gray-300);
-  margin-bottom: 0.75rem;
+  line-height: 1.6;
+  margin: 0 0 0.25rem;
 }
 
-.error-message {
-  padding: 0.75rem 1rem;
-  background: rgba(239, 68, 68, 0.08);
-  border-left: 3px solid #ef4444;
+.summary-clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.inline-toggle {
+  background: none;
+  border: none;
+  font-size: 0.78rem;
+  color: var(--color-accent);
+  cursor: pointer;
+    padding: 0;
+    opacity: 0.8;
+    transition: opacity 0.15s;
+  }
+  
+  .inline-toggle:hover {
+    opacity: 1;
+}
+
+/* error */
+.error-block {
+  padding: 0.625rem 0.875rem;
+  background: rgba(239, 68, 68, 0.07);
+  border-left: 2.5px solid rgba(239, 68, 68, 0.5);
   border-radius: 0 6px 6px 0;
-  font-size: 0.9rem;
-  color: #f87171;
+  font-size: 0.875rem;
+    color: #f87171;
   margin-bottom: 0.75rem;
 }
 
-.sql-preview {
-  position: relative;
-  padding: 0.75rem 1rem;
-  background: rgba(0, 0, 0, 0.25);
+/* details row (SQL + Tokens) */
+.details-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin-bottom: 0.625rem;
+}
+
+.detail-section {
   border: 1px solid var(--glass-border);
   border-radius: 8px;
-  margin-bottom: 0.75rem;
+  overflow: hidden;
+    background: rgba(0, 0, 0, 0.18);
+  }
+  
+  .detail-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.5rem 0.875rem;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--color-gray-500);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    transition: background 0.15s, color 0.15s;
+    text-align: left;
+  }
+  
+  .detail-toggle:hover {
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--color-gray-300);
+  }
+  
+  .detail-toggle.open {
+    color: var(--color-gray-200);
+  }
+  
+  .detail-toggle .chevron {
+    margin-left: auto;
+    transition: transform 0.2s;
+    color: var(--color-gray-600);
+  }
+  
+  .detail-toggle.open .chevron {
+    transform: rotate(180deg);
 }
 
-.sql-preview code {
-  display: block;
+.token-pill {
+  padding: 0.1rem 0.4rem;
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  border-radius: 999px;
+  font-size: 0.65rem;
+  color: var(--color-accent);
   font-family: var(--font-mono);
-  font-size: 0.8rem;
-  color: var(--color-gray-400);
-  white-space: pre-wrap;
-  line-height: 1.5;
+  text-transform: none;
+    letter-spacing: 0;
+  }
+  
+  /* collapsible body */
+  .detail-body {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    overflow: hidden;
+  }
+  
+  .detail-body.expanded {
+    grid-template-rows: 1fr;
+  }
+  
+  .detail-inner {
+    min-height: 0;
+    overflow: hidden;
+    border-top: 1px solid var(--glass-border);
+  }
+  
+  /* sql inside detail */
+  .sql-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: 0.5rem 0.875rem 0;
 }
 
-.copy-btn {
-  position: absolute;
-  top: 0.5rem;
-  right: 0.5rem;
+.copy-inline {
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: var(--glass-bg);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
+  gap: 0.3rem;
+    padding: 0.25rem 0.6rem;
+    background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--glass-border);
-  border-radius: 4px;
+  border-radius: 6px;
+    font-size: 0.72rem;
   color: var(--color-gray-400);
   cursor: pointer;
-  opacity: 0;
-  transition: all 0.25s ease;
+  transition: all 0.2s;
+  }
+  
+  .copy-inline:hover {
+    border-color: var(--glass-border-hover);
+    color: var(--color-gray-200);
+  }
+  
+  .copy-inline.copied {
+    background: rgba(16, 185, 129, .1);
+    color: var(--color-accent);
+    border-color: rgba(16, 185, 129, .25);
+  }
+  
+  .sql-code {
+    padding: 0.75rem 1rem 1rem;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--color-gray-400);
+    white-space: pre;
+    line-height: 1.65;
+    margin: 0;
+    overflow: auto;
+    max-height: 260px;
+  }
+  
+  /* token table inside detail */
+  .token-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+  }
+  
+  .token-table th {
+    text-align: right;
+    color: var(--color-gray-500);
+    font-weight: 500;
+    padding: 0.35rem 0.875rem;
+    border-bottom: 1px solid var(--glass-border);
+    white-space: nowrap;
+  }
+  
+  .token-table th:first-child {
+    text-align: left;
+  }
+  
+  .token-table td {
+    text-align: right;
+    color: var(--color-gray-300);
+    padding: 0.3rem 0.875rem;
+    white-space: nowrap;
+    font-size: 0.72rem;
+    text-transform: capitalize;
+  }
+  
+  .token-table td:first-child {
+    text-align: left;
+    color: var(--color-gray-400);
 }
 
-.sql-preview:hover .copy-btn {
-  opacity: 1;
+.t-total {
+  color: var(--color-accent) !important;
+  font-weight: 600;
 }
 
-.copy-btn:hover {
-  background: var(--glass-bg-strong);
-  border-color: var(--glass-border-hover);
+.t-total-row td {
+  border-top: 1px solid var(--glass-border);
   color: var(--color-gray-200);
 }
 
-.copy-btn.copied {
-  opacity: 1;
-  background: rgba(16, 185, 129, 0.15);
-  color: var(--color-accent-light);
+/* card footer */
+.card-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding-top: 0.375rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
 }
 
 .tags-row {
   display: flex;
   flex-wrap: wrap;
   gap: 0.375rem;
-  margin-bottom: 0.5rem;
 }
 
 .tag {
-  padding: 0.25rem 0.5rem;
+  padding: 0.2rem 0.45rem;
   background: rgba(16, 185, 129, 0.08);
   border: 1px solid rgba(16, 185, 129, 0.18);
   border-radius: 4px;
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   color: var(--color-accent);
 }
 
@@ -878,40 +1125,43 @@ function truncateSQL(sql: string): string {
 }
 
 .tag-editor input {
-  flex: 1;
-  padding: 0.375rem 0.625rem;
-  background: rgba(0, 0, 0, 0.25);
+  padding: 0.2rem 0.5rem;
+    background: rgba(0, 0, 0, 0.2);
   border: 1px solid var(--glass-border);
   border-radius: 6px;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   color: var(--color-gray-200);
   outline: none;
-  transition: all 0.25s ease;
+  transition: border-color 0.2s;
+    width: 120px;
 }
 
 .tag-editor input:focus {
   border-color: var(--color-accent);
-  box-shadow: var(--glow-accent);
 }
 
 .add-tag-btn {
-  padding: 0.375rem 0.75rem;
-  background: var(--color-accent);
-  border: none;
+  padding: 0.2rem 0.5rem;
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.25);
   border-radius: 6px;
-  font-size: 0.9rem;
-  color: white;
+  font-size: 0.85rem;
+    color: var(--color-accent);
   cursor: pointer;
-  transition: all 0.25s ease;
+  transition: all 0.2s;
 }
 
+.add-tag-btn:hover {
+  background: rgba(16, 185, 129, 0.2);
+}
 .edit-tags-btn {
   background: none;
   border: none;
-  font-size: 0.8rem;
-  color: var(--color-gray-500);
+  font-size: 0.75rem;
+    color: var(--color-gray-600);
   cursor: pointer;
-  transition: color 0.25s ease;
+  transition: color 0.2s;
+    padding: 0;
 }
 
 .edit-tags-btn:hover {

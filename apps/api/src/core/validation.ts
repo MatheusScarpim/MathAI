@@ -119,10 +119,7 @@ const checkRowLimit = (
   switch (dbType) {
     case "sqlserver": {
       const topValue = extractTopSqlServer(trimmed);
-      if (!topValue) {
-        return { ok: false, error: { sql, errorMessage: "A query precisa ter TOP (100)." } };
-      }
-      if (topValue > 500) {
+      if (topValue && topValue > 500) {
         return { ok: false, error: { sql, errorMessage: "TOP maior que 500 nao eh permitido." } };
       }
       return { ok: true };
@@ -130,10 +127,7 @@ const checkRowLimit = (
 
     case "oracle": {
       const fetchValue = extractFetchOracle(trimmed);
-      if (!fetchValue) {
-        return { ok: false, error: { sql, errorMessage: "A query precisa ter FETCH FIRST n ROWS ONLY ou ROWNUM <= n." } };
-      }
-      if (fetchValue > 500) {
+      if (fetchValue && fetchValue > 500) {
         return { ok: false, error: { sql, errorMessage: "Limite de linhas maior que 500 nao eh permitido." } };
       }
       return { ok: true };
@@ -141,10 +135,7 @@ const checkRowLimit = (
 
     case "mysql": {
       const limitValue = extractLimitMySQL(trimmed);
-      if (!limitValue) {
-        return { ok: false, error: { sql, errorMessage: "A query precisa ter LIMIT n." } };
-      }
-      if (limitValue > 500) {
+      if (limitValue && limitValue > 500) {
         return { ok: false, error: { sql, errorMessage: "LIMIT maior que 500 nao eh permitido." } };
       }
       return { ok: true };
@@ -152,10 +143,7 @@ const checkRowLimit = (
 
     case "postgresql": {
       const limitValue = extractLimitPostgresql(trimmed);
-      if (!limitValue) {
-        return { ok: false, error: { sql, errorMessage: "A query precisa ter LIMIT n ou FETCH FIRST n ROWS ONLY." } };
-      }
-      if (limitValue > 500) {
+      if (limitValue && limitValue > 500) {
         return { ok: false, error: { sql, errorMessage: "Limite de linhas maior que 500 nao eh permitido." } };
       }
       return { ok: true };

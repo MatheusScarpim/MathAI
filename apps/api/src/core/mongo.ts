@@ -39,6 +39,13 @@ export type HistoryRecord = {
   elapsedMs?: number;
   rowCount?: number;
   embedding?: number[];
+  tokenUsage?: {
+    planner?: { inputTokens: number; outputTokens: number; totalTokens: number };
+    sqlMini?: { inputTokens: number; outputTokens: number; totalTokens: number };
+    sqlLarge?: { inputTokens: number; outputTokens: number; totalTokens: number };
+    summary?: { inputTokens: number; outputTokens: number; totalTokens: number };
+    total: { inputTokens: number; outputTokens: number; totalTokens: number };
+  };
 };
 
 export type SettingRecord = {

@@ -5,10 +5,14 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     host: '0.0.0.0',
-    port: 5173,
+    watch: {
+      usePolling: true,
+      interval: 1000
+    },
     proxy: {
       '/api': {
-        target: 'http://api:3001',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        target: (process as any).env['VITE_PROXY_TARGET'] ?? 'http://localhost:3001',
         changeOrigin: true
       }
     }

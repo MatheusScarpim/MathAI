@@ -122,7 +122,9 @@
             </div>
           </div>
 
-          <div v-if="expandedTable === ep.operationId" class="table-details">
+          <div class="table-details-wrap" :class="{ expanded: expandedTable === ep.operationId }">
+          <div>
+          <div class="table-details">
             <div v-if="ep.parameters.length" class="detail-section">
               <h4>Parâmetros</h4>
               <div class="columns-grid">
@@ -145,6 +147,8 @@
               <h4>Response Schema</h4>
               <pre class="schema-preview">{{ ep.responseSchema }}</pre>
             </div>
+          </div>
+          </div>
           </div>
         </div>
       </div>
@@ -209,7 +213,9 @@
             </div>
           </div>
 
-          <div v-if="expandedTable === table.tableFullName" class="table-details">
+          <div class="table-details-wrap" :class="{ expanded: expandedTable === table.tableFullName }">
+          <div>
+          <div class="table-details">
             <!-- Columns -->
             <div class="detail-section">
               <h4>Colunas</h4>
@@ -278,6 +284,8 @@
                 </button>
               </div>
             </div>
+          </div>
+          </div>
           </div>
         </div>
       </div>
@@ -525,8 +533,8 @@ function formatDate(dateStr: string): string {
 
 <style scoped>
 .schema-page {
-  padding: 2rem;
-  max-width: 1000px;
+  padding: 2rem 2rem 4rem;
+  max-width: 100%;
   margin: 0 auto;
 }
 
@@ -895,6 +903,22 @@ function formatDate(dateStr: string): string {
   transform: rotate(180deg);
 }
 
+.table-details-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+.table-details-wrap.expanded {
+  grid-template-rows: 1fr;
+}
+
+.table-details-wrap > div {
+  min-height: 0;
+  overflow: hidden;
+}
+
 .table-details {
   padding: 1.25rem;
   border-top: 1px solid var(--glass-border);
@@ -924,20 +948,22 @@ function formatDate(dateStr: string): string {
 
 .columns-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 0.5rem;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 0.375rem;
 }
 
 .column-item {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr auto;
   align-items: center;
-  padding: 0.5rem 0.75rem;
+  gap: 0.5rem;
+  padding: 0.45rem 0.75rem;
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
   border-radius: 6px;
-  font-size: 0.85rem;
-  transition: border-color 0.25s;
+  font-size: 0.82rem;
+  transition: border-color 0.2s;
+  min-width: 0;
 }
 
 .column-item:hover {
@@ -949,20 +975,22 @@ function formatDate(dateStr: string): string {
   align-items: center;
   gap: 0.375rem;
   color: var(--color-gray-200);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
-.col-name.pk {
-  color: #fbbf24;
-}
-
-.col-name svg {
-  color: #fbbf24;
-}
+.col-name.pk { color: #fbbf24; }
+.col-name svg { color: #fbbf24; flex-shrink: 0; }
 
 .col-type {
   color: var(--color-gray-500);
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .fk-list {

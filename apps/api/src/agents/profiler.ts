@@ -94,10 +94,9 @@ export const profileTables = async (
   );
 
   const map: TableProfileMap = new Map();
-  for (let i = 0; i < tables.length; i++) {
-    const result = results[i];
-    if (result.status === "fulfilled") {
-      map.set(tables[i].tableFullName, result.value);
+  for (const [i, result] of results.entries()) {
+    if (result.status === 'fulfilled') {
+      map.set(tables[i]!.tableFullName, result.value);
     }
   }
   return map;
