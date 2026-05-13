@@ -37,6 +37,26 @@ export const DEFAULT_AGENTS_CONFIG: AgentsConfig = {
     model: "gpt-5-mini",
     temperature: 0,
     enabled: true
+  },
+  taskPlanner: {
+    model: "deepseek-chat",
+    temperature: 0,
+    enabled: true
+  },
+  taskCode: {
+    model: "deepseek-chat",
+    temperature: 0.2,
+    enabled: true
+  },
+  taskReviewer: {
+    model: "deepseek-chat",
+    temperature: 0,
+    enabled: true
+  },
+  taskReporter: {
+    model: "deepseek-chat",
+    temperature: 0.2,
+    enabled: true
   }
 };
 
@@ -64,7 +84,19 @@ export const getAgentsConfig = async (): Promise<AgentsConfig> => {
         embedding: { ...DEFAULT_AGENTS_CONFIG.embedding, ...stored.embedding },
         planner: stored.planner
           ? { ...DEFAULT_AGENTS_CONFIG.planner!, ...stored.planner }
-          : DEFAULT_AGENTS_CONFIG.planner
+          : DEFAULT_AGENTS_CONFIG.planner,
+        taskPlanner: stored.taskPlanner
+          ? { ...DEFAULT_AGENTS_CONFIG.taskPlanner!, ...stored.taskPlanner }
+          : DEFAULT_AGENTS_CONFIG.taskPlanner,
+        taskCode: stored.taskCode
+          ? { ...DEFAULT_AGENTS_CONFIG.taskCode!, ...stored.taskCode }
+          : DEFAULT_AGENTS_CONFIG.taskCode,
+        taskReviewer: stored.taskReviewer
+          ? { ...DEFAULT_AGENTS_CONFIG.taskReviewer!, ...stored.taskReviewer }
+          : DEFAULT_AGENTS_CONFIG.taskReviewer,
+        taskReporter: stored.taskReporter
+          ? { ...DEFAULT_AGENTS_CONFIG.taskReporter!, ...stored.taskReporter }
+          : DEFAULT_AGENTS_CONFIG.taskReporter
       } as AgentsConfig;
     } else {
       cachedConfig = { ...DEFAULT_AGENTS_CONFIG };

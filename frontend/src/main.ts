@@ -18,7 +18,10 @@ const router = createRouter({
     { path: '/settings', component: () => import('./pages/Settings.vue') },
     { path: '/environments', component: () => import('./pages/Environments.vue') },
     { path: '/dashboard', component: () => import('./pages/Dashboard.vue') },
-    { path: '/playground', component: () => import('./pages/Playground.vue') }
+    { path: '/playground', component: () => import('./pages/Playground.vue') },
+    { path: '/tasks', component: () => import('./pages/Tasks.vue') },
+    { path: '/tasks/:id', component: () => import('./pages/TaskDetail.vue') },
+    { path: '/settings/whatsapp', component: () => import('./pages/WhatsAppPair.vue') }
   ]
 })
 

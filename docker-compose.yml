@@ -8,6 +8,9 @@ services:
     container_name: mathai-api
     working_dir: /app
     command: npm --workspace apps/api run dev
+    environment:
+      - CHOKIDAR_USEPOLLING=1
+      - CHOKIDAR_INTERVAL=300
     env_file:
       - .env
     ports:
@@ -15,6 +18,7 @@ services:
     volumes:
       - ./apps/api/src:/app/apps/api/src
       - ./packages/shared/src:/app/packages/shared/src
+      - auraia_workspaces:/data/auraia-workspaces
     depends_on:
       mongo:
         condition: service_healthy
@@ -22,6 +26,42 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
+
+  openclaude:
+    image: oven/bun:1
+    container_name: mathai-openclaude
+    restart: unless-stopped
+    working_dir: /openclaude
+    command: >
+      sh -c "
+        apt-get update && apt-get install -y git gh 2>/dev/null || apk add --no-cache git github-cli 2>/dev/null;
+        if [ ! -d .git ]; then
+          git clone https://github.com/Gitlawb/openclaude.git .;
+        fi &&
+        if [ -n \"${OPENCLAUDE_PR}\" ]; then
+          git fetch origin pull/${OPENCLAUDE_PR}/head &&
+          git reset --hard FETCH_HEAD;
+        else
+          git fetch origin && git checkout ${OPENCLAUDE_BRANCH:-main} && git reset --hard origin/${OPENCLAUDE_BRANCH:-main};
+        fi &&
+        bun install &&
+        bun run build &&
+        # HACK: defer detectStubLeaks to avoid TDZ error with circular dep (skip if file absent or already patched)
+        if [ -f src/entrypoints/sdk/index.ts ] && ! grep -q 'setTimeout(detectStubLeaks' src/entrypoints/sdk/index.ts; then sed -i '/^detectStubLeaks()/c\setTimeout(detectStubLeaks, 0)' src/entrypoints/sdk/index.ts; fi &&
+        bun run dev:grpc
+      "
+    environment:
+      - GRPC_PORT=50051
+      - GRPC_HOST=0.0.0.0
+      - CLAUDE_CODE_USE_OPENAI=${CLAUDE_CODE_USE_OPENAI:-0}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENCLAUDE_MODEL:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+    ports:
+      - "${OPENCLAUDE_GRPC_PORT:-50051}:50051"
+    volumes:
+      - openclaude_app:/openclaude
+      - auraia_workspaces:/data/auraia-workspaces
 
   frontend:
     image: node:20-alpine
@@ -80,3 +120,5 @@ volumes:
   qdrant_data:
   mongo_data:
   redis_data:
+  openclaude_app:
+  auraia_workspaces:

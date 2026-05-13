@@ -73,4 +73,59 @@ export const ensureDefaultSettings = async (): Promise<void> => {
   ]);
 };
 
+/* ── Integrations Settings (Task Orchestrator) ──────────────────── */
+
+export type IntegrationsSettings = {
+  trelloApiKey: string;
+  trelloApiToken: string;
+  trelloBoardId: string;
+  trelloListId: string;
+  trelloDoneListId: string;
+  githubToken: string;
+  githubOwner: string;
+  githubRepo: string;
+  openclaudeModel: string;
+  openclaudeProvider: string;
+  /* WhatsApp (motor proprio via Baileys) */
+  whatsappEnabled: boolean;
+  whatsappPhoneNumber: string;        // display only — auth real fica em whatsapp_auth_creds
+  whatsappAllowedJids: string[];      // whitelist EXTRA alem de chat_bindings (anti-ban)
+  whatsappRateLimitMs: number;        // gap minimo entre msgs pro mesmo chat (default 2500)
+};
+
+export const getIntegrationsSettings = async (): Promise<Partial<IntegrationsSettings>> => {
+  const collection = await getSettingsCollection();
+  const doc = await collection.findOne({ key: "integrations" });
+  const value = doc?.value as Record<string, unknown> | undefined;
+  return {
+    trelloApiKey: typeof value?.trelloApiKey === "string" ? value.trelloApiKey : "",
+    trelloApiToken: typeof value?.trelloApiToken === "string" ? value.trelloApiToken : "",
+    trelloBoardId: typeof value?.trelloBoardId === "string" ? value.trelloBoardId : "",
+    trelloListId: typeof value?.trelloListId === "string" ? value.trelloListId : "",
+    trelloDoneListId: typeof value?.trelloDoneListId === "string" ? value.trelloDoneListId : "",
+    githubToken: typeof value?.githubToken === "string" ? value.githubToken : "",
+    githubOwner: typeof value?.githubOwner === "string" ? value.githubOwner : "",
+    githubRepo: typeof value?.githubRepo === "string" ? value.githubRepo : "",
+    openclaudeModel: typeof value?.openclaudeModel === "string" ? value.openclaudeModel : "",
+    openclaudeProvider: typeof value?.openclaudeProvider === "string" ? value.openclaudeProvider : "",
+    whatsappEnabled: typeof value?.whatsappEnabled === "boolean" ? value.whatsappEnabled : false,
+    whatsappPhoneNumber: typeof value?.whatsappPhoneNumber === "string" ? value.whatsappPhoneNumber : "",
+    whatsappAllowedJids: Array.isArray(value?.whatsappAllowedJids)
+      ? (value.whatsappAllowedJids as unknown[]).filter((x): x is string => typeof x === "string")
+      : [],
+    whatsappRateLimitMs: typeof value?.whatsappRateLimitMs === "number" && value.whatsappRateLimitMs > 0
+      ? value.whatsappRateLimitMs
+      : 2500
+  };
+};
+
+export const saveIntegrationsSettings = async (value: Partial<IntegrationsSettings>): Promise<void> => {
+  const collection = await getSettingsCollection();
+  await collection.updateOne(
+    { key: "integrations" },
+    { $set: { value, updatedAt: new Date() } },
+    { upsert: true }
+  );
+};
+
 export { VALID_LANGUAGES };

@@ -16,7 +16,9 @@ import {
   getSchemaLanguageSetting,
   setSchemaLanguageSetting,
   getTableReferenceCountSetting,
-  setTableReferenceCountSetting
+  setTableReferenceCountSetting,
+  getIntegrationsSettings,
+  saveIntegrationsSettings
 } from "../helpers/settings.js";
 
 export default async function settingsRoutes(app: FastifyInstance) {
@@ -108,6 +110,17 @@ export default async function settingsRoutes(app: FastifyInstance) {
 
     await saveAgentsConfig(next);
     reply.send(next);
+  });
+
+  app.get("/api/settings/integrations", async (_request, reply) => {
+    const settings = await getIntegrationsSettings();
+    reply.send(settings);
+  });
+
+  app.put("/api/settings/integrations", async (request, reply) => {
+    const body = request.body as Record<string, unknown>;
+    await saveIntegrationsSettings(body as Parameters<typeof saveIntegrationsSettings>[0]);
+    reply.send({ ok: true });
   });
 
   app.post("/api/settings/reset-environment", async (_request, reply) => {

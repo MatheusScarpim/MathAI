@@ -209,6 +209,10 @@ export type AgentsConfig = {
   chart: AgentConfig;
   embedding: EmbeddingAgentConfig;
   planner?: AgentConfig;
+  taskPlanner?: AgentConfig;
+  taskCode?: AgentConfig;
+  taskReviewer?: AgentConfig;
+  taskReporter?: AgentConfig;
 };
 
 export const sanitizeErrorMessage = (message: string): string => {

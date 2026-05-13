@@ -17,9 +17,13 @@
     "@fastify/rate-limit": "^9.1.0",
     "@fastify/swagger": "^8.15.0",
     "@fastify/swagger-ui": "^2.1.0",
+    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/proto-loader": "^0.8.0",
     "@qdrant/js-client-rest": "^1.9.0",
     "@types/pg": "^8.18.0",
+    "@whiskeysockets/baileys": "^6.7.9",
     "bcryptjs": "^3.0.3",
+    "cron-parser": "^5.5.0",
     "dotenv": "^16.4.5",
     "fastify": "^4.28.1",
     "js-yaml": "^4.1.1",
@@ -28,8 +32,10 @@
     "mysql2": "^3.17.1",
     "openai": "^4.68.4",
     "oracledb": "^6.7.0",
+    "playwright": "^1.50.0",
     "pg": "^8.20.0",
-    "redis": "^4.7.0"
+    "redis": "^4.7.0",
+    "simple-git": "^3.36.0"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

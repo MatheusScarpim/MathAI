@@ -1,0 +1,211 @@
+import * as grpc from "@grpc/grpc-js";
+import * as protoLoader from "@grpc/proto-loader";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
+import { config } from "../../core/config.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Procura proto: em dev esta em src/, em build esta em dist/
+let PROTO_PATH = join(__dirname, "..", "proto", "openclaude.proto");
+if (!existsSync(PROTO_PATH)) {
+  // Fallback para src quando o proto nao foi copiado para dist/
+  PROTO_PATH = join("/app/apps/api/src/orchestrator/proto/openclaude.proto");
+}
+
+// ============== TYPES ==============
+
+export type OpenClaudeEvent =
+  | { type: "text"; text: string }
+  | { type: "tool_start"; toolName: string; args: string; toolUseId: string }
+  | { type: "tool_result"; toolName: string; output: string; isError: boolean; toolUseId: string }
+  | { type: "action_required"; promptId: string; question: string; actionType: "confirm" | "info" }
+  | { type: "done"; fullText: string; promptTokens: number; completionTokens: number }
+  | { type: "error"; message: string; code: string };
+
+export type OpenClaudeOptions = {
+  workingDirectory: string;
+  model?: string;
+  sessionId?: string;
+  onEvent?: (event: OpenClaudeEvent) => void;
+  autoApprove?: boolean;
+  timeoutMs?: number;
+};
+
+// ============== GRPC CLIENT ==============
+
+let cachedClient: ReturnType<typeof createClient> | null = null;
+
+const loadProto = () => {
+  const packageDef = protoLoader.loadSync(PROTO_PATH, {
+    keepCase: false,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true
+  });
+  return grpc.loadPackageDefinition(packageDef);
+};
+
+const createClient = () => {
+  const proto = loadProto() as Record<string, unknown>;
+  const openclaudeV1 = (proto.openclaude as Record<string, unknown>).v1 as Record<string, unknown>;
+  const AgentService = openclaudeV1.AgentService as new (
+    address: string,
+    credentials: grpc.ChannelCredentials
+  ) => grpc.Client;
+
+  const address = config.openclaude.grpcUrl;
+  return new AgentService(address, grpc.credentials.createInsecure());
+};
+
+const getClient = () => {
+  if (!cachedClient) {
+    cachedClient = createClient();
+  }
+  return cachedClient;
+};
+
+// ============== MAIN FUNCTION ==============
+
+/**
+ * Envia um prompt para o OpenClaude via gRPC e retorna o resultado.
+ * O OpenClaude navega o workspace, edita arquivos, roda comandos autonomamente.
+ */
+export const runOpenClaude = (
+  prompt: string,
+  options: OpenClaudeOptions
+): Promise<{ fullText: string; promptTokens: number; completionTokens: number }> => {
+  return new Promise((resolve, reject) => {
+    // Cria um novo cliente por chamada para evitar race condition no stream
+    const client = createClient();
+    const stub = client as unknown as Record<string, (...args: unknown[]) => unknown>;
+    const chatFn = stub["Chat"] as ((...args: unknown[]) => unknown) | undefined;
+    if (!chatFn) return reject(new Error("OpenClaude gRPC: Chat method not found"));
+    // Bind para preservar o this do metodo (checkMetadataAndOptions)
+    const call = chatFn.call(client) as grpc.ClientDuplexStream<unknown, unknown>;
+
+    const timeout = options.timeoutMs ?? config.workspace.commandTimeoutMs;
+    let settled = false;
+    const finish = (result: { fullText: string; promptTokens: number; completionTokens: number }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { call.end(); } catch { /* noop */ }
+      resolve(result);
+    };
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { call.cancel(); } catch { /* noop */ }
+      reject(err);
+    };
+    const timer = setTimeout(() => {
+      fail(new Error(`OpenClaude timeout (${timeout}ms)`));
+    }, timeout);
+
+    // Send the chat request
+    call.write({
+      request: {
+        message: prompt,
+        workingDirectory: options.workingDirectory,
+        model: options.model ?? config.openclaude.defaultModel ?? undefined,
+        sessionId: options.sessionId ?? `task-${Date.now()}`
+      }
+    });
+
+    let finalResult: { fullText: string; promptTokens: number; completionTokens: number } | null = null;
+
+    call.on("data", (msg: Record<string, unknown>) => {
+      const event = msg.event as string;
+
+      if (!event) return;
+
+      // Parse server events
+      if (msg.textChunk) {
+        const chunk = msg.textChunk as { text: string };
+        options.onEvent?.({ type: "text", text: chunk.text });
+      }
+
+      if (msg.toolStart) {
+        const ts = msg.toolStart as { toolName: string; argumentsJson: string; toolUseId: string };
+        options.onEvent?.({
+          type: "tool_start",
+          toolName: ts.toolName,
+          args: ts.argumentsJson,
+          toolUseId: ts.toolUseId
+        });
+      }
+
+      if (msg.toolResult) {
+        const tr = msg.toolResult as { toolName: string; output: string; isError: boolean; toolUseId: string };
+        options.onEvent?.({
+          type: "tool_result",
+          toolName: tr.toolName,
+          output: tr.output,
+          isError: tr.isError,
+          toolUseId: tr.toolUseId
+        });
+      }
+
+      if (msg.actionRequired) {
+        const ar = msg.actionRequired as { promptId: string; question: string; type: string };
+        if (options.autoApprove) {
+          // Auto-approve tool calls
+          call.write({
+            input: {
+              reply: "yes",
+              promptId: ar.promptId
+            }
+          });
+        } else {
+          options.onEvent?.({
+            type: "action_required",
+            promptId: ar.promptId,
+            question: ar.question,
+            actionType: ar.type === "CONFIRM_COMMAND" ? "confirm" : "info"
+          });
+        }
+      }
+
+      if (msg.done) {
+        const d = msg.done as { fullText: string; promptTokens: number; completionTokens: number };
+        finalResult = {
+          fullText: d.fullText,
+          promptTokens: d.promptTokens ?? 0,
+          completionTokens: d.completionTokens ?? 0
+        };
+        options.onEvent?.({
+          type: "done",
+          ...finalResult
+        });
+        // Resolve imediato: o servidor gRPC nao fecha o stream apos done
+        // (so fecha em cancel/error), entao nao podemos esperar call.on('end').
+        finish(finalResult);
+      }
+
+      if (msg.error) {
+        const e = msg.error as { message: string; code: string };
+        options.onEvent?.({ type: "error", message: e.message, code: e.code });
+      }
+    });
+
+    call.on("end", () => {
+      if (finalResult) {
+        finish(finalResult);
+      } else {
+        fail(new Error("OpenClaude stream ended without result"));
+      }
+    });
+
+    call.on("error", (err: Error) => {
+      fail(new Error(`OpenClaude gRPC error: ${err.message}`));
+    });
+
+    // NOTE: call.end() é chamado dentro do handler msg.done,
+    // após receber a resposta final do servidor. Não fechar
+    // antes permite que mensagens de auto-approval cheguem ao servidor.
+  });
+};

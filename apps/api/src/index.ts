@@ -20,6 +20,17 @@ import environmentsRoutes from "./routes/environments.js";
 import settingsRoutes from "./routes/settings.js";
 import instructionsRoutes from "./routes/instructions.js";
 import statsRoutes from "./routes/stats.js";
+import taskRoutes from "./routes/task.js";
+import reposRoutes from "./routes/repos.js";
+import projectsRoutes from "./routes/projects.js";
+import trelloWebhookRoutes from "./routes/trelloWebhook.js";
+import trelloRoutes from "./routes/trello.js";
+import whatsappRoutes from "./routes/whatsapp.js";
+import previewRoutes from "./routes/preview.js";
+import { ensureInboxProject } from "./helpers/projectsBootstrap.js";
+import { startWhatsappBot } from "./services/whatsappBot.js";
+import { startScheduler } from "./services/scheduler.js";
+import { startPreviewCleanup, releaseOrphanedPreviews } from "./services/previewCleanup.js";
 
 const app = Fastify({
   logger: true,
@@ -72,10 +83,28 @@ await app.register(environmentsRoutes);
 await app.register(settingsRoutes);
 await app.register(instructionsRoutes);
 await app.register(statsRoutes);
+await app.register(taskRoutes);
+await app.register(reposRoutes);
+await app.register(projectsRoutes);
+await app.register(trelloWebhookRoutes);
+await app.register(trelloRoutes);
+await app.register(whatsappRoutes);
+await app.register(previewRoutes);
 
 // ── Startup ────────────────────────────────────────────────────────
 await ensureDefaultSettings();
 await ensureUsersIndex();
+await ensureInboxProject();
+
+// Boot do bot WhatsApp — no-op se whatsappEnabled=false. Nao bloqueia listen.
+void startWhatsappBot().catch(err => app.log.warn({ err }, "whatsapp bot disabled"));
+
+// Boot do scheduler (tick 60s, dispara tarefas/jobs agendados).
+void startScheduler().catch(err => app.log.warn({ err }, "scheduler failed to start"));
+
+// Preview deploys: limpa orphans + inicia loop de TTL.
+void releaseOrphanedPreviews().catch(err => app.log.warn({ err }, "releaseOrphanedPreviews failed"));
+startPreviewCleanup();
 
 app.listen({ port: config.port, host: "0.0.0.0" }).catch((error) => {
   app.log.error(error);

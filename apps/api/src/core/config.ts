@@ -27,5 +27,24 @@ export const config = {
     expiresIn: process.env.JWT_EXPIRES_IN ?? "7d"
   },
   corsOrigin: process.env.CORS_ORIGIN ?? "*",
-  historyMaxRows: Number(process.env.HISTORY_MAX_ROWS ?? "20")
+  historyMaxRows: Number(process.env.HISTORY_MAX_ROWS ?? "20"),
+  trello: {
+    apiKey: process.env.TRELLO_API_KEY ?? "",
+    apiToken: process.env.TRELLO_API_TOKEN ?? "",
+    defaultBoardId: process.env.TRELLO_DEFAULT_BOARD_ID ?? ""
+  },
+  github: {
+    token: process.env.GITHUB_TOKEN ?? "",
+    defaultOwner: process.env.GITHUB_DEFAULT_OWNER ?? "",
+    defaultRepo: process.env.GITHUB_DEFAULT_REPO ?? ""
+  },
+  workspace: {
+    dir: process.env.WORKSPACE_DIR ?? "/data/auraia-workspaces",
+    commandTimeoutMs: Number(process.env.WORKSPACE_CMD_TIMEOUT_MS ?? "300000")
+  },
+  openclaude: {
+    grpcUrl: process.env.OPENCLAUDE_GRPC_URL ?? "openclaude:50051",
+    defaultModel: process.env.OPENCLAUDE_MODEL ?? "",
+    provider: process.env.OPENCLAUDE_PROVIDER ?? "openai"
+  }
 };

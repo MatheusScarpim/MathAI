@@ -44,6 +44,9 @@ export const getOpenAI = async (environmentId?: string): Promise<OpenAI> => {
     apiKey = appConfig?.openAiApiKey;
   }
 
+  // Env var sobrescreve key do MongoDB (permite trocar provider sem ir no settings)
+  apiKey = process.env.OPENAI_API_KEY || apiKey;
+
   if (!apiKey) {
     throw new Error("App not configured. Please complete setup first.");
   }

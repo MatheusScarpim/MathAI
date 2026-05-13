@@ -155,6 +155,17 @@ export const api = {
     })
   },
 
+  async getIntegrationsSettings(): Promise<Record<string, unknown>> {
+    return request('/settings/integrations')
+  },
+
+  async saveIntegrationsSettings(settings: Record<string, unknown>): Promise<{ ok: boolean }> {
+    return request('/settings/integrations', {
+      method: 'PUT',
+      body: JSON.stringify(settings)
+    })
+  },
+
   // Environments
   async listEnvironments(): Promise<{ environments: EnvironmentView[] }> {
     return request('/environments')
@@ -325,6 +336,187 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ enabled })
     })
+  },
+
+  // Github Repos (entidades persistidas)
+  async listRepos(): Promise<Array<{
+    id: string; name: string; owner: string; repo: string;
+    baseBranch?: string; hasToken: boolean; createdAt: string; updatedAt: string;
+  }>> {
+    return request('/repos')
+  },
+
+  async createRepo(body: {
+    url?: string; owner?: string; repo?: string;
+    name?: string; baseBranch?: string; token: string;
+  }): Promise<Record<string, unknown>> {
+    return request('/repos', { method: 'POST', body: JSON.stringify(body) })
+  },
+
+  async updateRepo(
+    id: string,
+    body: { url?: string; owner?: string; repo?: string; name?: string; baseBranch?: string; token?: string }
+  ): Promise<Record<string, unknown>> {
+    return request(`/repos/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+  },
+
+  async deleteRepo(id: string): Promise<{ ok: boolean }> {
+    return request(`/repos/${id}`, { method: 'DELETE' })
+  },
+
+  // Projects (entidades agrupadoras de tasks)
+  async listProjects(): Promise<Array<{
+    id: string; name: string; description?: string; repoIds: string[];
+    trelloBoardId?: string; trelloListId?: string; trelloDoneListId?: string;
+    isInbox: boolean;
+    taskCount?: number; openTaskCount?: number; createdAt: string; updatedAt: string;
+  }>> {
+    return request('/projects')
+  },
+
+  async getProject(id: string): Promise<Record<string, unknown>> {
+    return request(`/projects/${id}`)
+  },
+
+  async createProject(body: {
+    name: string; description?: string; repoIds?: string[];
+    trelloBoardId?: string; trelloListId?: string; trelloDoneListId?: string;
+  }): Promise<Record<string, unknown>> {
+    return request('/projects', { method: 'POST', body: JSON.stringify(body) })
+  },
+
+  async updateProject(id: string, body: {
+    name?: string; description?: string; repoIds?: string[];
+    trelloBoardId?: string; trelloListId?: string; trelloDoneListId?: string;
+  }): Promise<Record<string, unknown>> {
+    return request(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+  },
+
+  async deleteProject(id: string): Promise<{ ok: boolean; migratedTo?: string }> {
+    return request(`/projects/${id}`, { method: 'DELETE' })
+  },
+
+  async setupProjectPreview(id: string): Promise<{ ok: boolean; message: string }> {
+    return request(`/projects/${id}/setup-preview`, { method: 'POST' })
+  },
+
+  // Trello
+  async getTrelloBoards(): Promise<Array<{ id: string; name: string; url: string }>> {
+    return request('/trello/boards')
+  },
+
+  async getTrelloLists(boardId: string): Promise<Array<{ id: string; name: string }>> {
+    return request(`/trello/boards/${encodeURIComponent(boardId)}/lists`)
+  },
+
+  // Task Orchestrator
+  async executeTask(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return request('/task', {
+      method: 'POST',
+      body: JSON.stringify(body)
+    })
+  },
+
+  async executeTaskStream(
+    body: Record<string, unknown>,
+    onEvent: (event: string, data: unknown) => void
+  ): Promise<void> {
+    const headers: Record<string, string> = {
+      ...authHeaders(),
+      'Content-Type': 'application/json'
+    }
+
+    const res = await fetch(`${API_BASE}/task/stream`, {
+      method: 'POST',
+      credentials: 'include',
+      headers,
+      body: JSON.stringify(body)
+    })
+
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ message: 'Request failed' }))
+      throw new Error(error.errorMessage || error.message || `HTTP ${res.status}`)
+    }
+
+    const reader = res.body?.getReader()
+    if (!reader) return
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+
+      let currentEvent = 'message'
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          currentEvent = line.slice(7).trim()
+        } else if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6))
+            onEvent(currentEvent, data)
+          } catch {
+            // skip malformed
+          }
+        }
+      }
+    }
+  },
+
+  async getTask(id: string): Promise<Record<string, unknown>> {
+    return request(`/task/${id}`)
+  },
+
+  async getTasks(opts?: { status?: string; limit?: number; projectId?: string }): Promise<Record<string, unknown>[]> {
+    const params = new URLSearchParams()
+    if (opts?.status) params.set('status', opts.status)
+    if (opts?.limit) params.set('limit', String(opts.limit))
+    if (opts?.projectId) params.set('projectId', opts.projectId)
+    const qs = params.toString()
+    return request(`/tasks${qs ? `?${qs}` : ''}`)
+  },
+
+  async cancelTask(id: string): Promise<{ ok: boolean }> {
+    return request(`/task/${id}`, { method: 'DELETE' })
+  },
+
+  async retrySubtask(taskId: string, subId: string): Promise<{ ok: boolean; message?: string }> {
+    return request(`/tasks/${taskId}/subtasks/${encodeURIComponent(subId)}/retry`, { method: 'POST' })
+  },
+
+  // Preview deploys
+  async startPreview(taskId: string): Promise<{
+    taskId: string
+    tunnelUrl: string
+    status: 'starting' | 'ready' | 'stopped' | 'failed'
+    startedAt: string
+    expiresAt: string
+  }> {
+    return request(`/tasks/${taskId}/preview`, { method: 'POST' })
+  },
+
+  async stopPreview(taskId: string): Promise<{ ok: boolean }> {
+    return request(`/tasks/${taskId}/preview`, { method: 'DELETE' })
+  },
+
+  async getPreview(taskId: string): Promise<{
+    taskId: string
+    tunnelUrl: string
+    status: 'starting' | 'ready' | 'stopped' | 'failed'
+    startedAt: string
+    expiresAt: string
+    errorMessage?: string
+  } | null> {
+    try {
+      return await request(`/tasks/${taskId}/preview`)
+    } catch {
+      return null
+    }
   },
 
   // Stats / Developer

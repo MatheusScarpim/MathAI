@@ -204,6 +204,7 @@
             {{ savingAgents ? 'Salvando...' : 'Salvar configurações de agentes' }}
           </button>
         </div>
+
       </template>
     </section>
 
@@ -261,6 +262,130 @@
       <p v-if="authMessage" class="message" :class="authMessageType">{{ authMessage }}</p>
     </section>
 
+    <section class="integrations-section">
+      <div class="section-title-row">
+        <h2>Integracoes</h2>
+      </div>
+      <p class="section-description">Configure as integracoes do Task Orchestrator.</p>
+
+      <div class="integration-grid">
+        <!-- Trello -->
+        <div class="integration-card">
+          <h3>Trello</h3>
+          <label>
+            API Key
+            <input v-model="integrations.trelloApiKey" type="password" placeholder="TRELLO_API_KEY" />
+          </label>
+          <label>
+            API Token
+            <input v-model="integrations.trelloApiToken" type="password" placeholder="TRELLO_API_TOKEN" />
+          </label>
+          <label>
+            Board Padrao
+            <div class="select-row">
+              <select v-model="integrations.trelloBoardId" @change="onTrelloBoardChange">
+                <option value="">— escolha um board —</option>
+                <option v-for="b in trelloBoards" :key="b.id" :value="b.id">{{ b.name }}</option>
+              </select>
+              <button type="button" class="btn-mini" :disabled="trelloLoadingBoards" @click="loadTrelloBoards" title="Recarregar boards">
+                {{ trelloLoadingBoards ? '...' : '↻' }}
+              </button>
+            </div>
+            <small v-if="trelloError" class="hint-error">{{ trelloError }}</small>
+            <small v-else-if="!trelloBoards.length && integrations.trelloApiKey && integrations.trelloApiToken" class="hint-muted">
+              Salve primeiro as credenciais para listar os boards.
+            </small>
+          </label>
+          <label>
+            Lista Padrao (coluna)
+            <select v-model="integrations.trelloListId" :disabled="!integrations.trelloBoardId || trelloLoadingLists">
+              <option value="">— primeira lista do board —</option>
+              <option v-for="l in trelloLists" :key="l.id" :value="l.id">{{ l.name }}</option>
+            </select>
+          </label>
+          <label>
+            Lista "Done" (destino ao finalizar)
+            <select v-model="integrations.trelloDoneListId" :disabled="!integrations.trelloBoardId || trelloLoadingLists">
+              <option value="">— nao mover automaticamente —</option>
+              <option v-for="l in trelloLists" :key="l.id" :value="l.id">{{ l.name }}</option>
+            </select>
+            <small class="hint-muted">Cards sao movidos pra esta coluna quando a task termina (sucesso ou falha).</small>
+          </label>
+        </div>
+
+        <!-- GitHub -->
+        <div class="integration-card">
+          <h3>GitHub</h3>
+          <label>
+            Token
+            <input v-model="integrations.githubToken" type="password" placeholder="GITHUB_TOKEN" />
+          </label>
+          <label>
+            Owner Padrao
+            <input v-model="integrations.githubOwner" type="text" placeholder="GITHUB_DEFAULT_OWNER" />
+          </label>
+          <label>
+            Repo Padrao
+            <input v-model="integrations.githubRepo" type="text" placeholder="GITHUB_DEFAULT_REPO" />
+          </label>
+        </div>
+
+        <!-- WhatsApp -->
+        <div class="integration-card">
+          <h3>WhatsApp <span class="card-badge">beta</span></h3>
+          <label class="toggle-line">
+            <input v-model="integrations.whatsappEnabled" type="checkbox" />
+            <span>Ativar bot WhatsApp</span>
+          </label>
+          <label>
+            Rate limit (ms entre msgs)
+            <input v-model.number="integrations.whatsappRateLimitMs" type="number" min="500" step="100" />
+          </label>
+          <p v-if="waPairingStatus" class="wa-status" :class="`wa-${waPairingStatus}`">
+            <span v-if="waPairingStatus === 'paired'">✅ Pareado: +{{ waPhone || '?' }}</span>
+            <span v-else-if="waPairingStatus === 'logged_out'">⚠️ Sessao revogada</span>
+            <span v-else>⏳ Nao pareado</span>
+            <span v-if="waHealth" class="wa-health-badge" :class="`wa-health-${waHealth}`">
+              {{ waHealth === 'ok' ? '🟢 ok' : waHealth === 'degraded' ? '🟡 degraded' : '🔴 warning' }}
+            </span>
+          </p>
+          <p v-if="waMetrics" class="wa-metrics">
+            ↑{{ waMetrics.messagesSent }} · ↓{{ waMetrics.messagesReceived }} ·
+            😀{{ waMetrics.reactionsSent }} · 📎{{ waMetrics.documentsSent }} ·
+            ❌{{ waMetrics.sendErrors }} · ⟳{{ waMetrics.reconnects }}
+          </p>
+          <router-link to="/settings/whatsapp" class="btn-link">
+            Abrir tela de pareamento →
+          </router-link>
+        </div>
+
+        <!-- OpenClaude / DeepSeek -->
+        <div class="integration-card">
+          <h3>OpenClaude (Code Agent)</h3>
+          <label>
+            Modelo
+            <input v-model="integrations.openclaudeModel" type="text" placeholder="deepseek-chat" />
+          </label>
+          <label>
+            Provider
+            <select v-model="integrations.openclaudeProvider" class="config-select">
+              <option value="openai">OpenAI</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="ollama">Ollama</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="actions-row">
+        <button class="btn-primary" :disabled="savingIntegrations" @click="saveIntegrations">
+          {{ savingIntegrations ? 'Salvando...' : 'Salvar integracoes' }}
+        </button>
+      </div>
+
+      <p v-if="integrationsMessage" class="message" :class="integrationsMessageType">{{ integrationsMessage }}</p>
+    </section>
+
     <section class="danger-zone">
       <h2>Zona de risco</h2>
       <p>
@@ -287,7 +412,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../services/api'
 import { setToken } from '../services/auth'
@@ -315,6 +440,76 @@ const confirmText = ref('')
 const resetting = ref(false)
 const resetMessage = ref('')
 const resetMessageType = ref<'ok' | 'error'>('ok')
+
+const integrations = ref({
+  trelloApiKey: '',
+  trelloApiToken: '',
+  trelloBoardId: '',
+  trelloListId: '',
+  trelloDoneListId: '',
+  githubToken: '',
+  githubOwner: '',
+  githubRepo: '',
+  openclaudeModel: '',
+  openclaudeProvider: 'deepseek',
+  whatsappEnabled: false,
+  whatsappRateLimitMs: 2500
+})
+
+const waPairingStatus = ref<'unpaired' | 'paired' | 'logged_out' | ''>('')
+const waPhone = ref('')
+const waHealth = ref<'ok' | 'degraded' | 'warning' | ''>('')
+const waMetrics = ref<{
+  messagesSent: number; messagesReceived: number; reactionsSent: number;
+  documentsSent: number; sendErrors: number; reconnects: number;
+} | null>(null)
+const savingIntegrations = ref(false)
+const integrationsMessage = ref('')
+const integrationsMessageType = ref<'ok' | 'error'>('ok')
+
+// Trello dropdowns
+const trelloBoards = ref<Array<{ id: string; name: string; url: string }>>([])
+const trelloLists = ref<Array<{ id: string; name: string }>>([])
+const trelloLoadingBoards = ref(false)
+const trelloLoadingLists = ref(false)
+const trelloError = ref('')
+
+const loadTrelloBoards = async () => {
+  trelloError.value = ''
+  if (!integrations.value.trelloApiKey || !integrations.value.trelloApiToken) {
+    trelloBoards.value = []
+    return
+  }
+  trelloLoadingBoards.value = true
+  try {
+    trelloBoards.value = await api.getTrelloBoards()
+  } catch (err) {
+    trelloBoards.value = []
+    trelloError.value = err instanceof Error ? err.message : 'Falha ao carregar boards. Salve e teste API Key/Token.'
+  } finally {
+    trelloLoadingBoards.value = false
+  }
+}
+
+const loadTrelloLists = async (boardId: string) => {
+  if (!boardId) {
+    trelloLists.value = []
+    return
+  }
+  trelloLoadingLists.value = true
+  try {
+    trelloLists.value = await api.getTrelloLists(boardId)
+  } catch {
+    trelloLists.value = []
+  } finally {
+    trelloLoadingLists.value = false
+  }
+}
+
+const onTrelloBoardChange = async () => {
+  integrations.value.trelloListId = ''
+  await loadTrelloLists(integrations.value.trelloBoardId)
+}
 
 const httpTemperatureInput = ref('')
 const plannerModel = ref('gpt-5-mini')
@@ -461,6 +656,54 @@ const loadAuthStatus = async () => {
   } catch { /* ignore */ }
 }
 
+const loadIntegrations = async () => {
+  try {
+    const raw = await api.getIntegrationsSettings()
+    const s = (raw ?? {}) as Record<string, unknown>
+    const str = (k: string): string => typeof s[k] === 'string' ? (s[k] as string) : ''
+    if (raw) {
+      integrations.value = {
+        trelloApiKey: str('trelloApiKey'),
+        trelloApiToken: str('trelloApiToken'),
+        trelloBoardId: str('trelloBoardId'),
+        trelloListId: str('trelloListId'),
+        trelloDoneListId: str('trelloDoneListId'),
+        githubToken: str('githubToken'),
+        githubOwner: str('githubOwner'),
+        githubRepo: str('githubRepo'),
+        openclaudeModel: str('openclaudeModel'),
+        openclaudeProvider: str('openclaudeProvider') || 'deepseek',
+        whatsappEnabled: s.whatsappEnabled === true || s.whatsappEnabled === 'true',
+        whatsappRateLimitMs: typeof s.whatsappRateLimitMs === 'number' ? s.whatsappRateLimitMs : 2500
+      }
+    }
+    // Status WhatsApp pra exibir badge
+    await refreshWhatsappStatus()
+    // Pre-carrega boards/lists se as credenciais já estiverem persistidas no DB
+    await loadTrelloBoards()
+    if (integrations.value.trelloBoardId) {
+      await loadTrelloLists(integrations.value.trelloBoardId)
+    }
+  } catch { /* ignore */ }
+}
+
+const saveIntegrations = async () => {
+  savingIntegrations.value = true
+  integrationsMessage.value = ''
+  try {
+    await api.saveIntegrationsSettings(integrations.value)
+    integrationsMessageType.value = 'ok'
+    integrationsMessage.value = 'Integracoes salvas com sucesso.'
+    // Recarrega boards apos salvar (pode ter mudado key/token)
+    await loadTrelloBoards()
+  } catch (err) {
+    integrationsMessageType.value = 'error'
+    integrationsMessage.value = (err as Error).message || 'Erro ao salvar.'
+  } finally {
+    savingIntegrations.value = false
+  }
+}
+
 const onActivateAuth = async () => {
   authMessage.value = ''
 
@@ -521,9 +764,35 @@ const onDeactivateAuth = async () => {
   }
 }
 
+/** Recarrega status WhatsApp (chamado no mount e a cada 15s pelo poll). */
+async function refreshWhatsappStatus() {
+  try {
+    const waRes = await fetch('/api/whatsapp/status')
+    if (waRes.ok) {
+      const wa = await waRes.json()
+      waPairingStatus.value = wa.pairingStatus || 'unpaired'
+      waPhone.value = wa.phoneNumber || ''
+      waHealth.value = wa.health || ''
+      waMetrics.value = wa.metrics || null
+    }
+  } catch { /* ignore — best-effort */ }
+}
+
+let waPollTimer: ReturnType<typeof setInterval> | null = null
+
 onMounted(() => {
   void loadAgentsConfig()
   void loadAuthStatus()
+  void loadIntegrations()
+  // Poll do status WA a cada 15s pra atualizar badge + counters sem refresh
+  waPollTimer = setInterval(() => { void refreshWhatsappStatus() }, 15_000)
+})
+
+onUnmounted(() => {
+  if (waPollTimer) {
+    clearInterval(waPollTimer)
+    waPollTimer = null
+  }
 })
 </script>
 
@@ -736,18 +1005,66 @@ onMounted(() => {
   cursor: not-allowed;
 }
 
-.auth-section {
+.integrations-section {
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   border: 1px solid var(--glass-border);
   border-radius: 12px;
   padding: 1.25rem;
-  transition: border-color 0.25s ease;
+}
+
+.integration-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.integration-card {
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  padding: 1rem;
+  background: var(--glass-bg);
+  display: grid;
+  gap: 0.75rem;
+}
+
+.integration-card h3 {
+  margin: 0;
+}
+
+.integration-card label {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--color-gray-300);
+  font-size: 0.92rem;
+}
+
+.integration-card input,
+.config-select {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  color: var(--color-gray-100);
+}
+
+.integration-card input:focus,
+.config-select:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
+}
+
+.config-select {
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
 }
 
 .auth-toggle-row {
-  margin-top: 0.5rem;
+  margin-top: 2rem;
   display: flex;
   align-items: center;
   gap: 1rem;
@@ -894,4 +1211,74 @@ onMounted(() => {
     width: 100%;
   }
 }
+
+/* Trello dropdown helpers */
+.select-row { display: flex; gap: .5rem; align-items: stretch; }
+.select-row select { flex: 1; min-width: 0; }
+.btn-mini {
+  background: transparent;
+  border: 1px solid var(--border, #333);
+  color: var(--text-secondary, #aaa);
+  border-radius: 6px;
+  padding: 0 .65rem;
+  cursor: pointer;
+  font-size: .85rem;
+}
+.btn-mini:hover:not(:disabled) { border-color: var(--primary, #6c5ce7); color: var(--primary, #6c5ce7); }
+.btn-mini:disabled { opacity: .5; cursor: not-allowed; }
+.hint-error { display: block; margin-top: .35rem; color: #ff6b6b; font-size: .72rem; }
+.hint-muted { display: block; margin-top: .35rem; color: var(--text-secondary, #888); font-size: .72rem; }
+.integration-card select {
+  background: var(--bg-primary, #0f0f23);
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  padding: .45rem .65rem;
+  color: var(--text, #fff);
+  font-size: .85rem;
+  width: 100%;
+}
+.integration-card select:disabled { opacity: .55; cursor: not-allowed; }
+
+/* WhatsApp section helpers */
+.card-badge {
+  display: inline-block;
+  font-size: .65rem;
+  background: rgba(16, 185, 129, .15);
+  color: #6ee7b7;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  margin-left: .35rem;
+  vertical-align: middle;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.wa-status { font-size: .85rem; margin: .35rem 0; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.wa-paired { color: #6ee7b7; }
+.wa-logged_out { color: #fca5a5; }
+.wa-unpaired { color: #fbbf24; }
+.wa-health-badge {
+  display: inline-block;
+  font-size: .7rem;
+  padding: .1rem .4rem;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.wa-health-ok { background: rgba(16, 185, 129, .15); color: #6ee7b7; }
+.wa-health-degraded { background: rgba(251, 191, 36, .15); color: #fbbf24; }
+.wa-health-warning { background: rgba(239, 68, 68, .15); color: #fca5a5; }
+.wa-metrics {
+  font-size: .75rem;
+  color: var(--text-muted, #94a3b8);
+  margin: .25rem 0 .35rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+}
+.btn-link {
+  display: inline-block;
+  margin-top: .35rem;
+  color: var(--color-accent, #10b981);
+  text-decoration: none;
+  font-size: .9rem;
+}
+.btn-link:hover { text-decoration: underline; }
 </style>
