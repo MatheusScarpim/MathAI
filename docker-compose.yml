@@ -27,6 +27,7 @@ services:
       qdrant:
         condition: service_started
 
+  # Legacy single-provider container (mantém compatibilidade — OPENCLAUDE_GRPC_URL aponta aqui por padrão).
   openclaude:
     image: oven/bun:1
     container_name: mathai-openclaude
@@ -61,6 +62,113 @@ services:
       - "${OPENCLAUDE_GRPC_PORT:-50051}:50051"
     volumes:
       - openclaude_app:/openclaude
+      - auraia_workspaces:/data/auraia-workspaces
+
+  # ─── Multi-provider fleet (router escolhe um destes por subtask) ───
+  # Cada container tem seu próprio /root pra persistir OAuth tokens
+  # obtidos via `/provider` ou `/onboard-github` interativos.
+
+  openclaude-anthropic:
+    image: oven/bun:1
+    container_name: mathai-openclaude-anthropic
+    restart: unless-stopped
+    working_dir: /openclaude
+    command: >
+      sh -c "
+        apt-get update && apt-get install -y git gh 2>/dev/null || apk add --no-cache git github-cli 2>/dev/null;
+        if [ ! -d .git ]; then
+          git clone https://github.com/Gitlawb/openclaude.git .;
+        fi &&
+        if [ -n \"${OPENCLAUDE_PR}\" ]; then
+          git fetch origin pull/${OPENCLAUDE_PR}/head &&
+          git reset --hard FETCH_HEAD;
+        else
+          git fetch origin && git checkout ${OPENCLAUDE_BRANCH:-main} && git reset --hard origin/${OPENCLAUDE_BRANCH:-main};
+        fi &&
+        bun install &&
+        bun run build &&
+        if [ -f src/entrypoints/sdk/index.ts ] && ! grep -q 'setTimeout(detectStubLeaks' src/entrypoints/sdk/index.ts; then sed -i '/^detectStubLeaks()/c\setTimeout(detectStubLeaks, 0)' src/entrypoints/sdk/index.ts; fi &&
+        bun run dev:grpc
+      "
+    environment:
+      - GRPC_PORT=50051
+      - GRPC_HOST=0.0.0.0
+      - OPENCLAUDE_PROVIDER_HINT=anthropic
+    ports:
+      - "${OPENCLAUDE_ANTHROPIC_PORT:-50052}:50051"
+    volumes:
+      - openclaude_anthropic_app:/openclaude
+      - openclaude_anthropic_home:/root
+      - auraia_workspaces:/data/auraia-workspaces
+
+  openclaude-codex:
+    image: oven/bun:1
+    container_name: mathai-openclaude-codex
+    restart: unless-stopped
+    working_dir: /openclaude
+    command: >
+      sh -c "
+        apt-get update && apt-get install -y git gh 2>/dev/null || apk add --no-cache git github-cli 2>/dev/null;
+        if [ ! -d .git ]; then
+          git clone https://github.com/Gitlawb/openclaude.git .;
+        fi &&
+        if [ -n \"${OPENCLAUDE_PR}\" ]; then
+          git fetch origin pull/${OPENCLAUDE_PR}/head &&
+          git reset --hard FETCH_HEAD;
+        else
+          git fetch origin && git checkout ${OPENCLAUDE_BRANCH:-main} && git reset --hard origin/${OPENCLAUDE_BRANCH:-main};
+        fi &&
+        bun install &&
+        bun run build &&
+        if [ -f src/entrypoints/sdk/index.ts ] && ! grep -q 'setTimeout(detectStubLeaks' src/entrypoints/sdk/index.ts; then sed -i '/^detectStubLeaks()/c\setTimeout(detectStubLeaks, 0)' src/entrypoints/sdk/index.ts; fi &&
+        bun run dev:grpc
+      "
+    environment:
+      - GRPC_PORT=50051
+      - GRPC_HOST=0.0.0.0
+      - OPENCLAUDE_PROVIDER_HINT=codex
+    ports:
+      - "${OPENCLAUDE_CODEX_PORT:-50053}:50051"
+    volumes:
+      - openclaude_codex_app:/openclaude
+      - openclaude_codex_home:/root
+      - auraia_workspaces:/data/auraia-workspaces
+
+  openclaude-deepseek:
+    image: oven/bun:1
+    container_name: mathai-openclaude-deepseek
+    restart: unless-stopped
+    working_dir: /openclaude
+    command: >
+      sh -c "
+        apt-get update && apt-get install -y git gh 2>/dev/null || apk add --no-cache git github-cli 2>/dev/null;
+        if [ ! -d .git ]; then
+          git clone https://github.com/Gitlawb/openclaude.git .;
+        fi &&
+        if [ -n \"${OPENCLAUDE_PR}\" ]; then
+          git fetch origin pull/${OPENCLAUDE_PR}/head &&
+          git reset --hard FETCH_HEAD;
+        else
+          git fetch origin && git checkout ${OPENCLAUDE_BRANCH:-main} && git reset --hard origin/${OPENCLAUDE_BRANCH:-main};
+        fi &&
+        bun install &&
+        bun run build &&
+        if [ -f src/entrypoints/sdk/index.ts ] && ! grep -q 'setTimeout(detectStubLeaks' src/entrypoints/sdk/index.ts; then sed -i '/^detectStubLeaks()/c\setTimeout(detectStubLeaks, 0)' src/entrypoints/sdk/index.ts; fi &&
+        bun run dev:grpc
+      "
+    environment:
+      - GRPC_PORT=50051
+      - GRPC_HOST=0.0.0.0
+      - CLAUDE_CODE_USE_OPENAI=1
+      - OPENAI_API_KEY=${DEEPSEEK_API_KEY:-${OPENAI_API_KEY:-}}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL_DEEPSEEK:-https://api.deepseek.com}
+      - OPENAI_MODEL=${OPENCLAUDE_MODEL_DEEPSEEK:-deepseek-chat}
+      - OPENCLAUDE_PROVIDER_HINT=deepseek
+    ports:
+      - "${OPENCLAUDE_DEEPSEEK_PORT:-50054}:50051"
+    volumes:
+      - openclaude_deepseek_app:/openclaude
+      - openclaude_deepseek_home:/root
       - auraia_workspaces:/data/auraia-workspaces
 
   frontend:
@@ -121,4 +229,10 @@ volumes:
   mongo_data:
   redis_data:
   openclaude_app:
+  openclaude_anthropic_app:
+  openclaude_anthropic_home:
+  openclaude_codex_app:
+  openclaude_codex_home:
+  openclaude_deepseek_app:
+  openclaude_deepseek_home:
   auraia_workspaces:

@@ -26,7 +26,7 @@ export const addTokenUsage = (a: TokenUsage, b: TokenUsage): TokenUsage => ({
 
 // ============== Tasks ==============
 
-export type TaskStatus = "pending" | "planning" | "executing" | "completed" | "failed" | "cancelled";
+export type TaskStatus = "pending" | "planning" | "awaiting_approval" | "executing" | "completed" | "failed" | "cancelled";
 export type TaskStage = "planning" | "coding" | "reviewing" | "reporting" | "done";
 export type SubTaskType = "trello" | "github" | "api" | "custom";
 
@@ -48,6 +48,33 @@ export type SubTask = {
   resolvedBranch?: string;
   /** "owner/repo" — preenchido pelo pipeline antes de executar github subtasks */
   resolvedRepoKey?: string;
+  // ── Telemetria (#3 plan W1) ──
+  /** Provider LLM usado na ultima invocacao do code agent desta subtask. */
+  provider?: string;
+  /** Model name correspondente ao provider. */
+  model?: string;
+  /** Soma de input tokens ao longo de todos os rounds desta subtask. */
+  tokensIn?: number;
+  /** Soma de output tokens. */
+  tokensOut?: number;
+  /** Custo USD acumulado (inclui rounds de review e correcao). */
+  costUsd?: number;
+  /** Wall-clock total desta subtask (startedAt → completedAt). */
+  durationMs?: number;
+  // ── Replan-on-failure (#1 plan W2) ──
+  /** Subtask veio de um replan? Util pra badge "REPLAN" na UI. */
+  fromReplan?: boolean;
+  /** Historico de tentativas — preenchido a cada round/retry pelo pipeline. */
+  attemptHistory?: Array<{
+    round: number;
+    provider?: string;
+    model?: string;
+    errorSummary?: string;
+    emptyStream?: boolean;
+    /** Veredicto do runtime verifier desta tentativa (se rodou). */
+    runtimeVerdict?: "PASS" | "FAIL" | "PARTIAL";
+    timestamp: Date;
+  }>;
 };
 
 export type TaskRecord = {
@@ -68,6 +95,8 @@ export type TaskRecord = {
     reviewer?: TokenUsage;
     reporter?: TokenUsage;
     total: TokenUsage;
+    /** Breakdown por provider — alimentado pelo recordAgentCall ($inc atomico). */
+    byProvider?: Record<string, { tokensIn: number; tokensOut: number; costUsd: number }>;
   };
   createdAt: Date;
   updatedAt: Date;
@@ -76,6 +105,34 @@ export type TaskRecord = {
   branchByRepo?: Record<string, string>;
   /** Key da msg "🚀 Iniciando" enviada via WhatsApp — usada pra reagir nela em stage transitions. */
   whatsappStartMsgKey?: { id: string; remoteJid: string; fromMe: boolean };
+  /** Quantos replans ja foram disparados pra esta task. Hard cap = 1. */
+  replanCount?: number;
+  /** Atualizado a cada stage transition pelo pipeline. Boot scan usa pra detectar orfaos. */
+  heartbeatAt?: Date;
+  /** Prioridade no queue (#7). */
+  priority?: "low" | "normal" | "high";
+  /** Comments externos (ex: vindos de Trello webhook — #14). */
+  comments?: Array<{
+    source: "trello" | "manual";
+    text: string;
+    author?: string;
+    at: Date;
+  }>;
+  /** Quando status=="awaiting_approval", contem o plano gerado aguardando approve/reject. */
+  pendingPlanApproval?: {
+    subtasks: Array<{
+      id: string;
+      type: SubTaskType;
+      description: string;
+      priority: number;
+      dependsOn: string[];
+      repo?: string;
+    }>;
+    reason: "manual" | "subtask_count" | "estimated_cost";
+    detail?: string;
+    expiresAt: Date;
+    createdAt: Date;
+  };
 };
 
 export type TaskExecutionRecord = {
@@ -90,6 +147,12 @@ export type TaskExecutionRecord = {
   tokenUsage?: TokenUsage;
   elapsedMs: number;
   createdAt: Date;
+  // ── Telemetria (#3 plan W1) ──
+  provider?: string;
+  model?: string;
+  costUsd?: number;
+  /** Set por rollback (#9/G4) — alimenta reverted_rate em /api/metrics. */
+  reverted?: boolean;
 };
 
 export type TaskResult = {
@@ -106,6 +169,7 @@ export type TaskResult = {
     reviewer?: TokenUsage;
     reporter?: TokenUsage;
     total: TokenUsage;
+    byProvider?: Record<string, { tokensIn: number; tokensOut: number; costUsd: number }>;
   };
 };
 
@@ -134,6 +198,10 @@ export type TaskExecuteOptions = {
    *  - ao fim (sucesso), atualiza ProjectRecord com previewBuildCmd/Dir convencionais
    */
   setupPreviewForProjectId?: string;
+  /** Forca gate de aprovacao manual (plano vira awaiting_approval mesmo se subtaskCount <= threshold). */
+  requiresPlanApproval?: boolean;
+  /** Prioridade no queue de concorrencia (#7). Default normal. High pula a fila. */
+  priority?: "low" | "normal" | "high";
   /**
    * Se fornecido, pipeline pula o planner e usa essas subtasks diretamente.
    * Caso de uso: gate de aprovacao no bot — planeja, user aprova, executa.
@@ -146,5 +214,12 @@ export type TaskExecuteOptions = {
     dependsOn: string[];
     repo?: string;
   }>;
+  /**
+   * G6 — quando setado, executeTask reusa este doc Mongo em vez de criar
+   * outro. Caso de uso: approve-plan — task ja existe em awaiting_approval,
+   * queremos continuar no mesmo _id pra nao duplicar UI/metricas. ObjectId
+   * string. Doc deve existir.
+   */
+  existingTaskId?: string;
   emit?: StepEmitter;
 };

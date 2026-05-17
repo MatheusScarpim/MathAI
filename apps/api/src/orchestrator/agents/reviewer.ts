@@ -1,5 +1,6 @@
-import { getOpenAI } from "../../core/openai.js";
+import { getClient } from "../../core/openai.js";
 import { getAgentsConfig } from "../../core/agentConfig.js";
+import { selectRoute } from "../routing/router.js";
 import type { CodeChange } from "./code.js";
 import { withRetry } from "./withRetry.js";
 
@@ -121,7 +122,9 @@ export const reviewCodeChanges = async (
   description: string,
   changes: CodeChange[],
   originalFiles: { path: string; content: string }[],
-  language: "pt" | "en" | "es" = "pt"
+  language: "pt" | "en" | "es" = "pt",
+  /** Bloco de project context (stack, convencoes) ja formatado. Opcional. */
+  projectContextText?: string
 ): Promise<ReviewResult> => {
   const agentsCfg = await getAgentsConfig();
   const cfg = agentsCfg.taskReviewer;
@@ -130,10 +133,12 @@ export const reviewCodeChanges = async (
     return { approved: true, comments: [] };
   }
 
-  const client = await getOpenAI();
-  const model = cfg?.model || "gpt-4o";
+  const route = await selectRoute("taskReviewer", { description });
+  const client = getClient(route.provider);
+  const model = route.model || cfg?.model || "gpt-4o";
   const temperature = cfg?.temperature ?? 0;
-  const system = buildSystemPrompt(language);
+  const baseSystem = buildSystemPrompt(language);
+  const system = projectContextText ? `${baseSystem}\n\n${projectContextText}` : baseSystem;
 
   const changesSections = changes
     .map((c) => {

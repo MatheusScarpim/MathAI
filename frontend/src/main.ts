@@ -21,6 +21,8 @@ const router = createRouter({
     { path: '/playground', component: () => import('./pages/Playground.vue') },
     { path: '/tasks', component: () => import('./pages/Tasks.vue') },
     { path: '/tasks/:id', component: () => import('./pages/TaskDetail.vue') },
+    { path: '/metrics', component: () => import('./pages/Metrics.vue') },
+    { path: '/queue', component: () => import('./pages/Queue.vue') },
     { path: '/settings/whatsapp', component: () => import('./pages/WhatsAppPair.vue') }
   ]
 })

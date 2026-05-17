@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { isNonEmptyString } from "@auraia/shared";
 import { ObjectId } from "mongodb";
 import { executeTask, type TaskExecuteOptions, type GithubRepoConfig } from "../orchestrator/index.js";
-import { getTasksCollection, getGithubReposCollection, getProjectsCollection } from "../core/mongo.js";
+import { getTasksCollection, getGithubReposCollection, getProjectsCollection, getTaskExecutionsCollection } from "../core/mongo.js";
 import { config } from "../core/config.js";
 import { parseGithubRef } from "../core/githubRef.js";
 import { decryptToken } from "../core/repoCrypto.js";
@@ -564,6 +564,69 @@ export default async function taskRoutes(app: FastifyInstance) {
     }
   );
 
+  // GET /api/tasks/:id/costs — breakdown de custo por (agent, provider, model)
+  // Agrega task_executions; alimenta painel "Custos e provedores" no frontend.
+  app.get<{ Params: { id: string } }>(
+    "/api/tasks/:id/costs",
+    {
+      schema: {
+        tags: ["task"],
+        summary: "Breakdown de custo por (agent, provider, model)",
+        params: {
+          type: "object",
+          properties: { id: { type: "string" } },
+          required: ["id"]
+        }
+      }
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      if (!ObjectId.isValid(id)) {
+        reply.status(400).send({ errorMessage: "ID invalido." });
+        return;
+      }
+      const taskOid = new ObjectId(id);
+      const execCol = await getTaskExecutionsCollection();
+      const rows = await execCol.aggregate([
+        { $match: { taskId: taskOid } },
+        {
+          $group: {
+            _id: { agent: "$agent", provider: "$provider", model: "$model" },
+            tokensIn: { $sum: { $ifNull: ["$tokenUsage.inputTokens", 0] } },
+            tokensOut: { $sum: { $ifNull: ["$tokenUsage.outputTokens", 0] } },
+            costUsd: { $sum: { $ifNull: ["$costUsd", 0] } },
+            calls: { $sum: 1 },
+            durationMs: { $sum: "$elapsedMs" }
+          }
+        },
+        { $sort: { costUsd: -1 } }
+      ]).toArray();
+
+      const breakdown = rows.map(r => ({
+        agent: r._id.agent ?? "unknown",
+        provider: r._id.provider ?? "unknown",
+        model: r._id.model ?? "unknown",
+        tokensIn: r.tokensIn,
+        tokensOut: r.tokensOut,
+        costUsd: r.costUsd,
+        calls: r.calls,
+        durationMs: r.durationMs
+      }));
+
+      const totals = breakdown.reduce(
+        (acc, r) => ({
+          tokensIn: acc.tokensIn + r.tokensIn,
+          tokensOut: acc.tokensOut + r.tokensOut,
+          costUsd: acc.costUsd + r.costUsd,
+          calls: acc.calls + r.calls
+        }),
+        { tokensIn: 0, tokensOut: 0, costUsd: 0, calls: 0 }
+      );
+
+      reply.send({ taskId: id, breakdown, totals });
+    }
+  );
+
   // POST /api/tasks/:id/subtasks/:subId/retry
   // Re-executa uma subtask falha. Worktree recriado, contexto das outras
   // subtasks injetado no prompt, push atualiza o PR existente.
@@ -591,6 +654,209 @@ export default async function taskRoutes(app: FastifyInstance) {
         console.error("[retry] unexpected error:", err);
       });
       reply.status(202).send({ ok: true, message: "Retry disparado" });
+    }
+  );
+
+  // POST /api/tasks/:id/revert
+  // Cria branch + PR de revert do merge commit. Body opcional { prUrl?, reason? }.
+  // Nao merge automatico — user aprova o revert PR no GitHub.
+  app.post<{ Params: { id: string }; Body: { prUrl?: string; reason?: string } }>(
+    "/api/tasks/:id/revert",
+    {
+      config: { rateLimit: { max: 5, timeWindow: "10 minutes" } },
+      schema: {
+        tags: ["task"],
+        summary: "Cria PR de revert do merge commit da task.",
+        params: {
+          type: "object",
+          properties: { id: { type: "string" } },
+          required: ["id"]
+        },
+        body: {
+          type: "object",
+          properties: {
+            prUrl: { type: "string" },
+            reason: { type: "string" }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const body = request.body ?? {};
+      if (!ObjectId.isValid(id)) {
+        reply.status(400).send({ errorMessage: "ID invalido." });
+        return;
+      }
+      const { revertTask } = await import("../services/rollback.js");
+      try {
+        const result = await revertTask({
+          taskId: id,
+          prUrl: body.prUrl,
+          reason: body.reason
+        });
+        if (!result.ok) {
+          // Map razoes -> HTTP code
+          const statusMap: Record<string, number> = {
+            invalid_task_id: 400,
+            task_not_found: 404,
+            task_has_no_pr: 400,
+            task_has_multiple_prs_specify_prUrl: 400,
+            pr_url_not_in_task: 400,
+            pr_url_unparseable: 400,
+            repo_credentials_not_found: 400,
+            decrypt_failed: 500,
+            github_api_failed: 502,
+            pr_not_merged: 409
+          };
+          const status = statusMap[result.reason ?? ""] ?? 500;
+          reply.status(status).send({ errorMessage: result.reason ?? "unknown_error" });
+          return;
+        }
+        reply.send(result);
+      } catch (err) {
+        console.error("[revert] failed:", err);
+        reply.status(500).send({
+          errorMessage: err instanceof Error ? err.message : "Falha desconhecida no revert."
+        });
+      }
+    }
+  );
+
+  // POST /api/tasks/:id/approve-plan
+  // Resume task awaiting_approval: re-roda executeTask com presetSubtasks
+  // (pula planner+validator). Github/Trello sao re-resolvidos do projectId.
+  app.post<{ Params: { id: string } }>(
+    "/api/tasks/:id/approve-plan",
+    {
+      config: { rateLimit: { max: 10, timeWindow: "5 minutes" } },
+      schema: {
+        tags: ["task"],
+        summary: "Aprova plano pendente e dispara execucao das subtasks.",
+        params: {
+          type: "object",
+          properties: { id: { type: "string" } },
+          required: ["id"]
+        }
+      }
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      if (!ObjectId.isValid(id)) {
+        reply.status(400).send({ errorMessage: "ID invalido." });
+        return;
+      }
+
+      const col = await getTasksCollection();
+      const task = await col.findOne({ _id: new ObjectId(id) });
+      if (!task) {
+        reply.status(404).send({ errorMessage: "Tarefa nao encontrada." });
+        return;
+      }
+      if (task.status !== "awaiting_approval" || !task.pendingPlanApproval) {
+        reply.status(409).send({ errorMessage: `Tarefa nao esta aguardando aprovacao (status=${task.status}).` });
+        return;
+      }
+      if (task.pendingPlanApproval.expiresAt && new Date(task.pendingPlanApproval.expiresAt) < new Date()) {
+        await col.updateOne(
+          { _id: task._id },
+          { $set: { status: "cancelled", error: "plan_approval_expired", updatedAt: new Date() } }
+        );
+        reply.status(410).send({ errorMessage: "Plano expirou e foi cancelado." });
+        return;
+      }
+
+      // Re-resolve options a partir do projectId persistido
+      const presetSubtasks = task.pendingPlanApproval.subtasks;
+      const projectId = task.projectId;
+
+      // Limpa pendingPlanApproval e marca status=planning (re-entrara em executing pelo pipeline)
+      await col.updateOne(
+        { _id: task._id },
+        {
+          $set: { status: "planning", updatedAt: new Date(), heartbeatAt: new Date() },
+          $unset: { pendingPlanApproval: "" }
+        }
+      );
+
+      // Recupera options via projectOptionsResolver
+      let github: GithubRepoConfig[] | undefined;
+      let trello: { boardId: string; listId?: string; doneListId?: string } | undefined;
+      if (projectId) {
+        const resolved = await resolveProjectOptions(projectId);
+        if (resolved) {
+          github = resolved.github;
+          trello = resolved.trello;
+        }
+      }
+
+      // G6: passa existingTaskId pra executeTask reusar o mesmo doc Mongo
+      // (antes criava task duplicada — UX e metricas confusas).
+      const opts: TaskExecuteOptions = {
+        userId: task.userId,
+        projectId,
+        language: task.language,
+        github,
+        trello,
+        existingTaskId: task._id!.toString(),
+        presetSubtasks: presetSubtasks.map(s => ({
+          id: s.id,
+          type: s.type,
+          description: s.description,
+          priority: s.priority,
+          dependsOn: s.dependsOn,
+          repo: s.repo
+        }))
+      };
+      void executeTask(task.description, opts).catch(err => {
+        console.error("[approve-plan] executeTask failed:", err);
+      });
+
+      reply.status(202).send({ ok: true, message: "Plano aprovado, execucao disparada", subtaskCount: presetSubtasks.length });
+    }
+  );
+
+  // POST /api/tasks/:id/reject-plan
+  // Marca task como cancelled. Body opcional { reason: string } pra audit.
+  app.post<{ Params: { id: string }; Body: { reason?: string } }>(
+    "/api/tasks/:id/reject-plan",
+    {
+      config: { rateLimit: { max: 10, timeWindow: "5 minutes" } },
+      schema: {
+        tags: ["task"],
+        summary: "Rejeita plano pendente e cancela a tarefa.",
+        params: {
+          type: "object",
+          properties: { id: { type: "string" } },
+          required: ["id"]
+        }
+      }
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const reason = isNonEmptyString(request.body?.reason) ? request.body.reason : "rejected_by_user";
+      if (!ObjectId.isValid(id)) {
+        reply.status(400).send({ errorMessage: "ID invalido." });
+        return;
+      }
+      const col = await getTasksCollection();
+      const result = await col.updateOne(
+        { _id: new ObjectId(id), status: "awaiting_approval" },
+        {
+          $set: {
+            status: "cancelled",
+            error: `plan_rejected: ${reason}`,
+            completedAt: new Date(),
+            updatedAt: new Date()
+          },
+          $unset: { pendingPlanApproval: "" }
+        }
+      );
+      if (result.matchedCount === 0) {
+        reply.status(404).send({ errorMessage: "Tarefa nao encontrada ou nao esta aguardando aprovacao." });
+        return;
+      }
+      reply.send({ ok: true });
     }
   );
 }

@@ -489,6 +489,17 @@ export const api = {
     return request(`/tasks/${taskId}/subtasks/${encodeURIComponent(subId)}/retry`, { method: 'POST' })
   },
 
+  async approveTaskPlan(taskId: string): Promise<{ ok: boolean; message?: string; subtaskCount?: number }> {
+    return request(`/tasks/${taskId}/approve-plan`, { method: 'POST' })
+  },
+
+  async rejectTaskPlan(taskId: string, reason?: string): Promise<{ ok: boolean }> {
+    return request(`/tasks/${taskId}/reject-plan`, {
+      method: 'POST',
+      body: JSON.stringify({ reason })
+    })
+  },
+
   // Preview deploys
   async startPreview(taskId: string): Promise<{
     taskId: string
@@ -526,5 +537,47 @@ export const api = {
     if (days !== 30) params.set('days', String(days))
     const qs = params.toString()
     return request(`/stats${qs ? `?${qs}` : ''}`)
+  },
+
+  // ── Routing (model/provider per subtask) ──
+  async getRoutingRules(): Promise<{ rules: RoutingRule[] }> {
+    return request('/settings/routing-rules')
+  },
+
+  async saveRoutingRules(rules: RoutingRule[]): Promise<{ ok: boolean; count: number }> {
+    return request('/settings/routing-rules', {
+      method: 'PUT',
+      body: JSON.stringify({ rules })
+    })
+  },
+
+  async testRoutingRule(input: {
+    agent: 'taskCode' | 'taskPlanner' | 'taskReviewer' | 'taskReporter'
+    type?: 'trello' | 'github' | 'api' | 'custom'
+    description?: string
+    repo?: string
+  }): Promise<{ route: { provider: string; model: string; grpcUrl?: string; reason: string } }> {
+    return request('/settings/routing-rules/test', {
+      method: 'POST',
+      body: JSON.stringify(input)
+    })
+  },
+
+  async getProvidersHealth(): Promise<Record<string, { url: string; status: 'ok' | 'down' }>> {
+    return request('/settings/openclaude-providers/health')
   }
+}
+
+// ── Routing types (mirror do backend) ──
+export type ProviderName = 'anthropic' | 'codex' | 'deepseek'
+export type AgentSlot = 'taskCode' | 'taskPlanner' | 'taskReviewer' | 'taskReporter'
+export type RoutingRule = {
+  priority: number
+  agent: AgentSlot | 'any'
+  when?: {
+    type?: 'trello' | 'github' | 'api' | 'custom'
+    descriptionMatches?: string
+    repoMatches?: string
+  }
+  route: { provider: ProviderName; model: string }
 }

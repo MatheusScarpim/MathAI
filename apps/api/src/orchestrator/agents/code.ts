@@ -1,6 +1,7 @@
 import { runOpenClaude, type OpenClaudeEvent } from "../integrations/openclaude.js";
 import { getAgentsConfig } from "../../core/agentConfig.js";
 import { config } from "../../core/config.js";
+import type { Route } from "../routing/types.js";
 
 // ============== TYPES ==============
 
@@ -174,14 +175,26 @@ export const generateCodeChanges = async (
   workspacePath: string,
   language: "pt" | "en" | "es" = "pt",
   onEvent?: (event: CodeAgentEvent) => void,
-  codeOpts?: CodeAgentOptions
+  codeOpts?: CodeAgentOptions,
+  route?: Route,
+  /** Bloco de project context (stack, convencoes) ja formatado. Opcional. */
+  projectContextText?: string
 ): Promise<CodeGenerationResult> => {
+  // Route (when provided by the pipeline) selects gRPC endpoint + model.
+  // Falls back to agentsConfig.taskCode.model when no route is passed.
   const agentsCfg = await getAgentsConfig();
   const cfg = agentsCfg.taskCode;
-  const model = cfg?.model || config.openclaude.defaultModel || undefined;
+  const model = route?.model || cfg?.model || config.openclaude.defaultModel || undefined;
+  const grpcUrl = route?.grpcUrl;
 
   const opts = codeOpts ?? { branchName: "mathai/auto", taskDescription: description };
-  const prompt = buildPrompt(description, opts, language);
+  const basePrompt = buildPrompt(description, opts, language);
+  // Project context vai NO COMECO do prompt: o agent le antes de explorar o
+  // repo, ja sabendo stack/convencoes. Reduz tempo de descoberta e evita
+  // padroes inconsistentes com o resto da base.
+  const prompt = projectContextText
+    ? `${projectContextText}\n\n---\n\n${basePrompt}`
+    : basePrompt;
 
   if (shouldLogPrompts()) {
     console.info(`[prompt-log] codeAgent | model=${model ?? "default"} | workspace=${workspacePath}`);
@@ -193,6 +206,7 @@ export const generateCodeChanges = async (
   const result = await runOpenClaude(prompt, {
     workingDirectory: workspacePath,
     model,
+    grpcUrl,
     autoApprove: true,
     onEvent: (event) => {
       // Track tool calls to extract changes
@@ -271,8 +285,15 @@ export const generateCodeChanges = async (
         // pra nao poluir o PR body.
         const matches = cmd.match(ABS_PATH_RE);
         if (matches) {
+          // Devices Unix legitimos pra descarte/streaming — `cmd > /dev/null`
+          // e padrao pra silenciar saida, NAO uma tentativa de escrever fora
+          // do worktree. Sem essa excecao, escape filter ataca falso positivo.
+          const EPHEMERAL_DEVICES = new Set([
+            "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/zero", "/dev/tty"
+          ]);
           for (const file of matches) {
             if (file.startsWith(workspacePath)) continue;
+            if (EPHEMERAL_DEVICES.has(file)) continue;
             changes.push({ file, action: "edit", content: "[bash-side write outside workspace]" });
           }
         }

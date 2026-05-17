@@ -83,6 +83,83 @@ const ensureInboxId = async (userId?: string): Promise<string> => {
   return insertedId.toString();
 };
 
+// ── Background helpers (G5/G8) ────────────────────────────────────────────────
+
+/**
+ * G8 — dispara introspect (inferDecisions + detectStack) em background.
+ * Replica a logica do endpoint POST /:id/introspect sem o response cycle.
+ * Best-effort; loga e ignora falhas (rede/token).
+ */
+const runIntrospectInBackground = async (projectId: string): Promise<void> => {
+  if (!ObjectId.isValid(projectId)) return;
+  const projectsCol = await getProjectsCollection();
+  const project = await projectsCol.findOne({ _id: new ObjectId(projectId) });
+  if (!project?.repoIds?.length) return;
+
+  const { getGithubReposCollection } = await import("../core/mongo.js");
+  const { decryptToken } = await import("../core/repoCrypto.js");
+  const { ensureBaseRepo } = await import("../orchestrator/integrations/github.js");
+  const { inferDecisionsFromWorktree } = await import("../orchestrator/memory/projectDecisions.js");
+  const { detectStack } = await import("../orchestrator/context/stackDetector.js");
+
+  const reposCol = await getGithubReposCollection();
+  const validIds = project.repoIds.filter(r => ObjectId.isValid(r));
+  const repos = await reposCol.find({ _id: { $in: validIds.map(r => new ObjectId(r)) } }).toArray();
+  const primary = repos[0];
+  if (!primary) return;
+  const repoKey = `${primary.owner}/${primary.repo}`;
+  let token: string;
+  try {
+    token = decryptToken(primary.encryptedToken, primary.iv);
+  } catch {
+    return;
+  }
+  const basePath = await ensureBaseRepo(primary.owner, primary.repo, token);
+  const [decisions, stack] = await Promise.all([
+    inferDecisionsFromWorktree(basePath, repoKey),
+    detectStack(basePath)
+  ]);
+  await projectsCol.updateOne(
+    { _id: project._id },
+    {
+      $set: {
+        stack: {
+          primary: stack.primary,
+          frameworks: stack.frameworks,
+          hasUI: stack.hasUI,
+          detectedAt: new Date()
+        },
+        updatedAt: new Date()
+      }
+    }
+  );
+  console.info(`[projects] background introspect done for ${projectId}: ${decisions.inferred} decisions, stack=${stack.primary}`);
+};
+
+/**
+ * G5 — registra webhook Trello apontando para o callback publico do orchestrator.
+ * Idempotente: setupTrelloWebhook ja checa existencia. Resolve callbackUrl via
+ * PUBLIC_API_URL env (fallback para config.publicBaseUrl se setado no future).
+ */
+const setupTrelloWebhookInBackground = async (
+  projectId: string,
+  boardId: string
+): Promise<void> => {
+  const publicBase = (process.env.PUBLIC_API_URL || process.env.APP_PUBLIC_URL || "").replace(/\/+$/, "");
+  if (!publicBase) {
+    console.warn(`[projects] PUBLIC_API_URL not set — pulando trello webhook setup para project=${projectId}`);
+    return;
+  }
+  const callbackUrl = `${publicBase}/api/webhooks/trello`;
+  const { setupTrelloWebhook } = await import("../orchestrator/integrations/trello.js");
+  const result = await setupTrelloWebhook(boardId, callbackUrl);
+  if (result.ok) {
+    console.info(`[projects] trello webhook project=${projectId} board=${boardId}: ${result.created ? "criado" : "ja existia"} (${result.webhookId})`);
+  } else {
+    console.warn(`[projects] trello webhook setup falhou project=${projectId}: ${result.reason}`);
+  }
+};
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 export default async function projectsRoutes(app: FastifyInstance) {
@@ -201,6 +278,19 @@ export default async function projectsRoutes(app: FastifyInstance) {
         updatedAt: now
       };
       const { insertedId } = await col.insertOne(doc);
+      // G8: auto-introspect fire-and-forget quando ha repo configurado.
+      // Inferencia roda em background; planner pega na proxima task.
+      if (doc.repoIds && doc.repoIds.length > 0) {
+        void runIntrospectInBackground(insertedId.toString()).catch(err => {
+          console.warn(`[projects] auto-introspect failed for ${insertedId}:`, err);
+        });
+      }
+      // G5: auto-setup Trello webhook idempotente quando board configurado.
+      if (doc.trelloBoardId) {
+        void setupTrelloWebhookInBackground(insertedId.toString(), doc.trelloBoardId).catch(err => {
+          console.warn(`[projects] trello webhook setup failed for ${insertedId}:`, err);
+        });
+      }
       reply.status(201).send(toView({ ...doc, _id: insertedId }));
     }
   );
@@ -297,6 +387,18 @@ export default async function projectsRoutes(app: FastifyInstance) {
       if (Object.keys(unset).length > 0) updateOps.$unset = unset;
       await col.updateOne({ _id: new ObjectId(id) }, updateOps);
       const fresh = await col.findOne({ _id: new ObjectId(id) });
+      // G8: se repoIds mudou, re-introspect (decisoes podem ter mudado)
+      if (body.repoIds !== undefined && fresh?.repoIds && fresh.repoIds.length > 0) {
+        void runIntrospectInBackground(id).catch(err => {
+          console.warn(`[projects] re-introspect after PATCH failed for ${id}:`, err);
+        });
+      }
+      // G5: se trelloBoardId mudou (e nao foi unset), setup webhook idempotente.
+      if (body.trelloBoardId !== undefined && fresh?.trelloBoardId) {
+        void setupTrelloWebhookInBackground(id, fresh.trelloBoardId).catch(err => {
+          console.warn(`[projects] trello webhook setup after PATCH failed for ${id}:`, err);
+        });
+      }
       reply.send(toView(fresh!));
     }
   );
@@ -400,6 +502,183 @@ export default async function projectsRoutes(app: FastifyInstance) {
           errorMessage: err instanceof Error ? err.message : "Falha desconhecida no setup-preview."
         });
       }
+    }
+  );
+
+  // ============== Project Decisions (#4 plan W4) ==============
+
+  // GET /api/projects/:id/decisions — lista decisoes do primary repo do projeto
+  app.get<{ Params: { id: string } }>(
+    "/api/projects/:id/decisions",
+    {
+      schema: {
+        tags: ["projects"],
+        summary: "Lista decisoes arquiteturais persistidas do projeto.",
+        params: {
+          type: "object",
+          properties: { id: { type: "string" } },
+          required: ["id"]
+        }
+      }
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      if (!ObjectId.isValid(id)) {
+        reply.status(400).send({ errorMessage: "ID invalido." });
+        return;
+      }
+      const projectsCol = await getProjectsCollection();
+      const project = await projectsCol.findOne({ _id: new ObjectId(id) });
+      if (!project) {
+        reply.status(404).send({ errorMessage: "Projeto nao encontrado." });
+        return;
+      }
+
+      const { getGithubReposCollection } = await import("../core/mongo.js");
+      const reposCol = await getGithubReposCollection();
+      const repoIds = (project.repoIds ?? []).filter(r => ObjectId.isValid(r));
+      const repos = await reposCol.find({ _id: { $in: repoIds.map(r => new ObjectId(r)) } }).toArray();
+      const primary = repos[0];
+      if (!primary) {
+        reply.send({ decisions: [], repoKey: null });
+        return;
+      }
+      const repoKey = `${primary.owner}/${primary.repo}`;
+      const { getProjectDecisions } = await import("../orchestrator/memory/projectDecisions.js");
+      const decisions = await getProjectDecisions(repoKey);
+      reply.send({ repoKey, decisions });
+    }
+  );
+
+  // POST /api/projects/:id/decisions — registra decisao manual
+  app.post<{ Params: { id: string }; Body: { key: string; value: string } }>(
+    "/api/projects/:id/decisions",
+    {
+      schema: {
+        tags: ["projects"],
+        summary: "Registra decisao arquitetural manual.",
+        params: {
+          type: "object",
+          properties: { id: { type: "string" } },
+          required: ["id"]
+        },
+        body: {
+          type: "object",
+          properties: {
+            key: { type: "string" },
+            value: { type: "string" }
+          },
+          required: ["key", "value"]
+        }
+      }
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const { key, value } = request.body;
+      if (!ObjectId.isValid(id)) {
+        reply.status(400).send({ errorMessage: "ID invalido." });
+        return;
+      }
+      if (!isNonEmptyString(key) || !isNonEmptyString(value)) {
+        reply.status(400).send({ errorMessage: "key e value obrigatorios." });
+        return;
+      }
+      const projectsCol = await getProjectsCollection();
+      const project = await projectsCol.findOne({ _id: new ObjectId(id) });
+      if (!project) {
+        reply.status(404).send({ errorMessage: "Projeto nao encontrado." });
+        return;
+      }
+      const { getGithubReposCollection } = await import("../core/mongo.js");
+      const reposCol = await getGithubReposCollection();
+      const repoIds = (project.repoIds ?? []).filter(r => ObjectId.isValid(r));
+      const repos = await reposCol.find({ _id: { $in: repoIds.map(r => new ObjectId(r)) } }).toArray();
+      const primary = repos[0];
+      if (!primary) {
+        reply.status(400).send({ errorMessage: "Projeto sem repo configurado." });
+        return;
+      }
+      const repoKey = `${primary.owner}/${primary.repo}`;
+      const { setProjectDecision } = await import("../orchestrator/memory/projectDecisions.js");
+      await setProjectDecision(repoKey, key, value, "manual");
+      reply.send({ ok: true, repoKey, key, value });
+    }
+  );
+
+  // POST /api/projects/:id/introspect — dispara inferencia das decisoes
+  app.post<{ Params: { id: string } }>(
+    "/api/projects/:id/introspect",
+    {
+      schema: {
+        tags: ["projects"],
+        summary: "Inferencia automatica de decisoes arquiteturais a partir do package.json.",
+        params: {
+          type: "object",
+          properties: { id: { type: "string" } },
+          required: ["id"]
+        }
+      }
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      if (!ObjectId.isValid(id)) {
+        reply.status(400).send({ errorMessage: "ID invalido." });
+        return;
+      }
+      const projectsCol = await getProjectsCollection();
+      const project = await projectsCol.findOne({ _id: new ObjectId(id) });
+      if (!project) {
+        reply.status(404).send({ errorMessage: "Projeto nao encontrado." });
+        return;
+      }
+      const { getGithubReposCollection } = await import("../core/mongo.js");
+      const { decryptToken } = await import("../core/repoCrypto.js");
+      const { ensureBaseRepo } = await import("../orchestrator/integrations/github.js");
+      const { inferDecisionsFromWorktree } = await import("../orchestrator/memory/projectDecisions.js");
+      const { detectStack } = await import("../orchestrator/context/stackDetector.js");
+
+      const reposCol = await getGithubReposCollection();
+      const repoIds = (project.repoIds ?? []).filter(r => ObjectId.isValid(r));
+      const repos = await reposCol.find({ _id: { $in: repoIds.map(r => new ObjectId(r)) } }).toArray();
+      const primary = repos[0];
+      if (!primary) {
+        reply.status(400).send({ errorMessage: "Projeto sem repo configurado." });
+        return;
+      }
+      const repoKey = `${primary.owner}/${primary.repo}`;
+      let token: string;
+      try {
+        token = decryptToken(primary.encryptedToken, primary.iv);
+      } catch {
+        reply.status(500).send({ errorMessage: "Falha ao decriptar token." });
+        return;
+      }
+      const basePath = await ensureBaseRepo(primary.owner, primary.repo, token);
+      const [decisions, stack] = await Promise.all([
+        inferDecisionsFromWorktree(basePath, repoKey),
+        detectStack(basePath)
+      ]);
+      // Persiste stack no projeto tambem (#12)
+      await projectsCol.updateOne(
+        { _id: project._id },
+        {
+          $set: {
+            stack: {
+              primary: stack.primary,
+              frameworks: stack.frameworks,
+              hasUI: stack.hasUI,
+              detectedAt: new Date()
+            },
+            updatedAt: new Date()
+          }
+        }
+      );
+      reply.send({
+        ok: true,
+        repoKey,
+        inferred: decisions.inferred,
+        stack: { primary: stack.primary, frameworks: stack.frameworks, hasUI: stack.hasUI }
+      });
     }
   );
 }

@@ -26,6 +26,7 @@ import {
 } from "../core/mongo.js";
 import { resolveProjectOptions } from "../helpers/projectOptionsResolver.js";
 import { createWorktree } from "../orchestrator/integrations/github.js";
+import { detectStack } from "../orchestrator/context/stackDetector.js";
 import { config } from "../core/config.js";
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -96,12 +97,8 @@ export const startPreview = async (
   if (!opts) return { ok: false, reason: "projeto nao encontrado" };
 
   const { project, github } = opts;
-  if (!project.previewBuildCmd) {
-    return {
-      ok: false,
-      reason: `projeto "${project.name}" sem previewBuildCmd configurado`
-    };
-  }
+  // G3: previewBuildCmd nao eh mais hard requirement — resolvemos via stack
+  // detection apos criar o worktree (project.previewBuildCmd tem prioridade).
   if (!github || github.length === 0) {
     return { ok: false, reason: "projeto sem repos GitHub configurados" };
   }
@@ -220,6 +217,23 @@ export const startPreview = async (
     return { ok: false, reason };
   };
 
+  // G3: resolve previewBuildCmd — project tem prioridade, senao tenta stack detect.
+  let resolvedPreviewCmd = project.previewBuildCmd;
+  if (!resolvedPreviewCmd) {
+    try {
+      const stack = await detectStack(worktreePath);
+      if (stack.previewBuildCmd) {
+        resolvedPreviewCmd = stack.previewBuildCmd;
+        console.info(`[previewManager] usando stack.previewBuildCmd="${resolvedPreviewCmd}" (stack=${stack.primary})`);
+      }
+    } catch (err) {
+      console.warn(`[previewManager] detectStack falhou:`, err);
+    }
+  }
+  if (!resolvedPreviewCmd) {
+    return markFailed(`projeto "${project.name}" sem previewBuildCmd e stack detect nao resolveu`);
+  }
+
   // 8. Localiza o frontend dir + garante build:preview (injeta se faltar mas tem build).
   //    Comandos abaixo rodam dentro desse dir, nao no worktree root.
   const frontendDir = prepareFrontend(worktreePath, project.previewDistDir);
@@ -235,7 +249,7 @@ export const startPreview = async (
   //     Env VITE_ENABLE_MSW=true habilita MSW caso o bootstrap use esse flag
   //     em vez de import.meta.env.MODE === 'preview'.
   try {
-    await runShell(project.previewBuildCmd, frontendDir, BUILD_TIMEOUT_MS, {
+    await runShell(resolvedPreviewCmd, frontendDir, BUILD_TIMEOUT_MS, {
       VITE_ENABLE_MSW: "true",
       MODE: "preview"
     });

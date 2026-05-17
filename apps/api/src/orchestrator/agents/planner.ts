@@ -1,5 +1,6 @@
-import { getOpenAI } from "../../core/openai.js";
+import { getClient } from "../../core/openai.js";
 import { getAgentsConfig } from "../../core/agentConfig.js";
+import { selectRoute } from "../routing/router.js";
 import { withRetry } from "./withRetry.js";
 
 // ============== TYPES ==============
@@ -20,6 +21,28 @@ export type TaskPlannerContext = {
   existingCards?: { name: string }[];
   /** Lista de tipos de subtask disponiveis (baseado nas integracoes configuradas) */
   availableTypes?: string[];
+};
+
+/**
+ * Snapshot da tentativa anterior, alimentado pelo pipeline quando dispara replan.
+ * Permite o planner ajustar a estrategia sem repetir o que ja funcionou.
+ */
+export type PreviousAttempt = {
+  /** IDs de subtasks que completaram com sucesso — reaproveite no novo plano sem mudar. */
+  succeededSubtaskIds: string[];
+  /** Subtasks que falharam ou completaram mal — reformule/divida usando os errors abaixo. */
+  failedSubtasks: Array<{
+    id: string;
+    type: "trello" | "github" | "api" | "custom";
+    description: string;
+    /** Resumo do que deu errado (erro do agent, comments do reviewer, verdict do verifier). */
+    errorSummary: string;
+    /** Provider/model que falhou — evite (sem hard skip; eh soft bias). */
+    provider?: string;
+    repo?: string;
+  }>;
+  /** Providers a evitar (markProviderDown ja cuida de health; isto eh bias semantico). */
+  downedProviders?: string[];
 };
 
 export type TaskPlanResult = {
@@ -175,10 +198,72 @@ RESPONDE SIEMPRE en JSON valido:
 
 // ============== PLAN TASK ==============
 
+/**
+ * Formata um bloco [PREVIOUS ATTEMPT] que entra no user prompt quando o pipeline
+ * dispara replan. O planner deve usar isto pra: (a) reaproveitar IDs que ja
+ * funcionaram, (b) reformular os que falharam, (c) evitar providers semanticamente
+ * ruins. NUNCA fazemos hard-pin no plano novo — eh apenas guidance.
+ */
+const formatPreviousAttempt = (prev: PreviousAttempt, language: "pt" | "en" | "es"): string => {
+  const lines: string[] = [];
+  const header = language === "en"
+    ? "[PREVIOUS ATTEMPT — replan triggered]"
+    : language === "es"
+      ? "[INTENTO ANTERIOR — replan disparado]"
+      : "[TENTATIVA ANTERIOR — replan disparado]";
+  lines.push(header);
+
+  if (prev.succeededSubtaskIds.length > 0) {
+    const succLabel = language === "en"
+      ? "Already-succeeded subtask IDs (REUSE these IDs unchanged):"
+      : language === "es"
+        ? "IDs de subtareas ya exitosas (REUTILIZA estos IDs sin cambios):"
+        : "IDs de subtarefas ja completadas (REUTILIZE estes IDs sem mudar):";
+    lines.push(succLabel);
+    lines.push(`- ${prev.succeededSubtaskIds.join(", ")}`);
+  }
+
+  if (prev.failedSubtasks.length > 0) {
+    const failLabel = language === "en"
+      ? "Failed/poor subtasks (REPLACE or SPLIT using the error guidance):"
+      : language === "es"
+        ? "Subtareas fallidas o malas (REEMPLAZA o DIVIDE usando los errores):"
+        : "Subtarefas que falharam ou completaram mal (SUBSTITUA ou DIVIDA usando os erros):";
+    lines.push(failLabel);
+    for (const f of prev.failedSubtasks) {
+      lines.push(`- id=${f.id} type=${f.type}${f.repo ? ` repo=${f.repo}` : ""}${f.provider ? ` provider=${f.provider}` : ""}`);
+      lines.push(`  desc: ${f.description.slice(0, 300)}`);
+      lines.push(`  erro: ${f.errorSummary.slice(0, 500)}`);
+    }
+  }
+
+  if (prev.downedProviders && prev.downedProviders.length > 0) {
+    const dpLabel = language === "en"
+      ? "Providers that misbehaved last attempt (avoid if possible; soft bias):"
+      : language === "es"
+        ? "Providers que fallaron antes (evita si puedes; soft bias):"
+        : "Providers que falharam na tentativa anterior (evite quando possivel; soft bias):";
+    lines.push(dpLabel);
+    lines.push(`- ${prev.downedProviders.join(", ")}`);
+  }
+
+  const instr = language === "en"
+    ? "RULES: keep succeeded IDs verbatim. For each failed subtask, either rewrite the description with more concrete paths/steps, or split it into 2+ smaller subtasks. Do NOT just copy the failed description verbatim."
+    : language === "es"
+      ? "REGLAS: manten los IDs exitosos. Para cada subtarea fallida, reescribe con paths/pasos mas concretos o divide en 2+ subtareas menores. NO copies la descripcion fallida tal cual."
+      : "REGRAS: mantenha os IDs que ja completaram intactos. Para cada subtarefa que falhou, reescreva com paths/passos mais concretos ou divida em 2+ subtarefas menores. NAO copie a descricao falhada como esta.";
+  lines.push(instr);
+  return lines.join("\n");
+};
+
 export const planTask = async (
   description: string,
   context: TaskPlannerContext,
-  language: "pt" | "en" | "es" = "pt"
+  language: "pt" | "en" | "es" = "pt",
+  /** Bloco de project context (stack, convencoes) ja formatado. Opcional. */
+  projectContextText?: string,
+  /** Quando setado, planner roda em modo "replan" e usa snapshot da tentativa anterior. */
+  previousAttempt?: PreviousAttempt
 ): Promise<TaskPlanResult> => {
   const agentsCfg = await getAgentsConfig();
   const cfg = agentsCfg.taskPlanner;
@@ -187,10 +272,14 @@ export const planTask = async (
     return { subtasks: [] };
   }
 
-  const client = await getOpenAI();
-  const model = cfg?.model || "gpt-4o";
+  // Router chooses provider + model; agentsCfg.taskPlanner.model is the
+  // legacy fallback used inside the router when no rule matches.
+  const route = await selectRoute("taskPlanner", { description });
+  const client = getClient(route.provider);
+  const model = route.model || cfg?.model || "gpt-4o";
   const temperature = cfg?.temperature ?? 0;
-  const system = buildSystemPrompt(language, context.availableTypes);
+  const baseSystem = buildSystemPrompt(language, context.availableTypes);
+  const system = projectContextText ? `${baseSystem}\n\n${projectContextText}` : baseSystem;
 
   const contextParts: string[] = [];
   if (context.repos?.length) {
@@ -213,9 +302,14 @@ export const planTask = async (
     );
   }
 
+  const previousAttemptBlock = previousAttempt
+    ? `\n${formatPreviousAttempt(previousAttempt, language)}`
+    : "";
+
   const userPrompt = [
     `Task: ${description}`,
-    contextParts.length ? `\nContext:\n${contextParts.join("\n\n")}` : ""
+    contextParts.length ? `\nContext:\n${contextParts.join("\n\n")}` : "",
+    previousAttemptBlock
   ]
     .filter(Boolean)
     .join("\n");

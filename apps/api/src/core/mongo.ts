@@ -100,6 +100,84 @@ export const getSettingsCollection = async (): Promise<Collection<SettingRecord>
   return mongo.db(config.mongo.db).collection<SettingRecord>("settings");
 };
 
+export type ProjectLessonRecord = {
+  _id?: ObjectId;
+  /** Identificador estavel (ex: hash do title) — usado como Qdrant point id. */
+  lessonId: string;
+  /** Titulo curto da licao. */
+  title: string;
+  /** Corpo da licao em markdown. */
+  body: string;
+  /** Tags livres (ex: "whatsapp", "playwright"). Opcional. */
+  tags?: string[];
+  /** Escopo: "global" (qualquer projeto) ou repoKey "owner/repo" especifico. */
+  repoKey?: string;
+  /** Embedding em cache pra evitar re-embed. */
+  embedding?: number[];
+  /** Modelo do embedding (invalida cache quando muda). */
+  embeddingModel?: string;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export const getProjectLessonsCollection = async (): Promise<Collection<ProjectLessonRecord>> => {
+  const mongo = await getMongoClient();
+  return mongo.db(config.mongo.db).collection<ProjectLessonRecord>("project_lessons");
+};
+
+/* ── Project Decisions (#4 plan W4) ───────────────────────────────
+ * Decisoes arquiteturais persistentes por repo. Alimentadas por inferencia
+ * (package.json/stack) ou registro manual. Injetadas no planner system prompt.
+ */
+export type ProjectDecisionRecord = {
+  _id?: ObjectId;
+  /** "owner/repo" — chave de escopo. */
+  repoKey: string;
+  /** Categoria semantica (ex: "auth", "state-mgmt", "test-runner", "style", "primary-language"). */
+  key: string;
+  /** Valor humano-legivel (ex: "session-cookie", "pinia", "vitest", "tailwind"). */
+  value: string;
+  /** "inferred" (auto-deteccao), "manual" (registrado pelo user/agent). */
+  source: "inferred" | "manual";
+  /** 0-1, util pra ordenar exibicao quando varias decisoes competem. */
+  confidence?: number;
+  updatedAt: Date;
+};
+
+export const getProjectDecisionsCollection = async (): Promise<Collection<ProjectDecisionRecord>> => {
+  const mongo = await getMongoClient();
+  const col = mongo.db(config.mongo.db).collection<ProjectDecisionRecord>("project_decisions");
+  // Unico por (repoKey, key) — upserts substituem decisao previa
+  await col.createIndex({ repoKey: 1, key: 1 }, { unique: true }).catch(() => {});
+  return col;
+};
+
+/* ── Trello webhook events (#14 plan W5) ────────────────────────── */
+
+export type TrelloWebhookEventRecord = {
+  _id?: ObjectId;
+  /** Tipo do action (ex: "updateCard", "commentCard", "addLabelToCard"). */
+  actionType: string;
+  cardId: string;
+  /** TaskId se conseguiu correlacionar; senao undefined. */
+  taskId?: string;
+  /** Payload bruto (truncado pra evitar explosao de tamanho). */
+  raw?: unknown;
+  /** Acao aplicada ao TaskRecord ("cancelled" / "comment_added" / "priority_set" / "subtask_done" / "noop"). */
+  appliedAction: string;
+  /** TTL — 30d. */
+  receivedAt: Date;
+};
+
+export const getTrelloWebhookEventsCollection = async (): Promise<Collection<TrelloWebhookEventRecord>> => {
+  const mongo = await getMongoClient();
+  const col = mongo.db(config.mongo.db).collection<TrelloWebhookEventRecord>("trello_webhook_events");
+  // TTL 30d
+  await col.createIndex({ receivedAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 }).catch(() => {});
+  await col.createIndex({ cardId: 1 }).catch(() => {});
+  return col;
+};
+
 export const getProcessingJobsCollection = async (): Promise<Collection<ProcessingJobRecord>> => {
   const mongo = await getMongoClient();
   return mongo.db(config.mongo.db).collection<ProcessingJobRecord>("processing_jobs");
@@ -107,7 +185,7 @@ export const getProcessingJobsCollection = async (): Promise<Collection<Processi
 
 /* ── Task Orchestrator ──────────────────────────────────────────── */
 
-export type TaskStatus = "pending" | "planning" | "executing" | "completed" | "failed" | "cancelled";
+export type TaskStatus = "pending" | "planning" | "awaiting_approval" | "executing" | "completed" | "failed" | "cancelled";
 export type TaskStage = "planning" | "coding" | "reviewing" | "reporting" | "done";
 export type SubTaskType = "trello" | "github" | "api" | "custom";
 
@@ -129,6 +207,24 @@ export type SubTask = {
   resolvedBranch?: string;
   /** "owner/repo" — preenchido pelo pipeline antes de executar github subtasks */
   resolvedRepoKey?: string;
+  // ── Telemetria (#3 plan W1) ──
+  provider?: string;
+  model?: string;
+  tokensIn?: number;
+  tokensOut?: number;
+  costUsd?: number;
+  durationMs?: number;
+  // ── Replan-on-failure (#1 plan W2) ──
+  fromReplan?: boolean;
+  attemptHistory?: Array<{
+    round: number;
+    provider?: string;
+    model?: string;
+    errorSummary?: string;
+    emptyStream?: boolean;
+    runtimeVerdict?: "PASS" | "FAIL" | "PARTIAL";
+    timestamp: Date;
+  }>;
 };
 
 export type TaskRecord = {
@@ -151,6 +247,8 @@ export type TaskRecord = {
     reviewer?: { inputTokens: number; outputTokens: number; totalTokens: number };
     reporter?: { inputTokens: number; outputTokens: number; totalTokens: number };
     total: { inputTokens: number; outputTokens: number; totalTokens: number };
+    /** Breakdown por provider — preenchido pelo recordAgentCall ($inc atomico). */
+    byProvider?: Record<string, { tokensIn: number; tokensOut: number; costUsd: number }>;
   };
   createdAt: Date;
   updatedAt: Date;
@@ -159,6 +257,37 @@ export type TaskRecord = {
   branchByRepo?: Record<string, string>;
   /** Key da msg "🚀 Iniciando" enviada via WhatsApp — usada pra reagir nela em stage transitions. */
   whatsappStartMsgKey?: { id: string; remoteJid: string; fromMe: boolean };
+  /** Quantos replans ja foram disparados pra esta task. Hard cap = 1. */
+  replanCount?: number;
+  /** Atualizado a cada stage transition pelo pipeline. Boot scan usa pra detectar orfaos. */
+  heartbeatAt?: Date;
+  /** Prioridade no queue (#7). */
+  priority?: "low" | "normal" | "high";
+  /** Comments externos (ex: vindos de Trello webhook — #14). */
+  comments?: Array<{
+    source: "trello" | "manual";
+    text: string;
+    author?: string;
+    at: Date;
+  }>;
+  /** Quando status=="awaiting_approval", contem o plano gerado aguardando approve/reject. */
+  pendingPlanApproval?: {
+    subtasks: Array<{
+      id: string;
+      type: "trello" | "github" | "api" | "custom";
+      description: string;
+      priority: number;
+      dependsOn: string[];
+      repo?: string;
+    }>;
+    /** Trigger que disparou o gate: "manual" (flag explicita), "subtask_count" (>N), "estimated_cost". */
+    reason: "manual" | "subtask_count" | "estimated_cost";
+    /** Detalhe pra UI explicar (ex: "8 subtasks > 5 threshold"). */
+    detail?: string;
+    /** TTL — apos isto o gate expira e a task vira cancelled (gate-timeout). */
+    expiresAt: Date;
+    createdAt: Date;
+  };
 };
 
 export type TaskExecutionRecord = {
@@ -173,6 +302,12 @@ export type TaskExecutionRecord = {
   tokenUsage?: { inputTokens: number; outputTokens: number; totalTokens: number };
   elapsedMs: number;
   createdAt: Date;
+  // ── Telemetria (#3 plan W1) ──
+  provider?: string;
+  model?: string;
+  costUsd?: number;
+  /** Set por rollback (#9/G4) — alimenta reverted_rate em /api/metrics. */
+  reverted?: boolean;
 };
 
 export const getTasksCollection = async (): Promise<Collection<TaskRecord>> => {
@@ -228,6 +363,13 @@ export type ProjectRecord = {
   previewMocksDir?: string;
   /** Diretorio do build output. Ex: "frontend/dist". Default detectado. */
   previewDistDir?: string;
+  /** Stack detectada do repositorio primario (#12 plan W4). Atualizado on-demand. */
+  stack?: {
+    primary: "node" | "python" | "go" | "rust" | "unknown";
+    frameworks: string[];
+    hasUI: boolean;
+    detectedAt: Date;
+  };
   createdAt: Date;
   updatedAt: Date;
 };

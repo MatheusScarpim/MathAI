@@ -208,6 +208,125 @@
       </template>
     </section>
 
+    <section class="routing-section">
+      <div class="section-title-row">
+        <h2>Roteamento de Modelos</h2>
+        <button class="btn-secondary" :disabled="loadingRouting" @click="loadRoutingRules">
+          {{ loadingRouting ? 'Carregando...' : 'Recarregar' }}
+        </button>
+      </div>
+      <p class="section-description">
+        Regras determinísticas que escolhem qual provedor + modelo executa cada subtask.
+        Avaliadas em ordem de prioridade; a primeira que matchar vence.
+      </p>
+
+      <div class="providers-health">
+        <strong>Status do fleet:</strong>
+        <span v-for="(p, name) in providersHealth" :key="name" class="provider-pill" :class="`health-${p.status}`">
+          {{ p.status === 'ok' ? '🟢' : '🔴' }} {{ name }} <code>{{ p.url }}</code>
+        </span>
+        <span v-if="!providersHealth || !Object.keys(providersHealth).length" class="muted">
+          (não verificado — clique em "Recarregar")
+        </span>
+      </div>
+
+      <table v-if="routingRules.length" class="routing-table">
+        <thead>
+          <tr>
+            <th>Prio</th>
+            <th>Agent</th>
+            <th>Type</th>
+            <th>Description regex</th>
+            <th>Repo regex</th>
+            <th>Provider</th>
+            <th>Model</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(rule, i) in routingRules" :key="i">
+            <td><input type="number" v-model.number="rule.priority" class="prio-input" /></td>
+            <td>
+              <select v-model="rule.agent">
+                <option value="taskCode">taskCode</option>
+                <option value="taskPlanner">taskPlanner</option>
+                <option value="taskReviewer">taskReviewer</option>
+                <option value="taskReporter">taskReporter</option>
+                <option value="any">any</option>
+              </select>
+            </td>
+            <td>
+              <select v-model="rule.when!.type">
+                <option :value="undefined">(any)</option>
+                <option value="github">github</option>
+                <option value="api">api</option>
+                <option value="custom">custom</option>
+                <option value="trello">trello</option>
+              </select>
+            </td>
+            <td><input type="text" v-model="rule.when!.descriptionMatches" placeholder="(none)" /></td>
+            <td><input type="text" v-model="rule.when!.repoMatches" placeholder="(none)" /></td>
+            <td>
+              <select v-model="rule.route.provider">
+                <option value="anthropic">anthropic</option>
+                <option value="codex">codex</option>
+                <option value="deepseek">deepseek</option>
+              </select>
+            </td>
+            <td><input type="text" v-model="rule.route.model" /></td>
+            <td>
+              <button class="btn-link-danger" @click="removeRoutingRule(i)" title="Remover">✕</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="actions-row">
+        <button class="btn-secondary" @click="addRoutingRule">+ Adicionar regra</button>
+        <button class="btn-primary" :disabled="savingRouting" @click="saveRoutingRules">
+          {{ savingRouting ? 'Salvando...' : 'Salvar regras' }}
+        </button>
+        <button class="btn-secondary" @click="openTestRouting">Testar regra</button>
+      </div>
+
+      <div v-if="routingMessage" class="status-line" :class="routingMessageType">
+        {{ routingMessage }}
+      </div>
+
+      <div v-if="showRoutingTest" class="routing-test">
+        <h3>Simular roteamento</h3>
+        <div class="routing-test-grid">
+          <label>Agent
+            <select v-model="testInput.agent">
+              <option value="taskCode">taskCode</option>
+              <option value="taskPlanner">taskPlanner</option>
+              <option value="taskReviewer">taskReviewer</option>
+              <option value="taskReporter">taskReporter</option>
+            </select>
+          </label>
+          <label>Type
+            <select v-model="testInput.type">
+              <option :value="undefined">(none)</option>
+              <option value="github">github</option>
+              <option value="api">api</option>
+              <option value="custom">custom</option>
+            </select>
+          </label>
+          <label>Description
+            <input type="text" v-model="testInput.description" placeholder="atualizar Calculator.vue" />
+          </label>
+          <label>Repo
+            <input type="text" v-model="testInput.repo" placeholder="owner/repo" />
+          </label>
+        </div>
+        <div class="actions-row">
+          <button class="btn-primary" @click="runRoutingTest">Rodar</button>
+          <button class="btn-secondary" @click="showRoutingTest = false">Fechar</button>
+        </div>
+        <pre v-if="testResult" class="routing-test-result">{{ JSON.stringify(testResult, null, 2) }}</pre>
+      </div>
+    </section>
+
     <section class="auth-section">
       <div class="section-title-row">
         <h2>Autenticação</h2>
@@ -415,6 +534,7 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../services/api'
+import type { RoutingRule } from '../services/api'
 import { setToken } from '../services/auth'
 import type { AgentsConfig } from '../types'
 
@@ -778,12 +898,109 @@ async function refreshWhatsappStatus() {
   } catch { /* ignore — best-effort */ }
 }
 
+// ── Routing rules state ─────────────────────────────────────────────
+const routingRules = ref<RoutingRule[]>([])
+const loadingRouting = ref(false)
+const savingRouting = ref(false)
+const routingMessage = ref('')
+const routingMessageType = ref<'ok' | 'error'>('ok')
+const providersHealth = ref<Record<string, { url: string; status: 'ok' | 'down' }>>({})
+
+const showRoutingTest = ref(false)
+const testInput = ref<{ agent: 'taskCode' | 'taskPlanner' | 'taskReviewer' | 'taskReporter'; type?: 'trello' | 'github' | 'api' | 'custom'; description: string; repo: string }>({
+  agent: 'taskCode',
+  type: 'github',
+  description: '',
+  repo: ''
+})
+const testResult = ref<unknown>(null)
+
+const ensureWhen = (rule: RoutingRule): RoutingRule => {
+  if (!rule.when) rule.when = {}
+  return rule
+}
+
+const loadRoutingRules = async (): Promise<void> => {
+  loadingRouting.value = true
+  routingMessage.value = ''
+  try {
+    const [rulesResp, health] = await Promise.all([
+      api.getRoutingRules(),
+      api.getProvidersHealth().catch(() => ({}))
+    ])
+    routingRules.value = rulesResp.rules.map(ensureWhen)
+    providersHealth.value = health as Record<string, { url: string; status: 'ok' | 'down' }>
+  } catch (err) {
+    routingMessageType.value = 'error'
+    routingMessage.value = err instanceof Error ? err.message : 'Falha ao carregar regras'
+  } finally {
+    loadingRouting.value = false
+  }
+}
+
+const addRoutingRule = (): void => {
+  const maxPrio = routingRules.value.reduce((m, r) => Math.max(m, r.priority), 0)
+  routingRules.value.push({
+    priority: maxPrio + 10,
+    agent: 'taskCode',
+    when: { type: 'github' },
+    route: { provider: 'deepseek', model: 'deepseek-chat' }
+  })
+}
+
+const removeRoutingRule = (i: number): void => {
+  routingRules.value.splice(i, 1)
+}
+
+const saveRoutingRules = async (): Promise<void> => {
+  savingRouting.value = true
+  routingMessage.value = ''
+  try {
+    // Strip empty optional fields antes de enviar
+    const cleaned = routingRules.value.map(r => ({
+      priority: r.priority,
+      agent: r.agent,
+      when: r.when && (r.when.type || r.when.descriptionMatches || r.when.repoMatches)
+        ? {
+            ...(r.when.type ? { type: r.when.type } : {}),
+            ...(r.when.descriptionMatches ? { descriptionMatches: r.when.descriptionMatches } : {}),
+            ...(r.when.repoMatches ? { repoMatches: r.when.repoMatches } : {})
+          }
+        : undefined,
+      route: r.route
+    }))
+    const resp = await api.saveRoutingRules(cleaned as RoutingRule[])
+    routingMessageType.value = 'ok'
+    routingMessage.value = `Salvas ${resp.count} regras.`
+  } catch (err) {
+    routingMessageType.value = 'error'
+    routingMessage.value = err instanceof Error ? err.message : 'Falha ao salvar'
+  } finally {
+    savingRouting.value = false
+  }
+}
+
+const openTestRouting = (): void => {
+  showRoutingTest.value = true
+  testResult.value = null
+}
+
+const runRoutingTest = async (): Promise<void> => {
+  try {
+    const resp = await api.testRoutingRule(testInput.value)
+    testResult.value = resp.route
+  } catch (err) {
+    testResult.value = { error: err instanceof Error ? err.message : 'falha' }
+  }
+}
+
 let waPollTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
   void loadAgentsConfig()
   void loadAuthStatus()
   void loadIntegrations()
+  void loadRoutingRules()
   // Poll do status WA a cada 15s pra atualizar badge + counters sem refresh
   waPollTimer = setInterval(() => { void refreshWhatsappStatus() }, 15_000)
 })
@@ -1281,4 +1498,57 @@ onUnmounted(() => {
   font-size: .9rem;
 }
 .btn-link:hover { text-decoration: underline; }
+
+/* ── Routing section ─────────────────────────────────────────── */
+.routing-section { margin-top: 2rem; }
+.providers-health {
+  display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
+  background: var(--color-bg-secondary, #1a1a1a);
+  padding: .5rem .75rem; border-radius: 6px; font-size: .85rem; margin-bottom: 1rem;
+}
+.provider-pill {
+  display: inline-flex; gap: .3rem; align-items: center;
+  background: var(--color-bg-primary, #0f0f0f);
+  padding: .25rem .55rem; border-radius: 4px; font-size: .8rem;
+}
+.provider-pill code { font-size: .75rem; opacity: .7; }
+.provider-pill.health-down { border-left: 3px solid #ef4444; }
+.provider-pill.health-ok { border-left: 3px solid #10b981; }
+
+.routing-table {
+  width: 100%; border-collapse: collapse; font-size: .85rem; margin: .5rem 0 1rem;
+}
+.routing-table th, .routing-table td {
+  text-align: left; padding: .4rem .5rem;
+  border-bottom: 1px solid var(--color-border, #2a2a2a);
+  vertical-align: middle;
+}
+.routing-table input, .routing-table select {
+  width: 100%; box-sizing: border-box;
+  background: var(--color-bg-primary, #0f0f0f);
+  color: inherit; border: 1px solid var(--color-border, #2a2a2a);
+  padding: .25rem .4rem; border-radius: 4px; font-size: .8rem;
+}
+.routing-table .prio-input { width: 4rem; }
+.btn-link-danger {
+  background: transparent; color: #ef4444; border: none; cursor: pointer; font-size: 1rem;
+}
+.routing-test {
+  margin-top: 1rem; padding: 1rem;
+  background: var(--color-bg-secondary, #1a1a1a); border-radius: 6px;
+}
+.routing-test h3 { margin-top: 0; }
+.routing-test-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: .5rem 1rem;
+  margin-bottom: .75rem;
+}
+.routing-test-grid label { display: flex; flex-direction: column; gap: .2rem; font-size: .8rem; }
+.routing-test-result {
+  background: var(--color-bg-primary, #0f0f0f); padding: .75rem; border-radius: 4px;
+  margin-top: .75rem; font-size: .8rem; overflow-x: auto;
+}
+.muted { opacity: .6; font-style: italic; font-size: .85rem; }
+.status-line { margin: .5rem 0; font-size: .85rem; }
+.status-line.ok { color: #10b981; }
+.status-line.error { color: #ef4444; }
 </style>

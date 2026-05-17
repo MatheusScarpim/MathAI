@@ -45,6 +45,13 @@ export const config = {
   openclaude: {
     grpcUrl: process.env.OPENCLAUDE_GRPC_URL ?? "openclaude:50051",
     defaultModel: process.env.OPENCLAUDE_MODEL ?? "",
-    provider: process.env.OPENCLAUDE_PROVIDER ?? "openai"
+    provider: process.env.OPENCLAUDE_PROVIDER ?? "openai",
+    // Multi-provider gRPC endpoints (router uses these). Fall back to defaults
+    // matching docker-compose service names + ports.
+    providers: {
+      anthropic: process.env.OPENCLAUDE_GRPC_URL_ANTHROPIC ?? "openclaude-anthropic:50051",
+      codex: process.env.OPENCLAUDE_GRPC_URL_CODEX ?? "openclaude-codex:50051",
+      deepseek: process.env.OPENCLAUDE_GRPC_URL_DEEPSEEK ?? "openclaude-deepseek:50051"
+    } as Record<"anthropic" | "codex" | "deepseek", string>
   }
 };

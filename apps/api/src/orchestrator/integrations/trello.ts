@@ -215,3 +215,39 @@ export const createWebhook = (
 
 export const deleteWebhook = (webhookId: string): Promise<void> =>
   trelloFetch("DELETE", `/webhooks/${webhookId}`);
+
+/**
+ * G5 — lista webhooks existentes do token corrente. Trello so retorna webhooks
+ * criados com este apiToken (escopo natural), entao basta filtrar por idModel.
+ */
+export const listWebhooksForToken = async (): Promise<TrelloWebhook[]> => {
+  const { apiToken } = await getTrelloCredentials();
+  if (!apiToken) return [];
+  // Endpoint: /tokens/{token}/webhooks
+  return trelloFetch<TrelloWebhook[]>("GET", `/tokens/${apiToken}/webhooks`);
+};
+
+/**
+ * G5 — setup idempotente. Cria webhook se ainda nao existir pra (boardId, callbackUrl).
+ * Retorna {created, webhookId, skippedReason}. Nunca lanca — pra fire-and-forget.
+ */
+export const setupTrelloWebhook = async (
+  boardId: string,
+  callbackUrl: string
+): Promise<{ ok: boolean; created: boolean; webhookId?: string; reason?: string }> => {
+  if (!boardId || !callbackUrl) {
+    return { ok: false, created: false, reason: "boardId_or_callbackUrl_missing" };
+  }
+  try {
+    const existing = await listWebhooksForToken();
+    const match = existing.find(w => w.idModel === boardId && w.callbackURL === callbackUrl);
+    if (match) {
+      return { ok: true, created: false, webhookId: match.id, reason: "already_exists" };
+    }
+    const wh = await createWebhook(boardId, callbackUrl, `mathai-orchestrator board=${boardId}`);
+    return { ok: true, created: true, webhookId: wh.id };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, created: false, reason: msg.slice(0, 200) };
+  }
+};

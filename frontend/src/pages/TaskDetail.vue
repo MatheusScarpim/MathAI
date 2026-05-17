@@ -51,6 +51,17 @@
         <div v-if="canCancel" class="hero-actions">
           <button class="btn-danger" @click="cancel">Cancelar execução</button>
         </div>
+        <div v-if="canRevert" class="hero-actions">
+          <button class="btn-revert" :disabled="reverting" @click="onRevert" title="Cria PR de revert do merge commit no GitHub (não merge automaticamente)">
+            <span v-if="reverting" class="spinner-sm"></span>
+            ⎌ {{ reverting ? 'Criando revert PR...' : 'Reverter task' }}
+          </button>
+          <span v-if="revertResultUrl" class="revert-ok">
+            Revert PR criado:
+            <a :href="revertResultUrl" target="_blank" rel="noopener">{{ revertResultUrl }}</a>
+          </span>
+          <span v-if="revertError" class="revert-err">⚠️ {{ revertError }}</span>
+        </div>
 
         <!-- Preview deploy -->
         <div v-if="canPreview" class="hero-actions preview-actions">
@@ -80,6 +91,41 @@
           ⚠️ {{ preview.errorMessage }}
         </p>
       </header>
+
+      <!-- Plan approval gate (#10) -->
+      <section v-if="task.status === 'awaiting_approval' && task.pendingPlanApproval" class="approval-banner card-section">
+        <div class="ab-head">
+          <span class="ab-icon">⏸</span>
+          <div>
+            <h2>Plano aguardando aprovação</h2>
+            <p class="ab-reason">
+              <strong>Motivo:</strong> {{ approvalReasonLabel(task.pendingPlanApproval.reason) }}
+              <span v-if="task.pendingPlanApproval.detail" class="dim"> · {{ task.pendingPlanApproval.detail }}</span>
+            </p>
+          </div>
+        </div>
+        <ul class="ab-subtasks">
+          <li v-for="(s, i) in task.pendingPlanApproval.subtasks" :key="s.id">
+            <span class="ab-i">{{ i + 1 }}.</span>
+            <span class="ab-type" :class="s.type">{{ s.type }}</span>
+            <span v-if="s.repo" class="ab-repo">{{ s.repo }}</span>
+            <span class="ab-desc">{{ s.description }}</span>
+          </li>
+        </ul>
+        <div class="ab-actions">
+          <button class="btn-approve" :disabled="approving || rejecting" @click="onApprove">
+            <span v-if="approving" class="spinner-sm"></span>
+            ✓ Aprovar e executar
+          </button>
+          <button class="btn-reject" :disabled="approving || rejecting" @click="onReject">
+            <span v-if="rejecting" class="spinner-sm"></span>
+            ✕ Rejeitar
+          </button>
+          <span v-if="task.pendingPlanApproval.expiresAt" class="ab-ttl">
+            expira em {{ approvalTTL }}
+          </span>
+        </div>
+      </section>
 
       <!-- Timeline -->
       <section class="card-section">
@@ -116,6 +162,17 @@
                 <span class="tl-time">{{ formatTimestamp(sub.startedAt) || '—' }}</span>
                 <span class="tl-id">{{ sub.id }}</span>
                 <span class="tl-type" :class="sub.type">{{ sub.type }}</span>
+                <span v-if="sub.fromReplan" class="tl-replan" title="Subtask gerada por replan (tentativa anterior falhou)">REPLAN</span>
+                <span
+                  v-if="runtimeVerdict(sub)"
+                  class="tl-verdict"
+                  :class="`v-${runtimeVerdict(sub)!.toLowerCase()}`"
+                  :title="runtimeVerdictTitle(sub)"
+                >
+                  {{ runtimeVerdict(sub) }}
+                </span>
+                <span v-if="sub.provider" class="tl-provider" :title="sub.model ?? ''">{{ sub.provider }}</span>
+                <span v-if="sub.costUsd && sub.costUsd > 0" class="tl-cost">${{ formatCost(sub.costUsd) }}</span>
                 <span class="tl-title">{{ sub.description }}</span>
                 <span class="tl-spacer"></span>
                 <span v-if="sub.startedAt && sub.completedAt" class="tl-dur">
@@ -127,6 +184,20 @@
                 <strong>Erro:</strong> {{ sub.error }}
                 <span v-if="sub.retryCount" class="dim"> · retry {{ sub.retryCount }}/{{ sub.maxRetries ?? '?' }}</span>
               </div>
+              <details v-if="sub.result?.runtimeVerification?.evidence?.length" class="tl-verifier">
+                <summary>
+                  Runtime verifier:
+                  <span :class="`v-${sub.result.runtimeVerification.verdict.toLowerCase()}`">
+                    {{ sub.result.runtimeVerification.verdict }}
+                  </span>
+                  · {{ sub.result.runtimeVerification.evidence.length }} evidência(s)
+                </summary>
+                <ul class="tl-evidence">
+                  <li v-for="(ev, i) in sub.result.runtimeVerification.evidence" :key="i">
+                    <span class="ev-kind">[{{ ev.kind }}]</span> {{ ev.summary }}
+                  </li>
+                </ul>
+              </details>
               <div v-if="(sub.status === 'failed' || sub.status === 'cancelled') && sub.type === 'github'" class="tl-retry-row">
                 <button
                   class="btn-retry"
@@ -222,6 +293,42 @@
         </table>
       </section>
 
+      <!-- Custos e provedores (#3 plan W1) -->
+      <section v-if="costRows.length" class="card-section">
+        <h2>Custos e provedores</h2>
+        <table class="tokens-table">
+          <thead>
+            <tr>
+              <th>Provider</th>
+              <th class="num">Tokens In</th>
+              <th class="num">Tokens Out</th>
+              <th class="num">Custo (USD)</th>
+              <th class="bar-col"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in costRows" :key="row.provider">
+              <td class="t-agent">{{ row.provider }}</td>
+              <td class="num">{{ formatNumber(row.tokensIn) }}</td>
+              <td class="num">{{ formatNumber(row.tokensOut) }}</td>
+              <td class="num t-total">${{ formatCost(row.costUsd) }}</td>
+              <td class="bar-col">
+                <div class="mini-bar"><div class="fill" :style="{ width: row.pct + '%' }"></div></div>
+              </td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr>
+              <th>Total</th>
+              <th class="num">{{ formatNumber(totalCosts.tokensIn) }}</th>
+              <th class="num">{{ formatNumber(totalCosts.tokensOut) }}</th>
+              <th class="num">${{ formatCost(totalCosts.costUsd) }}</th>
+              <th></th>
+            </tr>
+          </tfoot>
+        </table>
+      </section>
+
       <!-- Saída e arquivos -->
       <section v-if="outputSubs.length" class="card-section">
         <h2>Saída e arquivos</h2>
@@ -283,6 +390,17 @@ import {
 } from '../utils/taskFormat'
 
 type Change = { file: string; action: string; content?: string }
+type RuntimeEvidenceView = {
+  kind: 'http' | 'smoke' | 'file' | 'console'
+  summary: string
+  data?: unknown
+}
+type RuntimeVerificationView = {
+  verdict: 'PASS' | 'FAIL' | 'PARTIAL'
+  evidence: RuntimeEvidenceView[]
+  iterations?: number
+  reason?: string
+}
 type SubResult = {
   prUrl?: string | null
   cardUrl?: string | null
@@ -290,6 +408,7 @@ type SubResult = {
   changes?: Change[]
   message?: string
   result?: string
+  runtimeVerification?: RuntimeVerificationView
 } | null
 type Subtask = {
   id: string
@@ -302,8 +421,27 @@ type Subtask = {
   retryCount?: number
   maxRetries?: number
   result?: SubResult
+  // ── Telemetria (#3) ──
+  provider?: string
+  model?: string
+  tokensIn?: number
+  tokensOut?: number
+  costUsd?: number
+  durationMs?: number
+  // ── Replan-on-failure (#1) ──
+  fromReplan?: boolean
+  attemptHistory?: Array<{
+    round: number
+    provider?: string
+    model?: string
+    errorSummary?: string
+    emptyStream?: boolean
+    runtimeVerdict?: 'PASS' | 'FAIL' | 'PARTIAL'
+    timestamp?: string
+  }>
 }
 type TokenBlock = { inputTokens: number; outputTokens: number; totalTokens: number }
+type ProviderBreakdown = { tokensIn: number; tokensOut: number; costUsd: number }
 type TaskView = {
   id: string
   description: string
@@ -316,10 +454,32 @@ type TaskView = {
   repoIds?: string[]
   summary?: string
   language?: string
-  tokenUsage?: { planner?: TokenBlock; code?: TokenBlock; reviewer?: TokenBlock; reporter?: TokenBlock; total?: TokenBlock }
+  tokenUsage?: {
+    planner?: TokenBlock
+    code?: TokenBlock
+    reviewer?: TokenBlock
+    reporter?: TokenBlock
+    total?: TokenBlock
+    byProvider?: Record<string, ProviderBreakdown>
+  }
   createdAt?: string
   updatedAt?: string
   completedAt?: string
+  // ── Plan approval gate (#10) ──
+  pendingPlanApproval?: {
+    subtasks: Array<{
+      id: string
+      type: string
+      description: string
+      priority: number
+      dependsOn: string[]
+      repo?: string
+    }>
+    reason: 'manual' | 'subtask_count' | 'estimated_cost'
+    detail?: string
+    expiresAt: string
+    createdAt: string
+  }
 }
 type ProjectView = {
   id: string
@@ -373,9 +533,11 @@ const loadAuxiliary = async () => {
 }
 
 const ensurePolling = () => {
-  const active = task.value?.status === 'executing' || task.value?.status === 'planning'
+  const s = task.value?.status
+  const active = s === 'executing' || s === 'planning' || s === 'awaiting_approval'
   if (active && pollTimer === null) {
-    pollTimer = window.setInterval(loadTask, 2000)
+    // Polling mais lento (10s) em awaiting_approval — task nao se move sozinha.
+    pollTimer = window.setInterval(loadTask, s === 'awaiting_approval' ? 10_000 : 2_000)
   } else if (!active && pollTimer !== null) {
     window.clearInterval(pollTimer)
     pollTimer = null
@@ -467,6 +629,61 @@ const onCopyPreview = async () => {
   try { await navigator.clipboard.writeText(preview.value.tunnelUrl) } catch { /* ignore */ }
 }
 
+// ── Plan approval gate (#10) ──────────────────────────────────────
+
+const approving = ref(false)
+const rejecting = ref(false)
+
+const approvalReasonLabel = (reason: string): string => {
+  switch (reason) {
+    case 'manual': return 'Aprovação manual solicitada'
+    case 'subtask_count': return 'Plano grande (auto-gate)'
+    case 'estimated_cost': return 'Custo estimado alto'
+    default: return reason
+  }
+}
+
+const approvalTTL = computed(() => {
+  const exp = task.value?.pendingPlanApproval?.expiresAt
+  if (!exp) return ''
+  const diffMs = new Date(exp).getTime() - now.value
+  if (diffMs <= 0) return 'expirado'
+  const h = Math.floor(diffMs / 3_600_000)
+  const m = Math.ceil((diffMs % 3_600_000) / 60_000)
+  return h > 0 ? `${h}h${m}m` : `${m}m`
+})
+
+const onApprove = async () => {
+  if (approving.value || rejecting.value) return
+  approving.value = true
+  try {
+    await api.approveTaskPlan(taskId.value)
+    // O backend dispara uma nova execucao (fire-and-forget). Polling vai pegar o status novo.
+    await loadTask()
+    if (pollTimer === null) {
+      pollTimer = window.setInterval(loadTask, 2000)
+    }
+  } catch (err) {
+    console.warn('approve failed:', err)
+  } finally {
+    setTimeout(() => { approving.value = false }, 2_000)
+  }
+}
+
+const onReject = async () => {
+  if (approving.value || rejecting.value) return
+  if (!window.confirm('Rejeitar este plano? A tarefa será cancelada.')) return
+  rejecting.value = true
+  try {
+    await api.rejectTaskPlan(taskId.value)
+    await loadTask()
+  } catch (err) {
+    console.warn('reject failed:', err)
+  } finally {
+    rejecting.value = false
+  }
+}
+
 // ── Subtask retry ────────────────────────────────────────────────
 
 const onRetrySub = async (subId: string) => {
@@ -533,6 +750,43 @@ const canCancel = computed(() => {
   return task.value?.status === 'executing' || task.value?.status === 'planning'
 })
 
+// G12 — Revert button (chama POST /api/tasks/:id/revert)
+const canRevert = computed(() => {
+  if (!task.value) return false
+  if (task.value.status !== 'completed') return false
+  const prs = task.value.githubPrUrls ?? []
+  return prs.length >= 1
+})
+const reverting = ref(false)
+const revertResultUrl = ref<string | null>(null)
+const revertError = ref<string | null>(null)
+const onRevert = async () => {
+  if (!task.value || reverting.value) return
+  if (!window.confirm('Criar revert PR? Não vai mergear automaticamente — você aprova no GitHub.')) return
+  reverting.value = true
+  revertError.value = null
+  revertResultUrl.value = null
+  try {
+    const res = await fetch(`/api/tasks/${task.value.id}/revert`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok || !json.ok) {
+      revertError.value = json.reason || json.errorMessage || `HTTP ${res.status}`
+    } else {
+      revertResultUrl.value = json.revertPrUrl ?? null
+      await loadTask()
+    }
+  } catch (e) {
+    revertError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    reverting.value = false
+  }
+}
+
 const cancel = async () => {
   if (!task.value) return
   try {
@@ -592,25 +846,77 @@ const tokenRows = computed<TokenRow[]>(() => {
   const tu = task.value?.tokenUsage
   if (!tu) return []
   const denom = tu.total?.totalTokens || 1
-  const order: Array<keyof typeof tu> = ['planner', 'code', 'reviewer', 'reporter']
+  // Restringe explicitamente aos buckets de TokenBlock (exclui byProvider que tem shape diferente).
+  const order = ['planner', 'code', 'reviewer', 'reporter'] as const
   const labels: Record<string, string> = {
     planner: 'Planner', code: 'Code', reviewer: 'Reviewer', reporter: 'Reporter'
   }
   return order
-    .filter(k => tu[k])
-    .map(k => {
-      const block = tu[k]!
-      return {
-        agent: labels[k as string] ?? String(k),
-        in: block.inputTokens,
-        out: block.outputTokens,
-        total: block.totalTokens,
-        pct: Math.round((block.totalTokens / denom) * 100)
-      }
-    })
+    .map(k => ({ k, block: tu[k] as TokenBlock | undefined }))
+    .filter((x): x is { k: typeof order[number]; block: TokenBlock } => !!x.block)
+    .map(({ k, block }) => ({
+      agent: labels[k] ?? k,
+      in: block.inputTokens,
+      out: block.outputTokens,
+      total: block.totalTokens,
+      pct: Math.round((block.totalTokens / denom) * 100)
+    }))
 })
 
 const changeCount = (sub: Subtask): number => sub.result?.changes?.length ?? 0
+
+// ── Runtime verifier helpers (#2) ──
+const runtimeVerdict = (sub: Subtask): 'PASS' | 'FAIL' | 'PARTIAL' | null => {
+  const rv = sub.result?.runtimeVerification
+  return rv?.verdict ?? null
+}
+const runtimeVerdictTitle = (sub: Subtask): string => {
+  const rv = sub.result?.runtimeVerification
+  if (!rv) return ''
+  const parts: string[] = [`Runtime verifier: ${rv.verdict}`]
+  if (rv.reason) parts.push(rv.reason)
+  if (rv.evidence?.length) parts.push(`${rv.evidence.length} evidência(s)`)
+  return parts.join(' · ')
+}
+
+// ── Custos e provedores (#3 plan W1) ────────────────────────────
+type CostRow = { provider: string; tokensIn: number; tokensOut: number; costUsd: number; pct: number }
+
+const formatCost = (usd: number): string => {
+  if (usd >= 1) return usd.toFixed(2)
+  if (usd >= 0.01) return usd.toFixed(3)
+  return usd.toFixed(4)
+}
+
+const costRows = computed<CostRow[]>(() => {
+  const bp = task.value?.tokenUsage?.byProvider
+  if (!bp) return []
+  const rows = Object.entries(bp).map(([provider, agg]) => ({
+    provider,
+    tokensIn: agg.tokensIn,
+    tokensOut: agg.tokensOut,
+    costUsd: agg.costUsd,
+    pct: 0
+  }))
+  const totalCost = rows.reduce((s, r) => s + r.costUsd, 0)
+  const denom = totalCost > 0 ? totalCost : 1
+  for (const r of rows) {
+    r.pct = Math.round((r.costUsd / denom) * 100)
+  }
+  rows.sort((a, b) => b.costUsd - a.costUsd)
+  return rows
+})
+
+const totalCosts = computed(() => {
+  return costRows.value.reduce(
+    (acc, r) => ({
+      tokensIn: acc.tokensIn + r.tokensIn,
+      tokensOut: acc.tokensOut + r.tokensOut,
+      costUsd: acc.costUsd + r.costUsd
+    }),
+    { tokensIn: 0, tokensOut: 0, costUsd: 0 }
+  )
+})
 
 const outputSubs = computed<Subtask[]>(() => {
   const subs = task.value?.subtasks ?? []
@@ -735,7 +1041,7 @@ const outputSubs = computed<Subtask[]>(() => {
 .hero-bar .fill.failed, .hero-bar .fill.cancelled { background: #ff6b6b; }
 .hero-pct { font-size: .75rem; font-weight: 600; color: var(--text-secondary, #aaa); font-family: ui-monospace, monospace; min-width: 36px; text-align: right; }
 
-.hero-actions { display: flex; gap: .5rem; }
+.hero-actions { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
 .btn-danger {
   background: rgba(255,107,107,.1);
   border: 1px solid rgba(255,107,107,.3);
@@ -747,6 +1053,22 @@ const outputSubs = computed<Subtask[]>(() => {
   font-weight: 500;
   transition: background .15s;
 }
+.btn-revert {
+  background: rgba(247,183,49,.10);
+  border: 1px solid rgba(247,183,49,.35);
+  color: #f7b731;
+  border-radius: 8px;
+  padding: .5rem 1rem;
+  cursor: pointer;
+  font-size: .8rem;
+  font-weight: 500;
+  transition: background .15s;
+}
+.btn-revert:hover:not(:disabled) { background: rgba(247,183,49,.18); }
+.btn-revert:disabled { opacity: .6; cursor: wait; }
+.revert-ok { font-size: .75rem; color: #00b894; }
+.revert-ok a { color: #00b894; word-break: break-all; }
+.revert-err { font-size: .75rem; color: #ff6b6b; }
 .btn-danger:hover { background: rgba(255,107,107,.2); }
 
 /* Preview actions */
@@ -954,6 +1276,182 @@ const outputSubs = computed<Subtask[]>(() => {
 .tl-type.github { background: rgba(108,92,231,.15); color: #a29bfe; }
 .tl-type.trello { background: rgba(116,185,255,.12); color: #74b9ff; }
 .tl-type.api { background: rgba(0,184,148,.12); color: #00b894; }
+.tl-provider {
+  font-size: .62rem;
+  font-weight: 600;
+  text-transform: lowercase;
+  letter-spacing: .3px;
+  padding: .1rem .35rem;
+  border-radius: 3px;
+  background: rgba(253,203,110,.1);
+  color: #fdcb6e;
+  font-family: ui-monospace, monospace;
+}
+.tl-cost {
+  font-size: .65rem;
+  font-weight: 600;
+  color: var(--text-secondary, #888);
+  font-family: ui-monospace, monospace;
+  padding: .1rem .3rem;
+  background: rgba(255,255,255,.04);
+  border-radius: 3px;
+}
+/* Plan approval banner (#10) */
+.approval-banner {
+  border-left: 4px solid #fdcb6e;
+  background: linear-gradient(to right, rgba(253,203,110,.06), var(--bg-secondary, #1a1a2e) 30%);
+}
+.approval-banner .ab-head {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+}
+.approval-banner .ab-icon {
+  font-size: 1.8rem;
+  line-height: 1;
+}
+.approval-banner h2 {
+  margin: 0 0 .25rem;
+  font-size: 1rem;
+  color: #fdcb6e;
+}
+.approval-banner .ab-reason {
+  margin: 0;
+  font-size: .82rem;
+  color: var(--text-secondary, #aaa);
+}
+.ab-subtasks {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.ab-subtasks li {
+  display: flex;
+  gap: .55rem;
+  align-items: baseline;
+  font-size: .82rem;
+  color: var(--text, #ddd);
+  padding: .35rem .5rem;
+  background: rgba(255,255,255,.02);
+  border-radius: 4px;
+}
+.ab-i {
+  font-family: ui-monospace, monospace;
+  font-weight: 600;
+  color: var(--text-secondary, #888);
+  min-width: 1.8rem;
+}
+.ab-type {
+  font-size: .62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  padding: .1rem .35rem;
+  border-radius: 3px;
+  background: rgba(255,255,255,.06);
+  color: var(--text-secondary, #aaa);
+}
+.ab-type.github { background: rgba(108,92,231,.15); color: #a29bfe; }
+.ab-type.trello { background: rgba(116,185,255,.12); color: #74b9ff; }
+.ab-type.api { background: rgba(0,184,148,.12); color: #00b894; }
+.ab-repo {
+  font-family: ui-monospace, monospace;
+  font-size: .7rem;
+  color: var(--text-secondary, #888);
+}
+.ab-desc { flex: 1; word-break: break-word; }
+.ab-actions {
+  display: flex;
+  gap: .75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.btn-approve, .btn-reject {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  padding: .55rem 1rem;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-size: .85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-approve {
+  background: #00b894;
+  color: white;
+}
+.btn-approve:hover:not(:disabled) { background: #009f7e; }
+.btn-reject {
+  background: transparent;
+  color: #ff6b6b;
+  border-color: rgba(255,107,107,.4);
+}
+.btn-reject:hover:not(:disabled) { background: rgba(255,107,107,.08); }
+.btn-approve:disabled, .btn-reject:disabled { opacity: .5; cursor: wait; }
+.ab-ttl {
+  font-size: .72rem;
+  color: var(--text-secondary, #888);
+  font-family: ui-monospace, monospace;
+}
+
+/* Replan badge (#1) */
+.tl-replan {
+  font-size: .62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  padding: .1rem .35rem;
+  border-radius: 3px;
+  background: rgba(255,121,63,.15);
+  color: #ff793f;
+  border: 1px solid rgba(255,121,63,.4);
+}
+/* Runtime verifier verdict (#2) */
+.tl-verdict {
+  font-size: .62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  padding: .1rem .35rem;
+  border-radius: 3px;
+  font-family: ui-monospace, monospace;
+  cursor: help;
+}
+.tl-verdict.v-pass { background: rgba(0,184,148,.15); color: #00b894; }
+.tl-verdict.v-fail { background: rgba(255,107,107,.15); color: #ff6b6b; }
+.tl-verdict.v-partial { background: rgba(253,203,110,.15); color: #fdcb6e; }
+.tl-verifier {
+  margin-top: .35rem;
+  font-size: .72rem;
+  color: var(--text-secondary, #aaa);
+}
+.tl-verifier summary {
+  cursor: pointer;
+  user-select: none;
+  padding: .25rem 0;
+}
+.tl-verifier .v-pass { color: #00b894; font-weight: 600; }
+.tl-verifier .v-fail { color: #ff6b6b; font-weight: 600; }
+.tl-verifier .v-partial { color: #fdcb6e; font-weight: 600; }
+.tl-evidence {
+  margin: .35rem 0 0;
+  padding-left: 1.2rem;
+  list-style: disc;
+  font-size: .7rem;
+  line-height: 1.5;
+}
+.tl-evidence .ev-kind {
+  font-family: ui-monospace, monospace;
+  color: var(--text-secondary, #888);
+  margin-right: .25rem;
+}
 .tl-title {
   color: var(--text, #fff);
   font-weight: 500;

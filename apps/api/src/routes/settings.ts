@@ -11,6 +11,9 @@ import { clearAskCache } from "../core/cache.js";
 import { getAgentsConfig, saveAgentsConfig, clearAgentsConfigCache } from "../core/agentConfig.js";
 import { getMongoClient } from "../core/mongo.js";
 import { config } from "../core/config.js";
+import { getRoutingRules, saveRoutingRules, selectRoute } from "../orchestrator/routing/router.js";
+import type { RoutingRule } from "../orchestrator/routing/types.js";
+import { pingOpenClaude } from "../orchestrator/integrations/openclaude.js";
 import {
   isValidLanguage,
   getSchemaLanguageSetting,
@@ -121,6 +124,92 @@ export default async function settingsRoutes(app: FastifyInstance) {
     const body = request.body as Record<string, unknown>;
     await saveIntegrationsSettings(body as Parameters<typeof saveIntegrationsSettings>[0]);
     reply.send({ ok: true });
+  });
+
+  // ============== ROUTING (model/provider per subtask) ==============
+
+  app.get("/api/settings/routing-rules", async (_request, reply) => {
+    const rules = await getRoutingRules();
+    reply.send({ rules });
+  });
+
+  app.put("/api/settings/routing-rules", async (request, reply) => {
+    const body = request.body as { rules?: unknown };
+    if (!body || !Array.isArray(body.rules)) {
+      reply.status(400).send({ errorMessage: "Body deve conter 'rules': RoutingRule[]." });
+      return;
+    }
+    // Best-effort validation: each rule must have priority/agent/route.provider/route.model.
+    const cleaned: RoutingRule[] = [];
+    for (const raw of body.rules) {
+      if (!raw || typeof raw !== "object") continue;
+      const r = raw as Record<string, unknown>;
+      if (!Number.isFinite(r.priority)) continue;
+      if (
+        r.agent !== "taskCode" && r.agent !== "taskPlanner" &&
+        r.agent !== "taskReviewer" && r.agent !== "taskReporter" && r.agent !== "any"
+      ) continue;
+      const route = r.route as Record<string, unknown> | undefined;
+      if (!route) continue;
+      if (route.provider !== "anthropic" && route.provider !== "codex" && route.provider !== "deepseek") continue;
+      if (typeof route.model !== "string" || !route.model) continue;
+      // Validate regex syntax up-front (avoids saving bad regexes that crash at runtime)
+      const when = r.when as Record<string, unknown> | undefined;
+      if (when?.descriptionMatches && typeof when.descriptionMatches === "string") {
+        try { new RegExp(when.descriptionMatches); } catch {
+          reply.status(400).send({ errorMessage: `Regex inválido em descriptionMatches: ${when.descriptionMatches}` });
+          return;
+        }
+      }
+      if (when?.repoMatches && typeof when.repoMatches === "string") {
+        try { new RegExp(when.repoMatches); } catch {
+          reply.status(400).send({ errorMessage: `Regex inválido em repoMatches: ${when.repoMatches}` });
+          return;
+        }
+      }
+      cleaned.push(raw as RoutingRule);
+    }
+    if (cleaned.length === 0) {
+      reply.status(400).send({ errorMessage: "Nenhuma regra válida no body." });
+      return;
+    }
+    await saveRoutingRules(cleaned);
+    reply.send({ ok: true, count: cleaned.length });
+  });
+
+  app.post("/api/settings/routing-rules/test", async (request, reply) => {
+    const body = request.body as {
+      agent?: string;
+      type?: string;
+      description?: string;
+      repo?: string;
+    };
+    const agent = body?.agent;
+    if (agent !== "taskCode" && agent !== "taskPlanner" && agent !== "taskReviewer" && agent !== "taskReporter") {
+      reply.status(400).send({ errorMessage: "agent invalido." });
+      return;
+    }
+    type SubTaskType = "trello" | "github" | "api" | "custom";
+    const subType: SubTaskType | undefined = (
+      body.type === "trello" || body.type === "github" || body.type === "api" || body.type === "custom"
+    ) ? body.type : undefined;
+    const route = await selectRoute(agent, {
+      type: subType,
+      description: typeof body.description === "string" ? body.description : "",
+      repo: typeof body.repo === "string" ? body.repo : ""
+    });
+    reply.send({ route });
+  });
+
+  app.get("/api/settings/openclaude-providers/health", async (_request, reply) => {
+    const providers = config.openclaude.providers;
+    const entries = await Promise.all(
+      (Object.keys(providers) as Array<keyof typeof providers>).map(async (name) => {
+        const status = await pingOpenClaude(providers[name]);
+        return [name, { url: providers[name], status }] as const;
+      })
+    );
+    reply.send(Object.fromEntries(entries));
   });
 
   app.post("/api/settings/reset-environment", async (_request, reply) => {
