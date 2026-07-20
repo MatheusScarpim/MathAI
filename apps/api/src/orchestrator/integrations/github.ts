@@ -27,7 +27,7 @@ export type WorkspaceInfo = {
 const getBasePath = (owner: string, repo: string): string =>
   join(config.workspace.dir, "repos", `${owner}-${repo}`);
 
-const getWorktreePath = (owner: string, repo: string, worktreeId: string): string =>
+export const getWorktreePath = (owner: string, repo: string, worktreeId: string): string =>
   join(config.workspace.dir, "worktrees", `${owner}-${repo}--${worktreeId}`);
 
 // ============== BASE REPO (clone uma vez) ==============
@@ -193,13 +193,37 @@ export const listWorktrees = async (owner: string, repo: string): Promise<string
 /**
  * Lista a estrutura de arquivos de um worktree.
  */
+/** Teto de arquivos no tree enviado ao planner — acima disso vira ruido que afoga o sinal. */
+const MAX_TREE_FILES = 400;
+
 export const getRepoTree = async (wsPath: string): Promise<string> => {
+  // Prune em qualquer profundidade: o `-not -path "./node_modules/*"` antigo so
+  // pegava o node_modules da RAIZ — em monorepos, frontend/node_modules, apps/*/node_modules
+  // e dist/ entravam no tree e afogavam os arquivos-fonte reais (1500+ vs ~180 paths),
+  // levando o planner a alucinar caminhos convencionais (views/, router/index.ts).
   const result = await execShell("find", [
-    ".", "-type", "f",
-    "-not", "-path", "./.git/*",
-    "-not", "-path", "./node_modules/*"
+    ".",
+    "(",
+    "-path", "*/node_modules",
+    "-o", "-path", "*/.git",
+    "-o", "-name", "dist",
+    "-o", "-name", "build",
+    "-o", "-name", ".next",
+    "-o", "-name", "coverage",
+    "-o", "-name", ".nuxt",
+    "-o", "-name", ".output",
+    ")", "-prune",
+    "-o", "-type", "f", "-print"
   ], wsPath, 30000);
-  return result.stdout;
+
+  const lines = result.stdout.split("\n").filter(Boolean);
+  if (lines.length <= MAX_TREE_FILES) return lines.join("\n");
+  // Repo grande: trunca e avisa explicitamente pro planner nao assumir que
+  // o que nao apareceu inexiste.
+  return [
+    ...lines.slice(0, MAX_TREE_FILES),
+    `... (${lines.length - MAX_TREE_FILES} arquivos a mais omitidos — tree truncado em ${MAX_TREE_FILES})`
+  ].join("\n");
 };
 
 /**
@@ -219,21 +243,76 @@ export const branchHasCommits = async (
   branch: string
 ): Promise<boolean> => {
   const git = simpleGit(workdir);
-  try {
-    // origin/<baseBranch>..HEAD — quantos commits estao adiante da base remota?
-    const out = await git.raw(["rev-list", "--count", `origin/${baseBranch}..HEAD`]);
-    const n = parseInt(out.trim(), 10);
-    return Number.isFinite(n) && n > 0;
-  } catch {
-    // Fallback: comparar local branch vs origin/baseBranch
+  // Tenta uma serie de comparacoes; a primeira que produzir uma contagem
+  // valida (>=0) vence. Cada `rev-list ..HEAD` depende de a ref base existir
+  // no worktree — se `origin/<base>` nao estiver presente (ex.: worktree
+  // recriado sem fetch, remote-tracking ref podada), a comparacao LANCA e nao
+  // deve ser confundida com "0 commits". Por isso separamos "contagem valida"
+  // de "erro" e so caimos pro proximo candidato em caso de erro real.
+  const candidates = [
+    `origin/${baseBranch}..HEAD`,
+    `${baseBranch}..HEAD`,
+    `origin/${baseBranch}..${branch}`
+  ];
+  for (const range of candidates) {
     try {
-      const out = await git.raw(["rev-list", "--count", `origin/${baseBranch}..${branch}`]);
+      const out = await git.raw(["rev-list", "--count", range]);
       const n = parseInt(out.trim(), 10);
-      return Number.isFinite(n) && n > 0;
-    } catch {
-      return false;
+      if (Number.isFinite(n)) {
+        console.info(`[branchHasCommits][DBG] wt=${workdir} range=${range} count=${n}`);
+        return n > 0;
+      }
+    } catch (e) {
+      console.warn(
+        `[branchHasCommits][DBG] wt=${workdir} range=${range} FAILED: ${e instanceof Error ? e.message.slice(0, 120) : String(e)}`
+      );
     }
   }
+  // Ultimo recurso: se HEAD difere do ponto de partida (merge-base com a base
+  // remota), ha trabalho. Nao depende de a ref base ser diretamente resolvivel
+  // como `origin/<base>` no formato de range.
+  try {
+    const head = (await git.revparse(["HEAD"])).trim();
+    const mergeBase = (await git.raw(["merge-base", "HEAD", `origin/${baseBranch}`])).trim();
+    console.info(`[branchHasCommits][DBG] wt=${workdir} fallback merge-base head=${head.slice(0, 8)} base=${mergeBase.slice(0, 8)}`);
+    return !!head && !!mergeBase && head !== mergeBase;
+  } catch (e) {
+    console.warn(`[branchHasCommits][DBG] wt=${workdir} all strategies failed: ${e instanceof Error ? e.message.slice(0, 120) : String(e)}`);
+    return false;
+  }
+};
+
+/**
+ * Commit deterministico de qualquer mudanca nao-commitada no worktree.
+ *
+ * O code agent (LLM) e instruido a rodar `git add` + `git commit`, mas nem
+ * sempre concretiza — as vezes escreve os arquivos e nao commita, deixando a
+ * branch vazia (origin/base..HEAD == 0), o que aborta o PR ("no commits").
+ * Este helper garante, de forma deterministica (nao dependendo do LLM), que
+ * tudo que o agent escreveu no worktree entre em UM commit antes do push.
+ *
+ * Retorna true se criou um novo commit (havia mudancas), false se nada a fazer.
+ */
+export const commitAllIfDirty = async (
+  workdir: string,
+  message: string
+): Promise<boolean> => {
+  const git = simpleGit(workdir);
+  // Garante identidade (worktree novo pode nao ter herdado config em alguns setups)
+  await git.addConfig("user.name", "MathAI Bot").catch(() => {});
+  await git.addConfig("user.email", "mathai-bot@noreply.github.com").catch(() => {});
+  const status = await git.status();
+  console.info(`[commitAllIfDirty][DBG] wt=${workdir} isClean=${status.isClean()} not_added=${status.not_added.length} modified=${status.modified.length} created=${status.created.length} files=${JSON.stringify(status.files.slice(0,10).map(f=>f.path))}`);
+  if (status.isClean()) return false;
+  await git.add(["-A"]);
+  // Re-checa: `add -A` pode nao produzir nada stageado (ex.: so ignorados)
+  const staged = await git.status();
+  if (staged.staged.length === 0 && staged.created.length === 0 &&
+      staged.deleted.length === 0 && staged.renamed.length === 0) {
+    return false;
+  }
+  await git.commit(message);
+  return true;
 };
 
 /**

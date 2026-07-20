@@ -127,6 +127,12 @@ REGRAS:
 - IMPORTANTE: Para subtasks "github", NAO crie subtasks separadas para "criar pasta", "criar arquivo vazio" ou "fazer commit". Pastas vazias nao existem em git. Sempre agrupe operacoes de filesystem relacionadas em uma unica subtask github.
 - IMPORTANTE: Para subtasks "github" no MESMO repositorio, prefira UMA UNICA subtask que descreva o conjunto completo de mudancas relacionadas. Todas as subtasks github do mesmo repo serao consolidadas em UM unico Pull Request. Nao fragmente uma feature em multiplas subtasks pequenas (ex: "criar HTML", "adicionar CSS", "adicionar JS" -> fazer uma so).
 
+ATERRAMENTO (anti-alucinacao — CRITICO):
+- Para subtasks "github", referencie SOMENTE caminhos de arquivos/pastas que aparecem na "Repository structure"/"Available repositories" fornecida no contexto.
+- NUNCA invente caminhos convencionais de framework (ex: "src/views/", "router/index.ts", "AdminLayout.vue", "KioskView.vue") sem confirmar que existem no tree. Estruturas variam entre projetos (pages/ vs views/, roteamento inline em main.ts vs router/index.ts).
+- Se nao souber o arquivo exato, descreva pela INTENCAO (ex: "adicionar link no componente de layout/navegacao principal") e instrua o agente a LOCALIZAR o arquivo certo no repo — nao prescreva um path inventado. Um path errado faz o agente retornar zero mudancas.
+- Se o tree estiver truncado, NAO assuma que o que nao apareceu inexiste.
+
 RESPONDA SEMPRE em JSON valido:
 {
   "subtasks": [
@@ -156,6 +162,12 @@ RULES:
 - IMPORTANT: For "github" subtasks, do NOT create separate subtasks for "create folder", "create empty file" or "make commit". Empty folders do not exist in git. Always group related filesystem operations into a single github subtask.
 - IMPORTANT: For "github" subtasks in the SAME repository, prefer ONE SINGLE subtask describing the full set of related changes. All github subtasks in the same repo will be consolidated into ONE Pull Request. Do not fragment a feature into multiple small subtasks (e.g., "create HTML", "add CSS", "add JS" -> make it one).
 
+GROUNDING (anti-hallucination — CRITICAL):
+- For "github" subtasks, reference ONLY file/folder paths that appear in the provided "Repository structure"/"Available repositories" context.
+- NEVER invent conventional framework paths (e.g., "src/views/", "router/index.ts", "AdminLayout.vue", "KioskView.vue") without confirming they exist in the tree. Structures vary between projects (pages/ vs views/, inline routing in main.ts vs router/index.ts).
+- If you don't know the exact file, describe by INTENT (e.g., "add a nav link in the main layout/navigation component") and instruct the agent to LOCATE the right file in the repo — do not prescribe an invented path. A wrong path makes the agent return zero changes.
+- If the tree is truncated, do NOT assume what didn't appear doesn't exist.
+
 ALWAYS respond in valid JSON:
 {
   "subtasks": [
@@ -184,6 +196,12 @@ REGLAS:
 - Si el tipo deseado no esta disponible, usa "custom"
 - IMPORTANTE: Para subtareas "github", NO crees subtareas separadas para "crear carpeta", "crear archivo vacio" o "hacer commit". Las carpetas vacias no existen en git. Siempre agrupa operaciones de filesystem relacionadas en una sola subtarea github.
 - IMPORTANTE: Para subtareas "github" en el MISMO repositorio, prefiere UNA SOLA subtarea que describa el conjunto completo de cambios relacionados. Todas las subtareas github del mismo repo se consolidaran en UN solo Pull Request. No fragmentes una feature en multiples subtareas pequeñas.
+
+ATERRIZAJE (anti-alucinacion — CRITICO):
+- Para subtareas "github", referencia SOLO rutas de archivos/carpetas que aparecen en la "Repository structure"/"Available repositories" del contexto.
+- NUNCA inventes rutas convencionales de framework (ej: "src/views/", "router/index.ts", "AdminLayout.vue", "KioskView.vue") sin confirmar que existen en el tree. Las estructuras varian entre proyectos (pages/ vs views/, ruteo inline en main.ts vs router/index.ts).
+- Si no sabes el archivo exacto, describe por INTENCION (ej: "agregar link en el componente de layout/navegacion principal") e instruye al agente a LOCALIZAR el archivo correcto — no prescribas una ruta inventada. Una ruta incorrecta hace que el agente retorne cero cambios.
+- Si el tree esta truncado, NO asumas que lo que no aparecio no existe.
 
 RESPONDE SIEMPRE en JSON valido:
 {
@@ -254,6 +272,58 @@ const formatPreviousAttempt = (prev: PreviousAttempt, language: "pt" | "en" | "e
       : "REGRAS: mantenha os IDs que ja completaram intactos. Para cada subtarefa que falhou, reescreva com paths/passos mais concretos ou divida em 2+ subtarefas menores. NAO copie a descricao falhada como esta.";
   lines.push(instr);
   return lines.join("\n");
+};
+
+const VALID_SUBTASK_TYPES = new Set(["trello", "github", "api", "custom"]);
+
+/**
+ * Normaliza o plano cru do LLM antes de devolver ao pipeline. Dois problemas
+ * recorrentes que derrubavam a task inteira:
+ *  1. Tipo alucinado (ex: "edit", "write", "file") — o dispatcher lanca
+ *     "Unknown subtask type" e marca a task como failed. Coagimos para um tipo
+ *     valido: "github" quando ha repo referenciado e github esta disponivel,
+ *     senao "custom" (sempre aceito downstream).
+ *  2. IDs duplicados (o planner as vezes emite dois "st1"). Mantemos o primeiro
+ *     e renomeamos os seguintes pra nao colidir na agregacao/dependsOn.
+ */
+const normalizeSubtasks = (
+  subtasks: PlannedSubTask[],
+  availableTypes?: string[]
+): PlannedSubTask[] => {
+  const available = new Set(availableTypes?.length ? availableTypes : ["custom"]);
+  const fallbackType: PlannedSubTask["type"] = available.has("custom")
+    ? "custom"
+    : ((availableTypes?.[0] as PlannedSubTask["type"]) ?? "custom");
+  const seenIds = new Set<string>();
+  const result: PlannedSubTask[] = [];
+
+  for (const st of subtasks) {
+    if (!st || typeof st !== "object") continue;
+
+    let type = st.type;
+    if (!VALID_SUBTASK_TYPES.has(type) || !available.has(type)) {
+      const coerced: PlannedSubTask["type"] =
+        st.repo && available.has("github") ? "github" : fallbackType;
+      console.warn(
+        `[planner] coercing invalid/unavailable subtask type "${st.type}" (id=${st.id}) -> "${coerced}"`
+      );
+      type = coerced;
+    }
+
+    let id = st.id || `st${result.length + 1}`;
+    if (seenIds.has(id)) {
+      let n = 2;
+      while (seenIds.has(`${id}_${n}`)) n++;
+      const renamed = `${id}_${n}`;
+      console.warn(`[planner] duplicate subtask id "${id}" -> "${renamed}"`);
+      id = renamed;
+    }
+    seenIds.add(id);
+
+    result.push({ ...st, id, type });
+  }
+
+  return result;
 };
 
 export const planTask = async (
@@ -338,7 +408,10 @@ export const planTask = async (
       }
 
       const parsed = JSON.parse(raw) as { subtasks?: PlannedSubTask[] };
-      const subtasks = (parsed.subtasks ?? []).slice(0, 10);
+      const subtasks = normalizeSubtasks(
+        (parsed.subtasks ?? []).slice(0, 10),
+        context.availableTypes
+      );
       if (subtasks.length === 0) {
         // Trata vazio como falha pra acionar retry
         throw new Error("planner returned empty subtask list");

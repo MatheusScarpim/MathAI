@@ -27,6 +27,7 @@ import {
   removeWorktree,
   getRepoTree,
   branchHasCommits,
+  commitAllIfDirty,
   pushBranch,
   createOrGetPullRequest,
   type WorkspaceInfo
@@ -898,18 +899,41 @@ export const executeTask = async (
     });
 
     // 5. Consolidar PRs: push branch + abrir 1 PR por (task, repo)
+    console.info(`[pipeline][DBG] consolidation start: taskWorktrees=${taskWorktrees.size} keys=${JSON.stringify([...taskWorktrees.keys()])}`);
     for (const [repoKey, entry] of taskWorktrees) {
       const branch = entry.ws.branchName;
       branchByRepo[repoKey] = branch;
       const base = entry.ws.baseBranch || entry.repoConfig.baseBranch || "main";
       const token = entry.repoConfig.token;
+      console.info(`[pipeline][DBG] repo=${repoKey} branch=${branch} base=${base} wt=${entry.ws.worktreePath} hasToken=${!!token}`);
       if (!token) {
         emit?.("step", { step: "pr_skipped", repoKey, reason: "no token" });
         continue;
       }
 
       try {
+        // Commit deterministico: garante que qualquer arquivo que o code agent
+        // escreveu no worktree entre num commit, mesmo que o LLM tenha esquecido
+        // (ou falhado ao) rodar `git commit`. Sem isso a branch fica vazia e o
+        // guard "no commits" abaixo aborta o PR indevidamente.
+        try {
+          const committed = await commitAllIfDirty(
+            entry.ws.worktreePath,
+            derivePrTitle(description)
+          );
+          console.info(`[pipeline][DBG] commitAllIfDirty repo=${repoKey} committed=${committed}`);
+          if (committed) {
+            emit?.("step", { step: "auto_committed", repoKey, branch });
+          }
+        } catch (commitErr) {
+          console.warn(
+            `[pipeline] auto-commit failed for ${repoKey}:`,
+            commitErr instanceof Error ? commitErr.message : commitErr
+          );
+        }
+
         const hasCommits = await branchHasCommits(entry.ws.worktreePath, base, branch);
+        console.info(`[pipeline][DBG] branchHasCommits repo=${repoKey} hasCommits=${hasCommits}`);
         if (!hasCommits) {
           // Empty PR guard — nao abre PR sem mudancas. Como subtasks github
           // mandam "criar/editar arquivos", branch sem commits significa que
@@ -1244,7 +1268,17 @@ const executeSubtask = async (
     case "custom":
       return executeCustomSubtask(subtask, taskId, options);
     default:
-      throw new Error(`Unknown subtask type: ${subtask.type}`);
+      // Defesa: tipo desconhecido (ex: planner alucinou "edit"/"write") NAO deve
+      // derrubar a task inteira. O planner ja normaliza na origem (normalizeSubtasks);
+      // isto e a segunda camada caso algo escape (replan, injecao manual).
+      // Se ha repo referenciado, roteia pra github (escreve no WORKTREE) — NUNCA
+      // pra custom, que roda no cwd do container (/openclaude) e polui o repo dele.
+      if (subtask.repo || subtask.resolvedRepoKey) {
+        console.warn(`[pipeline] unknown subtask type "${subtask.type}" (id=${subtask.id}) with repo — routing to github`);
+        return executeGithubSubtask(subtask, options, taskId, taskWorktrees, siblingContext);
+      }
+      console.warn(`[pipeline] unknown subtask type "${subtask.type}" (id=${subtask.id}) — treating as custom`);
+      return executeCustomSubtask(subtask, taskId, options);
   }
 };
 
@@ -1644,6 +1678,28 @@ const executeGithubSubtask = async (
   const FRONTEND_RE = /\.(vue|tsx|jsx|svelte|html|css|scss|sass)$/i;
 
   for (let round = 0; round < MAX_REVIEW_ROUNDS; round++) {
+    // 4a-pre. Commit deterministico do que o code agent escreveu nesta rodada.
+    // O comentario acima assumia que o worktree "acumula commits naturalmente",
+    // mas o code agent (LLM) nem sempre roda `git commit` — deixando a branch
+    // vazia. Isso quebra o preview deploy (previewManager diff = 0 arquivos ->
+    // uxCritic/runtimeVerifier travam) E a consolidacao do PR ("no commits").
+    // Committar no topo de cada round garante que preview, critic, verifier e
+    // push sempre vejam o codigo real. Nao depende do LLM.
+    try {
+      const committed = await commitAllIfDirty(
+        entry.ws.worktreePath,
+        derivePrTitle(subtask.description)
+      );
+      if (committed) {
+        options.emit?.("step", { step: "auto_committed", subtaskId: subtask.id, round });
+      }
+    } catch (commitErr) {
+      console.warn(
+        `[pipeline] auto-commit (round ${round}) failed for ${subtask.id}:`,
+        commitErr instanceof Error ? commitErr.message : commitErr
+      );
+    }
+
     // 4a. Static checks (tsc + lint) rodam SEMPRE — mesmo se LLM reviewer
     // falhar. Erros deterministicos pegam o que o LLM nao ve.
     let staticResult: Awaited<ReturnType<typeof runStaticChecks>> | null = null;

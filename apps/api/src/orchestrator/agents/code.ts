@@ -43,32 +43,38 @@ const shouldLogPrompts = (): boolean => {
 const buildPrompt = (
   description: string,
   opts: CodeAgentOptions,
-  language: "pt" | "en" | "es"
+  language: "pt" | "en" | "es",
+  workspacePath: string
 ): string => {
+  const wt = workspacePath;
   const instructions: Record<"pt" | "en" | "es", string> = {
     pt: `Voce esta em um workspace git na branch "${opts.branchName}". Sua tarefa e:
 
 ${description}
 
-⚠️ DISCIPLINA DE DIRETORIO (CRITICO):
-- Antes de qualquer edicao, execute \`pwd\` e \`ls\` pra confirmar que voce esta no workspace certo.
-- USE APENAS CAMINHOS RELATIVOS (ex: \`frontend/src/main.ts\`, \`./package.json\`).
-- NUNCA use caminhos absolutos como \`/openclaude/\`, \`/app/\`, \`/data/\`, \`/etc/\`, \`/root/\`, \`/home/\`, \`/usr/\`, \`/tmp/\`.
-- Se uma tool aceitar caminho absoluto, ainda assim escreva relativo ao workspace atual.
-- NAO modifique nada fora do diretorio do workspace. Se uma operacao tentar escrever fora, RECUSE e refaca com caminho relativo.
+⚠️ DISCIPLINA DE DIRETORIO (CRITICO — LEIA COM ATENCAO):
+- O diretorio do workspace (o repositorio git desta task) e EXATAMENTE:
+    ${wt}
+- O shell NAO comeca dentro do workspace (o cwd padrao e \`/openclaude\`, um diretorio DIFERENTE). Por isso caminhos relativos NAO funcionam e se perdem.
+- USE SEMPRE CAMINHOS ABSOLUTOS com o prefixo do workspace acima para TODA operacao de arquivo (Read, Write, Edit, MultiEdit). Ex:
+    ${wt}/frontend/src/main.ts
+    ${wt}/package.json
+- Para QUALQUER comando de shell/git, entre no workspace na MESMA linha (o cwd reseta entre comandos): \`cd ${wt} && <comando>\`. Ex: \`cd ${wt} && ls\`, \`cd ${wt} && git add -A && git commit -m "..."\`.
+- Alternativa para git: use \`git -C ${wt} <subcomando>\`.
+- NUNCA escreva FORA de ${wt} (nada em \`/openclaude/\`, \`/app/\`, \`/etc/\`, \`/root/\`, \`/home/\`, \`/usr/\`, \`/tmp/\`). Escrever fora do workspace faz o trabalho ser perdido e nao entra no PR.
 
 EXECUTE NESTA ORDEM:
 
-1. ANALISE: Explore a estrutura do projeto e entenda os padroes existentes
-2. IMPLEMENTE: Faca as alteracoes necessarias nos arquivos
+1. ANALISE: Explore a estrutura do projeto (ex: \`cd ${wt} && ls -R\` limitado) e entenda os padroes existentes
+2. IMPLEMENTE: Faca as alteracoes necessarias nos arquivos usando caminhos absolutos sob ${wt}
 3. REVISE: Revise seu proprio codigo verificando:
    - Bugs logicos ou erros de sintaxe
    - Vulnerabilidades de seguranca (XSS, injection, etc.)
    - Aderencia aos padroes do projeto
    - Imports faltando
    Se encontrar problemas, corrija antes de continuar
-4. TESTE: Se o projeto tiver testes, rode-os. Se falharem, corrija
-5. COMMIT: Faca \`git add\` e \`git commit\` com mensagem descritiva.
+4. TESTE: Se o projeto tiver testes, rode-os (\`cd ${wt} && <cmd de teste>\`). Se falharem, corrija
+5. COMMIT: Rode \`cd ${wt} && git add -A && git commit -m "<mensagem descritiva>"\`.
 
 NAO EXECUTE \`git push\` NEM \`gh pr create\`. O orquestrador fara o push e abrira UM unico Pull Request consolidando todas as subtarefas desta task no final.
 
@@ -98,25 +104,29 @@ em vez de duplicar.` : ""}`,
 
 ${description}
 
-⚠️ DIRECTORY DISCIPLINE (CRITICAL):
-- Before any edit, run \`pwd\` and \`ls\` to confirm you are in the right workspace.
-- USE ONLY RELATIVE PATHS (e.g., \`frontend/src/main.ts\`, \`./package.json\`).
-- NEVER use absolute paths like \`/openclaude/\`, \`/app/\`, \`/data/\`, \`/etc/\`, \`/root/\`, \`/home/\`, \`/usr/\`, \`/tmp/\`.
-- If a tool accepts an absolute path, still write it relative to the current workspace.
-- DO NOT modify anything outside the workspace directory. If an operation tries to write outside, REFUSE and redo with a relative path.
+⚠️ DIRECTORY DISCIPLINE (CRITICAL — READ CAREFULLY):
+- The workspace directory (the git repo for this task) is EXACTLY:
+    ${wt}
+- The shell does NOT start inside the workspace (the default cwd is \`/openclaude\`, a DIFFERENT directory). Relative paths therefore do NOT work and get lost.
+- ALWAYS USE ABSOLUTE PATHS prefixed with the workspace above for EVERY file operation (Read, Write, Edit, MultiEdit). E.g.:
+    ${wt}/frontend/src/main.ts
+    ${wt}/package.json
+- For ANY shell/git command, enter the workspace on the SAME line (cwd resets between commands): \`cd ${wt} && <command>\`. E.g. \`cd ${wt} && ls\`, \`cd ${wt} && git add -A && git commit -m "..."\`.
+- Git alternative: use \`git -C ${wt} <subcommand>\`.
+- NEVER write OUTSIDE ${wt} (nothing under \`/openclaude/\`, \`/app/\`, \`/etc/\`, \`/root/\`, \`/home/\`, \`/usr/\`, \`/tmp/\`). Writing outside the workspace loses the work and it never reaches the PR.
 
 EXECUTE IN THIS ORDER:
 
-1. ANALYZE: Explore the project structure and understand existing patterns
-2. IMPLEMENT: Make the necessary file changes
+1. ANALYZE: Explore the project structure (e.g. \`cd ${wt} && ls -R\` scoped) and understand existing patterns
+2. IMPLEMENT: Make the necessary file changes using absolute paths under ${wt}
 3. REVIEW: Review your own code checking for:
    - Logic bugs or syntax errors
    - Security vulnerabilities (XSS, injection, etc.)
    - Adherence to project patterns
    - Missing imports
    If you find issues, fix them before continuing
-4. TEST: If the project has tests, run them. If they fail, fix them
-5. COMMIT: Run \`git add\` and \`git commit\` with a descriptive message.
+4. TEST: If the project has tests, run them (\`cd ${wt} && <test cmd>\`). If they fail, fix them
+5. COMMIT: Run \`cd ${wt} && git add -A && git commit -m "<descriptive message>"\`.
 
 DO NOT RUN \`git push\` OR \`gh pr create\`. The orchestrator will push and open ONE consolidated Pull Request for all subtasks of this task at the end.
 
@@ -131,25 +141,29 @@ RULES:
 
 ${description}
 
-⚠️ DISCIPLINA DE DIRECTORIO (CRITICO):
-- Antes de cualquier edicion, ejecuta \`pwd\` y \`ls\` para confirmar que estas en el workspace correcto.
-- USA SOLO RUTAS RELATIVAS (ej: \`frontend/src/main.ts\`, \`./package.json\`).
-- NUNCA uses rutas absolutas como \`/openclaude/\`, \`/app/\`, \`/data/\`, \`/etc/\`, \`/root/\`, \`/home/\`, \`/usr/\`, \`/tmp/\`.
-- Si una herramienta acepta ruta absoluta, igual escribela relativa al workspace actual.
-- NO modifiques nada fuera del directorio del workspace. Si una operacion intenta escribir fuera, RECHAZA y rehazla con ruta relativa.
+⚠️ DISCIPLINA DE DIRECTORIO (CRITICO — LEE CON ATENCION):
+- El directorio del workspace (el repo git de esta task) es EXACTAMENTE:
+    ${wt}
+- El shell NO empieza dentro del workspace (el cwd por defecto es \`/openclaude\`, un directorio DIFERENTE). Por eso las rutas relativas NO funcionan y se pierden.
+- USA SIEMPRE RUTAS ABSOLUTAS con el prefijo del workspace de arriba para TODA operacion de archivo (Read, Write, Edit, MultiEdit). Ej:
+    ${wt}/frontend/src/main.ts
+    ${wt}/package.json
+- Para CUALQUIER comando de shell/git, entra al workspace en la MISMA linea (el cwd se resetea entre comandos): \`cd ${wt} && <comando>\`. Ej: \`cd ${wt} && ls\`, \`cd ${wt} && git add -A && git commit -m "..."\`.
+- Alternativa para git: usa \`git -C ${wt} <subcomando>\`.
+- NUNCA escribas FUERA de ${wt} (nada en \`/openclaude/\`, \`/app/\`, \`/etc/\`, \`/root/\`, \`/home/\`, \`/usr/\`, \`/tmp/\`). Escribir fuera del workspace pierde el trabajo y no llega al PR.
 
 EJECUTA EN ESTE ORDEN:
 
-1. ANALIZA: Explora la estructura del proyecto y entiende los patrones existentes
-2. IMPLEMENTA: Haz los cambios necesarios en los archivos
+1. ANALIZA: Explora la estructura del proyecto (ej: \`cd ${wt} && ls -R\` acotado) y entiende los patrones existentes
+2. IMPLEMENTA: Haz los cambios necesarios en los archivos usando rutas absolutas bajo ${wt}
 3. REVISA: Revisa tu propio codigo verificando:
    - Bugs logicos o errores de sintaxis
    - Vulnerabilidades de seguridad (XSS, injection, etc.)
    - Adherencia a los patrones del proyecto
    - Imports faltantes
    Si encuentras problemas, corrigelos antes de continuar
-4. TESTEA: Si el proyecto tiene tests, ejecutalos. Si fallan, corrigelos
-5. COMMIT: Ejecuta \`git add\` y \`git commit\` con mensaje descriptivo.
+4. TESTEA: Si el proyecto tiene tests, ejecutalos (\`cd ${wt} && <cmd de test>\`). Si fallan, corrigelos
+5. COMMIT: Ejecuta \`cd ${wt} && git add -A && git commit -m "<mensaje descriptivo>"\`.
 
 NO EJECUTES \`git push\` NI \`gh pr create\`. El orquestador hara el push y abrira UN unico Pull Request consolidando todas las subtareas de esta task al final.
 
@@ -188,7 +202,7 @@ export const generateCodeChanges = async (
   const grpcUrl = route?.grpcUrl;
 
   const opts = codeOpts ?? { branchName: "mathai/auto", taskDescription: description };
-  const basePrompt = buildPrompt(description, opts, language);
+  const basePrompt = buildPrompt(description, opts, language, workspacePath);
   // Project context vai NO COMECO do prompt: o agent le antes de explorar o
   // repo, ja sabendo stack/convencoes. Reduz tempo de descoberta e evita
   // padroes inconsistentes com o resto da base.
@@ -201,7 +215,7 @@ export const generateCodeChanges = async (
     console.info(`[prompt-log] codeAgent prompt:\n${prompt}`);
   }
 
-  const toolCalls: { toolName: string; args: string; output: string; isError: boolean }[] = [];
+  const toolCalls: { toolName: string; args: string; output: string; isError: boolean; hasResult: boolean }[] = [];
 
   const result = await runOpenClaude(prompt, {
     workingDirectory: workspacePath,
@@ -211,13 +225,20 @@ export const generateCodeChanges = async (
     onEvent: (event) => {
       // Track tool calls to extract changes
       if (event.type === "tool_start") {
-        toolCalls.push({ toolName: event.toolName, args: event.args, output: "", isError: false });
+        // hasResult=false ate chegar o tool_result. CRITICO: se o stream truncar
+        // (janela de rebuild do container, gRPC cortado, rate-limit no meio) o
+        // tool_start chega mas o tool_result NAO — sem esse flag, a mudanca era
+        // contada como sucesso (isError default=false) mesmo sem tocar o disco,
+        // gerando "phantom changes": changes preenchido mas worktree limpo ->
+        // sem commit -> sem PR. Ver code.ts changes-building abaixo.
+        toolCalls.push({ toolName: event.toolName, args: event.args, output: "", isError: false, hasResult: false });
       }
       if (event.type === "tool_result") {
-        const last = toolCalls.find(t => t.toolName === event.toolName && !t.output);
+        const last = toolCalls.find(t => t.toolName === event.toolName && !t.hasResult);
         if (last) {
           last.output = event.output;
           last.isError = event.isError;
+          last.hasResult = true;
         }
       }
       // Forward events to caller
@@ -245,6 +266,10 @@ export const generateCodeChanges = async (
 
   for (const tc of toolCalls) {
     if (tc.isError) continue;
+    // Sem tool_result confirmado = mudanca nao executada no disco (stream
+    // truncado). Nao conta como change — deixa o empty-changes guard do
+    // pipeline disparar retry em outro provider em vez de "sucesso" fantasma.
+    if (!tc.hasResult) continue;
 
     try {
       const args = JSON.parse(tc.args);

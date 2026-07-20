@@ -25,7 +25,7 @@ import {
   type PreviewRecord
 } from "../core/mongo.js";
 import { resolveProjectOptions } from "../helpers/projectOptionsResolver.js";
-import { createWorktree } from "../orchestrator/integrations/github.js";
+import { createWorktree, getWorktreePath } from "../orchestrator/integrations/github.js";
 import { detectStack } from "../orchestrator/context/stackDetector.js";
 import { config } from "../core/config.js";
 
@@ -145,25 +145,47 @@ export const startPreview = async (
     };
   }
 
-  // 5. Recria worktree (pipeline limpa apos o PR)
+  // 5. Worktree do preview.
+  //    IMPORTANTE: quando o preview roda DURANTE o pipeline (UX Critic / Runtime
+  //    Verifier, antes do push/PR), o worktree da task ainda existe e contem o
+  //    commit LOCAL do code agent que ainda NAO foi pushado. Recriar esse
+  //    worktree (createWorktree faz remove+add a partir de origin/base) APAGA
+  //    esse commit -> consolidacao ve branch vazia -> PR abortado (bug de
+  //    "changes fantasma"). Por isso: se o worktree da task ja existe, REUSA no
+  //    lugar; so cria (fallback) quando preview e disparado standalone, sem
+  //    pipeline ativo (ex.: preview on-demand pos-task).
   const repo = github[0]!; // task pode ter multi-repo, mas preview = primeiro (heuristica)
   const branchName = `mathai/task-${taskId}`;
+  const existingWtPath = getWorktreePath(repo.owner, repo.repo, taskId);
   let worktreePath: string;
   let baseBranch: string;
-  try {
-    const ws = await createWorktree(
-      repo.owner,
-      repo.repo,
-      branchName,
-      taskId,
-      repo.token,
-      repo.baseBranch
-    );
-    worktreePath = ws.worktreePath;
-    baseBranch = ws.baseBranch;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: `falha ao recriar worktree: ${msg}` };
+  if (existsSync(existingWtPath)) {
+    worktreePath = existingWtPath;
+    // Detecta a base branch do worktree existente sem tocar no estado dele.
+    try {
+      const headRef = await simpleGit(existingWtPath)
+        .raw(["symbolic-ref", "refs/remotes/origin/HEAD"]);
+      baseBranch = headRef.replace("refs/remotes/origin/", "").trim() || repo.baseBranch || "master";
+    } catch {
+      baseBranch = repo.baseBranch || "master";
+    }
+    console.info(`[previewManager] reusando worktree do pipeline task=${taskId} wt=${worktreePath} base=${baseBranch}`);
+  } else {
+    try {
+      const ws = await createWorktree(
+        repo.owner,
+        repo.repo,
+        branchName,
+        taskId,
+        repo.token,
+        repo.baseBranch
+      );
+      worktreePath = ws.worktreePath;
+      baseBranch = ws.baseBranch;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, reason: `falha ao recriar worktree: ${msg}` };
+    }
   }
 
   // 5b. Fallback: se subtasks nao informaram changes uteis, agora que temos o worktree
