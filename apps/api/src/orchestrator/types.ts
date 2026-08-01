@@ -187,7 +187,15 @@ export type TaskExecuteOptions = {
   projectId?: string;
   language?: "pt" | "en" | "es";
   github?: GithubRepoConfig | GithubRepoConfig[];
-  trello?: { boardId?: string; listId?: string; doneListId?: string };
+  trello?: {
+    boardId?: string;
+    listId?: string;
+    doneListId?: string;
+    /** Liga o agente Trello (LLM decide mover/comentar/label a cada stage). Default (undefined) = ligado quando Trello configurado. */
+    agentEnabled?: boolean;
+    /** Permite o agente criar novos cards. Default (undefined/false) = desligado. */
+    agentCreateCards?: boolean;
+  };
   /** Se setado, o pipeline notifica este chat WhatsApp ao iniciar e finalizar. */
   whatsapp?: { jid: string };
   /** Se setado, code agent recebe instrucao pra gerar handlers MSW alem do codigo. */
@@ -221,5 +229,11 @@ export type TaskExecuteOptions = {
    * string. Doc deve existir.
    */
   existingTaskId?: string;
+  /**
+   * Se setado, o code agent (taskCode) prefere rodar neste provider (via RouteContext.preferProvider).
+   * Caso de uso: tasks disparadas pelo idle-nudge devem executar no claude ("anthropic").
+   * Nao afeta tasks normais (roteamento por rules).
+   */
+  execProvider?: import("./routing/types.js").ProviderName;
   emit?: StepEmitter;
 };

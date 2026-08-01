@@ -222,6 +222,9 @@ export const generateCodeChanges = async (
     model,
     grpcUrl,
     autoApprove: true,
+    // Fluxo completo de codigo (implementar+review+testar+push) precisa de mais
+    // que os 300s do commandTimeoutMs default — senao backend/refactors morrem.
+    timeoutMs: config.openclaude.codeTimeoutMs,
     onEvent: (event) => {
       // Track tool calls to extract changes
       if (event.type === "tool_start") {

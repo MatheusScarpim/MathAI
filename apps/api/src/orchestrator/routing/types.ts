@@ -29,6 +29,8 @@ export type RouteContext = {
   type?: SubTaskType;
   description?: string;
   repo?: string;
+  /** When set, prefer routing to this provider (if healthy) over the normal rule match. Used for idle-nudge execution (claude). */
+  preferProvider?: ProviderName;
 };
 
 export type Route = {

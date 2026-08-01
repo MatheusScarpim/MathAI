@@ -40,7 +40,7 @@ const LANGUAGE_ENUM = [...VALID_LANGUAGES];
 const resolveTrelloOpts = async (
   body: TaskBody,
   projectIdResolved: string | undefined
-): Promise<{ boardId: string; listId?: string; doneListId?: string } | undefined> => {
+): Promise<{ boardId: string; listId?: string; doneListId?: string; agentEnabled?: boolean; agentCreateCards?: boolean } | undefined> => {
   // Trello desligado pelo composer (toggle off) — body.trello nao enviado
   if (body.trello === undefined) {
     return undefined;
@@ -48,7 +48,7 @@ const resolveTrelloOpts = async (
 
   // Carrega projeto + settings global em paralelo pra resolver done list mesmo
   // quando o body fornece boardId explicito.
-  let project: { trelloBoardId?: string; trelloListId?: string; trelloDoneListId?: string } | null = null;
+  let project: { trelloBoardId?: string; trelloListId?: string; trelloDoneListId?: string; trelloAgentEnabled?: boolean; trelloAgentCreateCards?: boolean } | null = null;
   if (projectIdResolved) {
     try {
       const col = await getProjectsCollection();
@@ -66,9 +66,14 @@ const resolveTrelloOpts = async (
     settings.trelloDoneListId ||
     undefined;
 
+  // agentEnabled: projeto define; default ON (undefined => true)
+  const agentEnabled = project?.trelloAgentEnabled ?? true;
+  // agentCreateCards: projeto define; default OFF (undefined => false)
+  const agentCreateCards = project?.trelloAgentCreateCards ?? false;
+
   // 1) Body explicito (override de uma task especifica)
   if (body.trello.boardId) {
-    return { boardId: body.trello.boardId, listId: body.trello.listId, doneListId };
+    return { boardId: body.trello.boardId, listId: body.trello.listId, doneListId, agentEnabled, agentCreateCards };
   }
 
   // 2) Projeto
@@ -76,7 +81,9 @@ const resolveTrelloOpts = async (
     return {
       boardId: project.trelloBoardId,
       listId: body.trello.listId || project.trelloListId,
-      doneListId
+      doneListId,
+      agentEnabled,
+      agentCreateCards
     };
   }
 
@@ -86,7 +93,9 @@ const resolveTrelloOpts = async (
     return {
       boardId,
       listId: body.trello.listId || settings.trelloListId || undefined,
-      doneListId
+      doneListId,
+      agentEnabled,
+      agentCreateCards
     };
   }
 

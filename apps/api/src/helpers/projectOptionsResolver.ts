@@ -22,7 +22,13 @@ import type { GithubRepoConfig } from "../orchestrator/types.js";
 export type ResolvedProjectOptions = {
   project: ProjectRecord;
   github?: GithubRepoConfig[];
-  trello?: { boardId: string; listId?: string; doneListId?: string };
+  trello?: {
+    boardId: string;
+    listId?: string;
+    doneListId?: string;
+    agentEnabled?: boolean;
+    agentCreateCards?: boolean;
+  };
 };
 
 /** Carrega projeto + GitHub repos + Trello config consolidados. Retorna null se projeto nao existir. */
@@ -82,7 +88,9 @@ export const resolveProjectOptions = async (
     trello = {
       boardId,
       listId: project.trelloListId || settings.trelloListId || undefined,
-      doneListId: project.trelloDoneListId || settings.trelloDoneListId || undefined
+      doneListId: project.trelloDoneListId || settings.trelloDoneListId || undefined,
+      agentEnabled: project.trelloAgentEnabled ?? true,
+      agentCreateCards: project.trelloAgentCreateCards ?? false
     };
   }
 

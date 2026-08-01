@@ -123,6 +123,8 @@ REGRAS:
 - Para subtarefas "github", SEMPRE especifique o campo "repo" com o nome do repositorio
 - Se ha multiplos repos, distribua as subtarefas no repo correto
 - USE SOMENTE os tipos de subtask listados acima
+- CRITICO: Se a tarefa envolve QUALQUER criacao ou modificacao de codigo/arquivos no software (frontend, backend, feature nova, correcao de bug, ajuste de UI, filtro, tela, endpoint) e o tipo "github" esta disponivel, voce DEVE usar "github". NUNCA use "custom" para trabalho que mexe no codigo do projeto — "custom" nao altera o repositorio.
+- Use "custom" SOMENTE para acoes que NAO tocam o repositorio (ex: pesquisa/analise pura sem entregar codigo).
 - Se o tipo desejado nao estiver disponivel, use "custom"
 - IMPORTANTE: Para subtasks "github", NAO crie subtasks separadas para "criar pasta", "criar arquivo vazio" ou "fazer commit". Pastas vazias nao existem em git. Sempre agrupe operacoes de filesystem relacionadas em uma unica subtask github.
 - IMPORTANTE: Para subtasks "github" no MESMO repositorio, prefira UMA UNICA subtask que descreva o conjunto completo de mudancas relacionadas. Todas as subtasks github do mesmo repo serao consolidadas em UM unico Pull Request. Nao fragmente uma feature em multiplas subtasks pequenas (ex: "criar HTML", "adicionar CSS", "adicionar JS" -> fazer uma so).
@@ -158,6 +160,8 @@ RULES:
 - For "github" subtasks, ALWAYS specify the "repo" field with the repository name
 - If there are multiple repos, distribute subtasks to the correct repo
 - USE ONLY the subtask types listed above
+- CRITICAL: If the task involves ANY creation or modification of code/files in the software (frontend, backend, new feature, bug fix, UI tweak, filter, screen, endpoint) and the "github" type is available, you MUST use "github". NEVER use "custom" for work that touches the project's code — "custom" does not change the repository.
+- Use "custom" ONLY for actions that do NOT touch the repository (e.g., pure research/analysis with no code deliverable).
 - If the desired type is not available, use "custom"
 - IMPORTANT: For "github" subtasks, do NOT create separate subtasks for "create folder", "create empty file" or "make commit". Empty folders do not exist in git. Always group related filesystem operations into a single github subtask.
 - IMPORTANT: For "github" subtasks in the SAME repository, prefer ONE SINGLE subtask describing the full set of related changes. All github subtasks in the same repo will be consolidated into ONE Pull Request. Do not fragment a feature into multiple small subtasks (e.g., "create HTML", "add CSS", "add JS" -> make it one).
@@ -193,6 +197,8 @@ REGLAS:
 - Para subtareas "github", SIEMPRE especifica el campo "repo" con el nombre del repositorio
 - Si hay multiples repos, distribuye las subtareas al repo correcto
 - USA SOLO los tipos de subtarea listados arriba
+- CRITICO: Si la tarea involucra CUALQUIER creacion o modificacion de codigo/archivos en el software (frontend, backend, nueva feature, correccion de bug, ajuste de UI, filtro, pantalla, endpoint) y el tipo "github" esta disponible, DEBES usar "github". NUNCA uses "custom" para trabajo que toca el codigo del proyecto — "custom" no altera el repositorio.
+- Usa "custom" SOLO para acciones que NO tocan el repositorio (ej: investigacion/analisis puro sin entregable de codigo).
 - Si el tipo deseado no esta disponible, usa "custom"
 - IMPORTANTE: Para subtareas "github", NO crees subtareas separadas para "crear carpeta", "crear archivo vacio" o "hacer commit". Las carpetas vacias no existen en git. Siempre agrupa operaciones de filesystem relacionadas en una sola subtarea github.
 - IMPORTANTE: Para subtareas "github" en el MISMO repositorio, prefiere UNA SOLA subtarea que describa el conjunto completo de cambios relacionados. Todas las subtareas github del mismo repo se consolidaran en UN solo Pull Request. No fragmentes una feature en multiples subtareas pequeñas.
@@ -288,7 +294,9 @@ const VALID_SUBTASK_TYPES = new Set(["trello", "github", "api", "custom"]);
  */
 const normalizeSubtasks = (
   subtasks: PlannedSubTask[],
-  availableTypes?: string[]
+  availableTypes?: string[],
+  /** Nome do repo primario — usado pra preencher st.repo em subtasks github coagidas. */
+  primaryRepo?: string
 ): PlannedSubTask[] => {
   const available = new Set(availableTypes?.length ? availableTypes : ["custom"]);
   const fallbackType: PlannedSubTask["type"] = available.has("custom")
@@ -301,6 +309,7 @@ const normalizeSubtasks = (
     if (!st || typeof st !== "object") continue;
 
     let type = st.type;
+    let repo = st.repo;
     if (!VALID_SUBTASK_TYPES.has(type) || !available.has(type)) {
       const coerced: PlannedSubTask["type"] =
         st.repo && available.has("github") ? "github" : fallbackType;
@@ -309,6 +318,22 @@ const normalizeSubtasks = (
       );
       type = coerced;
     }
+
+    // Guarda deterministica: com repo configurado (github disponivel), uma subtask
+    // "custom" roda num scratch dir VAZIO (executeScratchSubtask) e nunca toca o
+    // codigo do projeto -> no-op silencioso ("Completed" com 0 arquivos). Quando o
+    // intuito de um !task e mexer no software, coage custom -> github. "api"
+    // (HTTP externo) e um proposito legitimamente distinto e fica intocado.
+    if (type === "custom" && available.has("github")) {
+      console.warn(
+        `[planner] coercing "custom" subtask (id=${st.id}) -> "github" ` +
+        `(repo configurado; "custom" rodaria em scratch vazio e nao alteraria o projeto)`
+      );
+      type = "github";
+    }
+
+    // github exige um repo — usa o primario quando o planner nao especificou.
+    if (type === "github" && !repo && primaryRepo) repo = primaryRepo;
 
     let id = st.id || `st${result.length + 1}`;
     if (seenIds.has(id)) {
@@ -320,7 +345,7 @@ const normalizeSubtasks = (
     }
     seenIds.add(id);
 
-    result.push({ ...st, id, type });
+    result.push({ ...st, id, type, repo });
   }
 
   return result;
@@ -348,6 +373,11 @@ export const planTask = async (
   const client = getClient(route.provider);
   const model = route.model || cfg?.model || "gpt-4o";
   const temperature = cfg?.temperature ?? 0;
+  // Hoisted pro fallback: se o planner falhar de vez e ha repo configurado, o
+  // fallback degradado precisa emitir "github" (com repo) e NAO "custom" — senao
+  // roda num scratch vazio e nao altera o projeto (no-op silencioso).
+  const primaryRepo = context.repos?.[0]?.name || context.repos?.[0]?.repo;
+  const fallbackGithub = !!primaryRepo && (context.availableTypes?.includes("github") ?? true);
   const baseSystem = buildSystemPrompt(language, context.availableTypes);
   const system = projectContextText ? `${baseSystem}\n\n${projectContextText}` : baseSystem;
 
@@ -410,7 +440,8 @@ export const planTask = async (
       const parsed = JSON.parse(raw) as { subtasks?: PlannedSubTask[] };
       const subtasks = normalizeSubtasks(
         (parsed.subtasks ?? []).slice(0, 10),
-        context.availableTypes
+        context.availableTypes,
+        primaryRepo
       );
       if (subtasks.length === 0) {
         // Trata vazio como falha pra acionar retry
@@ -423,15 +454,17 @@ export const planTask = async (
       attempts: 3,
       baseDelayMs: 500,
       fallback: () => ({
-        // Fallback degradado: 1 subtask custom contendo a descricao original.
-        // Pipeline ainda roda, gera reporter, e o usuario ve a falha do planner como degradacao.
+        // Fallback degradado: 1 subtask com a descricao original.
+        // Com repo configurado emite "github" (+repo) pra realmente tocar o codigo;
+        // sem repo cai em "custom". Pipeline ainda roda e gera reporter.
         subtasks: [
           {
             id: "st1",
-            type: "custom",
+            type: fallbackGithub ? "github" : "custom",
             description,
             priority: 1,
-            dependsOn: []
+            dependsOn: [],
+            ...(fallbackGithub ? { repo: primaryRepo } : {})
           }
         ]
       })

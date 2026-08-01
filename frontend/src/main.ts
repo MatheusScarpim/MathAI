@@ -19,6 +19,7 @@ const router = createRouter({
     { path: '/environments', component: () => import('./pages/Environments.vue') },
     { path: '/dashboard', component: () => import('./pages/Dashboard.vue') },
     { path: '/playground', component: () => import('./pages/Playground.vue') },
+    { path: '/calculadora', component: () => import('./pages/CalculatorView.vue') },
     { path: '/tasks', component: () => import('./pages/Tasks.vue') },
     { path: '/tasks/:id', component: () => import('./pages/TaskDetail.vue') },
     { path: '/metrics', component: () => import('./pages/Metrics.vue') },

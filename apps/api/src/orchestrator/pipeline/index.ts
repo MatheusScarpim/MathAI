@@ -19,6 +19,7 @@ import { startPreview, getActivePreview } from "../../services/previewManager.js
 import { getProjectContext } from "../context/projectContext.js";
 import { detectStack, type DetectedStack } from "../context/stackDetector.js";
 import { generateReport, type ExecutedSubtask } from "../agents/reporter.js";
+import { runTrelloAgent } from "../agents/trelloAgent.js";
 
 // Integrations
 import {
@@ -39,7 +40,8 @@ import {
   findCardByMarker,
   ensureTaskCard,
   moveCard,
-  updateCard
+  updateCard,
+  addComment
 } from "../integrations/trello.js";
 import { execShell } from "../integrations/shell.js";
 import { mkdir } from "node:fs/promises";
@@ -47,7 +49,7 @@ import { join } from "node:path";
 
 // PR body builder
 import { buildPrBody, derivePrTitle, type ChangeRow } from "./prBody.js";
-import { buildTrelloCompletionDesc } from "./trelloDesc.js";
+import { buildTrelloCompletionComment } from "./trelloDesc.js";
 import { notifyTaskStart, notifyTaskDone, notifyStageChange } from "../../services/whatsappNotifier.js";
 
 // Router
@@ -222,6 +224,11 @@ export const executeTask = async (
     }
   }
 
+  // Promises dos agentes Trello (fire-and-forget). Aguardadas antes do
+  // move-to-done pra evitar race: sem isso o move re-le o Mongo antes dos
+  // $addToSet dos agentes aterrissarem e cards ficam parados na coluna inicial.
+  const pendingTrelloAgents: Promise<unknown>[] = [];
+
   // Helper: persiste stage atual + emite SSE + reage na msg WhatsApp.
   // Tambem bate heartbeatAt (#6) — orphan-watchdog usa pra detectar tasks
   // mortas em reload mid-pipeline.
@@ -233,6 +240,23 @@ export const executeTask = async (
     emit?.("step", { step: "stage", stage });
     if (whatsappJid) {
       void notifyStageChange(whatsappJid, taskId.toString(), stage);
+    }
+    // Agente Trello: LLM ve colunas + estado do card e decide mover/comentar/label.
+    // Fire-and-forget — nao bloqueia o pipeline; erros ficam no proprio agente.
+    const taskCardId = trelloCardIds[0];
+    if (options.trello?.boardId && taskCardId && options.trello.agentEnabled !== false) {
+      const agentPromise = runTrelloAgent({
+        taskId,
+        stage,
+        taskDescription: description,
+        boardId: options.trello.boardId,
+        cardId: taskCardId,
+        allowCreateCards: options.trello.agentCreateCards === true,
+        language
+      }).catch(err => {
+        console.warn(`[pipeline] Trello agent (${stage}) falhou:`, err instanceof Error ? err.message : err);
+      });
+      pendingTrelloAgents.push(agentPromise);
     }
   };
 
@@ -274,7 +298,7 @@ export const executeTask = async (
       trelloCardIds.push(card.id);
       await tasksCol.updateOne(
         { _id: taskId },
-        { $set: { trelloCardIds, updatedAt: new Date() } }
+        { $addToSet: { trelloCardIds: card.id }, $set: { updatedAt: new Date() } }
       );
       emit?.("step", { step: "trello_card_ready", cardUrl: card.url });
     } catch (err) {
@@ -726,10 +750,16 @@ export const executeTask = async (
         });
       }
 
-      // Update task in DB
+      // Update task in DB. trelloCardIds via $addToSet (nao $set) — preserva
+      // cards adicionados pelo agente Trello fire-and-forget (senao clobber).
       await tasksCol.updateOne(
         { _id: taskId },
-        { $set: { subtasks, trelloCardIds, githubPrUrls, updatedAt: new Date() } }
+        {
+          $set: { subtasks, githubPrUrls, updatedAt: new Date() },
+          ...(trelloCardIds.length > 0
+            ? { $addToSet: { trelloCardIds: { $each: trelloCardIds } } }
+            : {})
+        }
       );
 
       executable = getExecutable();
@@ -1054,33 +1084,43 @@ export const executeTask = async (
           status: finalStatus,
           currentStage: "done",
           subtasks,
-          trelloCardIds,
           githubPrUrls,
           summary: reportResult.report,
           tokenUsage: { ...totalUsage, total },
           branchByRepo,
           updatedAt: new Date(),
           completedAt: new Date()
-        }
+        },
+        // $addToSet (nao $set) preserva cards do agente Trello fire-and-forget.
+        ...(trelloCardIds.length > 0
+          ? { $addToSet: { trelloCardIds: { $each: trelloCardIds } } }
+          : {})
       }
     );
 
-    // Move all Trello cards to done list (task card + subtask cards). Update task card desc first.
+    // Move all Trello cards to done list (task card + subtask cards). Posta o
+    // resumo do que foi feito como COMENTARIO (nao sobrescreve a descricao —
+    // preserva desc original + marker de dedup).
     if (options.trello?.doneListId && trelloCardIds.length > 0) {
       try {
         const taskCardId = trelloCardIds[0]!; // task card foi o primeiro pushado
-        const trelloDesc = buildTrelloCompletionDesc({
-          description,
+        const trelloComment = buildTrelloCompletionComment({
           finalStatus,
           summary: reportResult.report,
-          prUrls: githubPrUrls,
-          taskId: taskId.toString()
+          prUrls: githubPrUrls
         });
-        await updateCard(taskCardId, { desc: trelloDesc });
-        for (const cardId of trelloCardIds) {
+        await addComment(taskCardId, trelloComment);
+        // Aguarda os agentes Trello fire-and-forget terminarem — garante que os
+        // cards que eles criaram ja estao persistidos antes de re-ler o Mongo.
+        await Promise.allSettled(pendingTrelloAgents);
+        // Re-le do Mongo pra incluir cards criados pelo agente Trello (fire-and-forget,
+        // fora do array em memoria). Uniao dedup.
+        const freshDoc = await tasksCol.findOne({ _id: taskId }, { projection: { trelloCardIds: 1 } });
+        const allCardIds = Array.from(new Set([...trelloCardIds, ...(freshDoc?.trelloCardIds ?? [])]));
+        for (const cardId of allCardIds) {
           await moveCard(cardId, options.trello.doneListId);
         }
-        emit?.("step", { step: "trello_moved_done", count: trelloCardIds.length });
+        emit?.("step", { step: "trello_moved_done", count: allCardIds.length });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn(`[pipeline] Trello move-to-done failed: ${msg}`);
@@ -1151,18 +1191,21 @@ export const executeTask = async (
     if (options.trello?.doneListId && trelloCardIds.length > 0) {
       try {
         const taskCardId = trelloCardIds[0]!;
-        const trelloDesc = buildTrelloCompletionDesc({
-          description,
+        const trelloComment = buildTrelloCompletionComment({
           finalStatus: "failed",
           summary: errorMsg,
-          prUrls: [],
-          taskId: taskId.toString()
+          prUrls: []
         });
-        await updateCard(taskCardId, { desc: trelloDesc });
-        for (const cardId of trelloCardIds) {
+        await addComment(taskCardId, trelloComment);
+        // Aguarda os agentes Trello fire-and-forget antes de re-ler (evita race).
+        await Promise.allSettled(pendingTrelloAgents);
+        // Re-le do Mongo pra incluir cards criados pelo agente Trello. Uniao dedup.
+        const freshDoc = await tasksCol.findOne({ _id: taskId }, { projection: { trelloCardIds: 1 } });
+        const allCardIds = Array.from(new Set([...trelloCardIds, ...(freshDoc?.trelloCardIds ?? [])]));
+        for (const cardId of allCardIds) {
           await moveCard(cardId, options.trello.doneListId);
         }
-        emit?.("step", { step: "trello_moved_done", count: trelloCardIds.length });
+        emit?.("step", { step: "trello_moved_done", count: allCardIds.length });
       } catch (moveErr) {
         const msg = moveErr instanceof Error ? moveErr.message : String(moveErr);
         console.warn(`[pipeline] Trello move-to-done (failure path) failed: ${msg}`);
@@ -1372,7 +1415,8 @@ const executeGithubSubtask = async (
   const route = await selectRoute("taskCode", {
     type: subtask.type,
     description: subtask.description,
-    repo: repoKey
+    repo: repoKey,
+    preferProvider: options.execProvider
   });
   options.emit?.("step", { step: "route_selected", subtaskId: subtask.id, provider: route.provider, model: route.model, reason: route.reason });
 
@@ -2191,7 +2235,7 @@ const executeScratchSubtask = async (
   await execShell("git", ["add", "-A"], scratchDir, 10000);
   await execShell("git", ["commit", "-m", "initial"], scratchDir, 10000).catch(() => {});
 
-  const route = await selectRoute("taskCode", { type: subtask.type, description: subtask.description });
+  const route = await selectRoute("taskCode", { type: subtask.type, description: subtask.description, preferProvider: options.execProvider });
   options.emit?.("step", { step: "route_selected", subtaskId: subtask.id, provider: route.provider, model: route.model, reason: route.reason });
 
   const result = await generateCodeChanges(

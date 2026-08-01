@@ -18,18 +18,34 @@
 import { ObjectId } from "mongodb";
 import {
   getScheduledCollection,
+  getIdeaDeliveriesCollection,
+  getTasksCollection,
+  getChatBindingsCollection,
   type ScheduledRecord
 } from "../core/mongo.js";
 import { computeNextRun } from "../orchestrator/agents/scheduleParser.js";
 import { executeTask } from "../orchestrator/index.js";
 import { resolveProjectOptions } from "../helpers/projectOptionsResolver.js";
-import { generateIdeas } from "../orchestrator/agents/ideas.js";
-import { sendText, isConnected } from "../orchestrator/integrations/whatsapp.js";
-import type { TaskExecuteOptions } from "../orchestrator/types.js";
+import { generateIdeas, type IdeasResult } from "../orchestrator/agents/ideas.js";
+import { buildIdleSuggestions } from "../orchestrator/agents/idleSuggestions.js";
+import { sendText, isConnected, onStatusChange } from "../orchestrator/integrations/whatsapp.js";
+import type { TaskExecuteOptions, TaskStatus } from "../orchestrator/types.js";
 
 const TICK_MS = 60_000;
 /** Lock expira apos 5min — proteção contra processo morto sem liberar. */
 const LOCK_TIMEOUT_MS = 5 * 60 * 1000;
+
+// ─── Idle-watchdog (pergunta no WhatsApp quando o sistema fica ocioso) ─────
+/** Sem nenhuma task ativa por este tempo -> considera ocioso. */
+const IDLE_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2h
+/** Nao repergunta ao mesmo chat dentro deste intervalo (anti-spam). */
+const NUDGE_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
+/** So incomoda dentro desta janela de horas locais (America/Sao_Paulo). */
+const ACTIVE_HOUR_START = 8;
+const ACTIVE_HOUR_END = 21;
+const IDLE_TZ = "America/Sao_Paulo";
+/** Status que contam como "task ativa" (sistema ocupado). */
+const ACTIVE_TASK_STATUSES: TaskStatus[] = ["pending", "planning", "awaiting_approval", "executing"];
 
 let started = false;
 let tickHandle: NodeJS.Timeout | null = null;
@@ -71,6 +87,123 @@ const tick = async (): Promise<void> => {
         console.warn("[scheduler] failed to release lock:", err);
       }
     });
+  }
+
+  // Watchdog de ociosidade — best-effort, nunca quebra o tick.
+  await checkIdleAndNudge().catch(err => console.warn("[scheduler] idle-watchdog error:", err));
+};
+
+/** Hora local (America/Sao_Paulo) 0-23, robusto a fuso do host. */
+const localHour = (): number => {
+  const s = new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    hour12: false,
+    timeZone: IDLE_TZ
+  }).format(new Date());
+  const h = parseInt(s, 10);
+  return Number.isNaN(h) ? new Date().getHours() : h % 24;
+};
+
+/**
+ * Watchdog de ociosidade: se nao ha nenhuma task ativa e o sistema ficou parado
+ * por >= IDLE_THRESHOLD_MS, pergunta no WhatsApp se pode rodar algo. Gates anti-spam:
+ * cooldown por chat, janela de horario, WA conectado, chat privado com projeto default.
+ */
+const checkIdleAndNudge = async (): Promise<void> => {
+  if (!isConnected()) return;
+
+  const hour = localHour();
+  if (hour < ACTIVE_HOUR_START || hour >= ACTIVE_HOUR_END) return;
+
+  const tasksCol = await getTasksCollection();
+  const activeCount = await tasksCol.countDocuments({ status: { $in: ACTIVE_TASK_STATUSES } });
+  if (activeCount > 0) return; // sistema ocupado
+
+  // Última atividade = task mais recente por updatedAt.
+  const [lastTask] = await tasksCol.find({}).sort({ updatedAt: -1 }).limit(1).toArray();
+  if (!lastTask) return; // nunca rodou nada — nada pra sugerir contexto
+  const lastActivity = lastTask.updatedAt ?? lastTask.createdAt;
+  if (!lastActivity || Date.now() - new Date(lastActivity).getTime() < IDLE_THRESHOLD_MS) return;
+
+  // Bindings elegiveis: WhatsApp, ativos, privados, com projeto default, toggle on,
+  // fora do cooldown.
+  const bindingsCol = await getChatBindingsCollection();
+  const cooldownCutoff = new Date(Date.now() - NUDGE_COOLDOWN_MS);
+  const eligible = await bindingsCol
+    .find({
+      transport: "whatsapp",
+      active: true,
+      isGroup: { $ne: true },
+      defaultProjectId: { $exists: true, $ne: null },
+      idleNudgeEnabled: { $ne: false },
+      $or: [
+        { lastIdleNudgeAt: { $exists: false } },
+        { lastIdleNudgeAt: { $lt: cooldownCutoff } }
+      ]
+    } as Record<string, unknown>)
+    .toArray();
+
+  if (eligible.length === 0) return;
+
+  // Dedup por chatId — pode haver bindings duplicados pro mesmo chat; envia 1x so.
+  const seenChats = new Set<string>();
+  const uniqueBindings = eligible.filter(b => {
+    if (!b.chatId || seenChats.has(b.chatId)) return false;
+    seenChats.add(b.chatId);
+    return true;
+  });
+
+  const idleHours = Math.round((Date.now() - new Date(lastActivity).getTime()) / (60 * 60 * 1000));
+
+  for (const b of uniqueBindings) {
+    // Coleta sugestoes concretas: cards Trello (projeto default) + ideias de melhoria (codex).
+    let suggestions: Awaited<ReturnType<typeof buildIdleSuggestions>> = [];
+    try {
+      if (b.defaultProjectId) {
+        suggestions = await buildIdleSuggestions(b.defaultProjectId, b.userId ?? undefined);
+      }
+    } catch (err) {
+      console.warn("[scheduler] buildIdleSuggestions falhou:", err instanceof Error ? err.message : err);
+    }
+
+    let msg: string;
+    let persisted: Array<{ n: number; kind: "card" | "idea"; description: string }> = [];
+
+    if (suggestions.length > 0) {
+      const lines = suggestions.map((s, i) => {
+        const icon = s.kind === "card" ? "🃏" : "💡";
+        return `${i + 1}. ${icon} ${s.label}`;
+      });
+      persisted = suggestions.map((s, i) => ({ n: i + 1, kind: s.kind, description: s.description }));
+      msg =
+        `💤 Parado há ~${idleHours}h. Posso adiantar algo?\n\n` +
+        `${lines.join("\n")}\n\n` +
+        `Responda o *número* pra eu rodar (no claude), ou mande sua própria descrição.\n` +
+        `*!ideas* pra mais · *!projects* pra trocar de projeto.\n\n` +
+        `_(Pra desligar: *!idle off*)_`;
+    } else {
+      // Fallback: aviso generico (Trello off e/ou generateIdeas vazio/falho).
+      msg =
+        `💤 Nenhuma task rodando há ~${idleHours}h.\n` +
+        `Quer que eu rode algo agora?\n\n` +
+        `Responda com a descrição (ex: *corrigir bug do login*),\n` +
+        `ou *!ideas* pra sugestões, ou *!projects* pra trocar de projeto.\n\n` +
+        `_(Pra desligar estes avisos: *!idle off*)_`;
+    }
+
+    try {
+      await sendText(b.chatId, msg);
+      // Marca cooldown + persiste sugestoes em TODOS os bindings desse chat (evita dup no proximo tick).
+      await bindingsCol.updateMany(
+        { chatId: b.chatId },
+        { $set: { lastIdleNudgeAt: new Date(), idleSuggestions: persisted } }
+      );
+      console.info(
+        `[scheduler] idle-nudge enviado (jid=${b.chatId.slice(0, 8)}..., idle=${idleHours}h, sugestoes=${persisted.length})`
+      );
+    } catch (err) {
+      console.warn("[scheduler] falha ao enviar idle-nudge:", err);
+    }
   }
 };
 
@@ -145,15 +278,46 @@ const dispatchTask = async (rec: ScheduledRecord): Promise<string> => {
   return r.taskId;
 };
 
-/** Dispatch kind="ideas". Roda generateIdeas e manda resultado via WA. */
+/**
+ * Dispatch kind="ideas". Roda generateIdeas e manda resultado via WA.
+ * #2: se a geracao FALHOU (nao "vazio"), lanca erro -> fireScheduled marca
+ *     lastFireResult="failed" e avisa "job falhou" em vez de "nada relevante".
+ * #1: se o WhatsApp estiver offline, persiste a mensagem pra reenviar no
+ *     reconnect em vez de descartar silenciosamente.
+ */
 const dispatchIdeas = async (rec: ScheduledRecord): Promise<void> => {
   const result = await generateIdeas(rec.userId);
 
-  if (!rec.whatsappJid || !isConnected()) return;
+  if (result.failed) {
+    throw new Error(result.error ?? "geracao de ideias falhou (LLM/parse)");
+  }
 
-  if (!result.ideas || result.ideas.length === 0) {
-    await sendText(rec.whatsappJid, `💡 _Sweep diario:_ nada relevante hoje.`);
+  if (!rec.whatsappJid) return; // schedule silencioso, sem destino
+
+  const text = formatIdeasMessage(result);
+
+  if (isConnected()) {
+    await sendText(rec.whatsappJid, text);
     return;
+  }
+
+  // WA offline — enfileira pra reenviar no reconnect (#1).
+  const col = await getIdeaDeliveriesCollection();
+  await col.insertOne({
+    whatsappJid: rec.whatsappJid,
+    userId: rec.userId,
+    text,
+    status: "pending",
+    attempts: 0,
+    createdAt: new Date()
+  });
+  console.info(`[scheduler] WA offline — ideia enfileirada pra reenvio (jid=${rec.whatsappJid.slice(0, 8)}...)`);
+};
+
+/** Formata o resultado das ideias em texto pronto pra WhatsApp. */
+const formatIdeasMessage = (result: IdeasResult): string => {
+  if (!result.ideas || result.ideas.length === 0) {
+    return `💡 _Sweep de ideias:_ nada relevante desta vez.`;
   }
 
   const categoryLabel: Record<string, string> = {
@@ -168,7 +332,7 @@ const dispatchIdeas = async (rec: ScheduledRecord): Promise<void> => {
   };
   const effortIcon: Record<string, string> = { small: "🟢", medium: "🟡", large: "🔴" };
 
-  const lines: string[] = [`💡 *Sweep diario — ${result.ideas.length} ideia${result.ideas.length > 1 ? "s" : ""}*`, ""];
+  const lines: string[] = [`💡 *Sweep de ideias — ${result.ideas.length} ideia${result.ideas.length > 1 ? "s" : ""}*`, ""];
   for (let i = 0; i < result.ideas.length; i++) {
     const idea = result.ideas[i]!;
     const cat = categoryLabel[idea.category] ?? "💡";
@@ -178,7 +342,34 @@ const dispatchIdeas = async (rec: ScheduledRecord): Promise<void> => {
     lines.push(`👉 ${idea.suggestion}`);
     lines.push("");
   }
-  await sendText(rec.whatsappJid, lines.join("\n").trim());
+  return lines.join("\n").trim();
+};
+
+/**
+ * #1: reenvia entregas de ideias que ficaram pendentes (WA offline na hora).
+ * Chamado no boot do scheduler e sempre que o WhatsApp reconecta.
+ * Best-effort — nao lanca; falhas individuais so incrementam attempts.
+ */
+export const flushPendingIdeaDeliveries = async (): Promise<number> => {
+  if (!isConnected()) return 0;
+  const col = await getIdeaDeliveriesCollection();
+  const pending = await col.find({ status: "pending" }).sort({ createdAt: 1 }).limit(50).toArray();
+  let sent = 0;
+  for (const d of pending) {
+    try {
+      await sendText(d.whatsappJid, d.text);
+      await col.updateOne(
+        { _id: d._id },
+        { $set: { status: "sent", sentAt: new Date() }, $inc: { attempts: 1 } }
+      );
+      sent++;
+    } catch (err) {
+      await col.updateOne({ _id: d._id }, { $inc: { attempts: 1 } });
+      console.warn("[scheduler] falha ao reenviar ideia pendente:", err);
+    }
+  }
+  if (sent > 0) console.info(`[scheduler] reenviou ${sent} entrega(s) de ideias pendentes`);
+  return sent;
 };
 
 /** Cleanup de locks orfaos no boot (caso processo tenha morrido segurando lock). */
@@ -201,6 +392,14 @@ export const startScheduler = async (): Promise<void> => {
   await releaseStaleLocks();
 
   console.info("[scheduler] started (tick=60s)");
+
+  // #1: reenvia entregas pendentes quando o WhatsApp reconectar + tentativa no boot.
+  onStatusChange((status) => {
+    if (status === "open") {
+      void flushPendingIdeaDeliveries().catch(err => console.warn("[scheduler] flush error:", err));
+    }
+  });
+  void flushPendingIdeaDeliveries().catch(err => console.warn("[scheduler] flush boot error:", err));
 
   // Dispara imediato + a cada minuto
   void tick().catch(err => console.warn("[scheduler] tick error:", err));

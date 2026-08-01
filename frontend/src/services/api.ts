@@ -380,14 +380,14 @@ export const api = {
 
   async createProject(body: {
     name: string; description?: string; repoIds?: string[];
-    trelloBoardId?: string; trelloListId?: string; trelloDoneListId?: string;
+    trelloBoardId?: string; trelloListId?: string; trelloDoneListId?: string; trelloAgentEnabled?: boolean; trelloAgentCreateCards?: boolean;
   }): Promise<Record<string, unknown>> {
     return request('/projects', { method: 'POST', body: JSON.stringify(body) })
   },
 
   async updateProject(id: string, body: {
     name?: string; description?: string; repoIds?: string[];
-    trelloBoardId?: string; trelloListId?: string; trelloDoneListId?: string;
+    trelloBoardId?: string; trelloListId?: string; trelloDoneListId?: string; trelloAgentEnabled?: boolean; trelloAgentCreateCards?: boolean;
   }): Promise<Record<string, unknown>> {
     return request(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
   },

@@ -35,6 +35,9 @@ import { startPreview, stopPreview } from "./previewManager.js";
 import { getMswSetupSubtasks } from "../helpers/mswSetup.js";
 import { retrySubtask } from "./subtaskRetry.js";
 import { getIntegrationsSettings } from "../helpers/settings.js";
+import { config } from "../core/config.js";
+import { runOpenClaude } from "../orchestrator/integrations/openclaude.js";
+import { markProviderDown } from "../orchestrator/routing/router.js";
 import {
   getChatBindingsCollection,
   getProjectsCollection,
@@ -47,6 +50,7 @@ import {
 import { ObjectId } from "mongodb";
 import { executeTask } from "../orchestrator/index.js";
 import { resolveProjectOptions } from "../helpers/projectOptionsResolver.js";
+import { ensureBaseRepo } from "../orchestrator/integrations/github.js";
 import { planTaskOnly } from "../helpers/planTaskOnly.js";
 import { generateIdeas } from "../orchestrator/agents/ideas.js";
 import { parseSchedule, describeCron } from "../orchestrator/agents/scheduleParser.js";
@@ -126,7 +130,10 @@ export const startWhatsappBot = async (): Promise<void> => {
     } else if (status === "close") {
       if (info?.loggedOut) {
         if (auth) await auth.markLoggedOut();
-        // Nao tenta reconectar — precisa novo pareamento
+        // Sessao revogada: reseta estado + fecha socket pra que o proximo
+        // startWhatsappBot() (via SSE /qr) abra um socket novo e emita QR.
+        started = false;
+        await closeSocket();
         console.warn("[whatsappBot] logged out by WhatsApp; awaiting re-pair");
       } else if (started) {
         void scheduleReconnect();
@@ -152,6 +159,43 @@ export const logoutWhatsappBot = async (): Promise<void> => {
   await performLogout();
   if (auth) await auth.clear();
   auth = null;
+};
+
+/**
+ * Lista os membros de um grupo (via groupMetadata). Retorna telefone (digitos),
+ * LID e nome de cada um pra UI oferecer um seletor em vez de digitar numero.
+ * `value` e o que deve ser salvo em admins/allow-list (preferindo telefone).
+ */
+export type GroupMember = {
+  /** JID a salvar em admins/commandPermissions (telefone quando disponivel). */
+  value: string;
+  /** Telefone em digitos (sem dominio), quando resolvido. */
+  phone?: string;
+  /** LID em digitos, quando disponivel. */
+  lid?: string;
+  /** Nome exibivel (contato/notify), quando disponivel. */
+  name?: string;
+  isAdmin: boolean;
+};
+
+export const listGroupMembers = async (chatId: string): Promise<GroupMember[]> => {
+  if (!chatId.endsWith("@g.us")) return [];
+  const meta = await getGroupMeta(chatId);
+  if (!meta?.participants) return [];
+  return meta.participants.map((p) => {
+    const phoneJid = p.jid && p.jid.endsWith("@s.whatsapp.net") ? p.jid : undefined;
+    const phoneDigits = digitsOf(phoneJid ?? p.jid);
+    const lidDigits = digitsOf(p.lid);
+    // Preferimos salvar o telefone; se so tiver LID, salvamos o LID mesmo.
+    const value = phoneJid ?? (p.lid ?? p.id);
+    return {
+      value,
+      phone: phoneDigits || undefined,
+      lid: lidDigits || undefined,
+      name: p.name ?? p.notify ?? undefined,
+      isAdmin: Boolean(p.admin) || Boolean(p.isAdmin) || Boolean(p.isSuperAdmin)
+    };
+  });
 };
 
 // ── Bind token (one-shot pra parear chat com user) ───────────────
@@ -198,6 +242,113 @@ const isAllowedJid = async (jid: string): Promise<boolean> => {
   if (settings.whatsappAllowedJids?.includes(jid)) return true;
 
   return false;
+};
+
+// ── Permissoes de grupo ──────────────────────────────────────────
+
+/**
+ * Comandos com efeito (write) ou custo (LLM) que passam pelo gate de permissao
+ * em grupos. Cada entrada mapeia o texto do comando -> chave de permissao.
+ * Comandos de leitura (!help, !now, !today, !prs, !status, !scheduled, !projects,
+ * !health) NAO estao aqui — sao sempre liberados.
+ */
+const GATED_COMMAND_KEYS: { test: (c: string) => boolean; key: string }[] = [
+  { test: (c) => c.startsWith("!task"), key: "task" },
+  { test: (c) => c.startsWith("!ask") || c.startsWith("!pergunta"), key: "ask" },
+  { test: (c) => c.startsWith("!ideas") || c.startsWith("!ideias"), key: "ideas" },
+  // Apenas as acoes de escrita sao gated; a lista read-only (!scheduled / !agendados) fica livre.
+  { test: (c) => c === "!schedule" || c.startsWith("!schedule ") || c === "!agendar" || c.startsWith("!agendar ") || c.startsWith("!unschedule") || c.startsWith("!desagendar"), key: "schedule" },
+  { test: (c) => c.startsWith("!project ") || c.startsWith("!projeto ") || c.startsWith("!approve") || c.startsWith("!aprovacao"), key: "project" },
+  { test: (c) => c.startsWith("!retry") || c.startsWith("!repetir") || c.startsWith("!cancel") || c.startsWith("!cancelar") || c.startsWith("!test") || c.startsWith("!testar") || c.startsWith("!retrysub") || c.startsWith("!retentar") || c.startsWith("!setup-preview") || c.startsWith("!setuppreview"), key: "task" }
+];
+
+/** Retorna a chave de permissao de um comando, ou null se for comando livre. */
+const permissionKeyFor = (trimmed: string): string | null => {
+  const cmd = trimmed.replace(/^mathai\s+/i, "!").trim().toLowerCase();
+  for (const g of GATED_COMMAND_KEYS) if (g.test(cmd)) return g.key;
+  return null;
+};
+
+/** Extrai so os digitos (user part) de um JID, ignorando dominio/device. */
+const digitsOf = (jid?: string | null): string => {
+  const userPart = (jid ?? "").split("@")[0] ?? "";
+  return (userPart.split(":")[0] ?? "").replace(/[^0-9]/g, "");
+};
+
+// Cache curto de groupMetadata pra evitar rate-limit (nome + participantes).
+type GroupMeta = Awaited<ReturnType<NonNullable<ReturnType<typeof getSocket>>["groupMetadata"]>>;
+const groupMetaCache = new Map<string, { meta: GroupMeta; at: number }>();
+const GROUP_META_TTL = 60_000;
+
+const getGroupMeta = async (jid: string): Promise<GroupMeta | undefined> => {
+  const cached = groupMetaCache.get(jid);
+  if (cached && Date.now() - cached.at < GROUP_META_TTL) return cached.meta;
+  try {
+    const sock = getSocket();
+    if (!sock) return cached?.meta;
+    const meta = await sock.groupMetadata(jid);
+    groupMetaCache.set(jid, { meta, at: Date.now() });
+    return meta;
+  } catch {
+    return cached?.meta;
+  }
+};
+
+/** Busca o assunto (nome) de um grupo via Baileys; best-effort. */
+const getGroupSubject = async (jid: string): Promise<string | undefined> => {
+  const meta = await getGroupMeta(jid);
+  return meta?.subject;
+};
+
+/**
+ * Resolve TODAS as identidades (em digitos) de quem enviou uma mensagem no grupo.
+ * WhatsApp entrega o remetente ora como telefone (@s.whatsapp.net) ora como LID
+ * (@lid, formato anonimo). groupMetadata.participants expoe .jid (telefone) e
+ * .lid (LID) de cada membro, entao mapeamos uma coisa na outra. Retornamos o
+ * conjunto de digitos possiveis pra casar contra admins/allow-list independente
+ * do formato salvo. Sempre inclui o proprio remetente cru como fallback.
+ */
+const senderIdentities = async (groupJid: string, rawSender: string): Promise<string[]> => {
+  const ids = new Set<string>();
+  const raw = digitsOf(rawSender);
+  if (raw) ids.add(raw);
+  const meta = await getGroupMeta(groupJid);
+  const part = meta?.participants?.find(
+    (p) => digitsOf(p.id) === raw || digitsOf(p.lid) === raw || digitsOf(p.jid) === raw
+  );
+  if (part) {
+    for (const v of [part.id, part.lid, part.jid]) {
+      const d = digitsOf(v);
+      if (d) ids.add(d);
+    }
+  }
+  return [...ids];
+};
+
+/** Um sender (via identidades resolvidas) e admin do grupo? (controle total). */
+const isGroupAdmin = (binding: ChatBindingRecord, identities: string[]): boolean =>
+  (binding.admins ?? []).some((a) => identities.includes(digitsOf(a)));
+
+/**
+ * Permite um comando se: sender e admin, OU sender esta na allow-list do comando.
+ * Comando sem allow-list explicita = so admin (default seguro). Comparacao por
+ * digitos + multiplas identidades (telefone/LID) pra ser imune ao formato.
+ */
+const isCommandAllowed = (
+  binding: ChatBindingRecord,
+  identities: string[],
+  key: string
+): boolean => {
+  if (isGroupAdmin(binding, identities)) return true;
+  const allowed = binding.commandPermissions?.[key];
+  return Array.isArray(allowed) && allowed.some((a) => identities.includes(digitsOf(a)));
+};
+
+/** Normaliza um numero/mention pra JID @s.whatsapp.net. */
+const toJid = (raw: string): string | null => {
+  const digits = raw.replace(/[^0-9]/g, "");
+  if (digits.length < 8) return null;
+  return `${digits}@s.whatsapp.net`;
 };
 
 // ── Test routine builder ─────────────────────────────────────────
@@ -307,18 +458,31 @@ const buildTestRoutine = (task: TaskRecord): string => {
 const handleIncoming = async (msg: import("@whiskeysockets/baileys").WAMessage): Promise<void> => {
   const jid = msg.key.remoteJid;
   if (!jid) return;
-  // Ignora grupos no MVP — aceita @s.whatsapp.net (PN) e @lid (Linked ID, novo formato).
-  // Grupos sao @g.us, broadcasts @broadcast etc.
-  if (!jid.endsWith("@s.whatsapp.net") && !jid.endsWith("@lid")) return;
+  // Aceita chat privado (@s.whatsapp.net / @lid) e grupos (@g.us).
+  // broadcasts @broadcast e status ficam de fora.
+  const isGroup = jid.endsWith("@g.us");
+  if (!jid.endsWith("@s.whatsapp.net") && !jid.endsWith("@lid") && !isGroup) return;
 
   const text = extractText(msg);
   if (!text) return;
   const trimmed = text.trim();
 
+  // Em grupos, so reagimos a comandos (!... ou "mathai ...") — anti-ruido/anti-ban.
+  // Excecao: resposta curta de aprovacao (1/2/sim/nao/...) quando HA um plano
+  // pendente neste grupo — senao o "1" de aprovar seria descartado aqui, antes
+  // do intercept de plano pendente la embaixo. So consulta o DB quando o texto
+  // ja parece uma resposta de aprovacao (conjunto fechado), pra nao virar ruido.
+  if (isGroup && !trimmed.startsWith("!") && !/^mathai\s/i.test(trimmed)) {
+    if (!(isApprovalResponse(trimmed) && (await findPendingPlan(jid)))) return;
+  }
+
+  // JID de quem enviou: em grupos vem em `participant`; em privado e o proprio chat.
+  const senderJid = (isGroup ? msg.key.participant : jid) ?? jid;
+
   // !start <token> — caminho de bind, EXCECAO da whitelist
   if (trimmed.startsWith("!start ") || trimmed.startsWith("mathai start ")) {
     const token = trimmed.replace(/^(!start |mathai start )/, "").trim();
-    return handleStart(jid, token);
+    return handleStart(jid, token, { isGroup, senderJid, groupSubject: isGroup ? await getGroupSubject(jid) : undefined });
   }
 
   // Whitelist
@@ -329,7 +493,15 @@ const handleIncoming = async (msg: import("@whiskeysockets/baileys").WAMessage):
 
   const binding = await findBinding(jid);
   if (!binding) {
-    await safeSend(jid, "🔒 Vincule este chat primeiro: gere um token nas Configuracoes do MathAI e envie *!start <token>*");
+    if (!isGroup) await safeSend(jid, "🔒 Vincule este chat primeiro: gere um token nas Configuracoes do MathAI e envie *!start <token>*");
+    return;
+  }
+
+  // Gate de permissao (so em grupos). Comandos de leitura sao sempre liberados.
+  const permKey = permissionKeyFor(trimmed);
+  const identities = isGroup ? await senderIdentities(jid, senderJid) : [digitsOf(senderJid)];
+  if (isGroup && permKey && !isCommandAllowed(binding, identities, permKey)) {
+    await safeSend(jid, `🔒 Voce nao tem permissao para *${permKey}* neste grupo. Fale com um admin.`);
     return;
   }
 
@@ -337,6 +509,18 @@ const handleIncoming = async (msg: import("@whiskeysockets/baileys").WAMessage):
   const pending = await findPendingPlan(jid);
   if (pending && isApprovalResponse(trimmed)) {
     return handlePlanApprovalResponse(jid, binding, pending, trimmed);
+  }
+
+  // ── Intercept: resposta ao nudge de ociosidade (texto livre em chat privado,
+  // logo apos o watchdog perguntar "quer rodar algo?"). ──
+  if (
+    !isGroup &&
+    !trimmed.startsWith("!") &&
+    !/^mathai\s/i.test(trimmed) &&
+    binding.lastIdleNudgeAt &&
+    Date.now() - new Date(binding.lastIdleNudgeAt).getTime() < REPLY_WINDOW_MS
+  ) {
+    return handleIdleReply(jid, binding, trimmed);
   }
 
   // Aliases mathai → !
@@ -375,6 +559,13 @@ const handleIncoming = async (msg: import("@whiskeysockets/baileys").WAMessage):
   if (cmd === "!approve" || cmd === "!aprovacao") {
     const cur = binding.requirePlanApproval !== false;
     return safeSend(jid, `Gate de aprovacao: *${cur ? "ON" : "OFF"}*\nUse *!approve on* ou *!approve off*.`);
+  }
+  if (cmd.startsWith("!idle ")) {
+    return handleIdleToggle(jid, binding, cmd.slice(6).trim());
+  }
+  if (cmd === "!idle") {
+    const cur = binding.idleNudgeEnabled !== false;
+    return safeSend(jid, `Aviso de ociosidade: *${cur ? "ON" : "OFF"}*\nUse *!idle on* ou *!idle off*.\n_Quando ON, te pergunto se quero rodar algo quando o sistema fica parado._`);
   }
   if (cmd.startsWith("!status ")) return handleStatus(jid, binding, cmd.slice(8).trim());
   if (cmd === "!status") {
@@ -422,6 +613,19 @@ const handleIncoming = async (msg: import("@whiskeysockets/baileys").WAMessage):
   if (cmd === "!retrysub" || cmd === "!retentar") {
     return safeSend(jid, "Uso: *!retrysub <taskId> <subtaskId>* — re-executa subtask falha");
   }
+  if (cmd.startsWith("!ask ") || cmd.startsWith("!pergunta ")) {
+    const arg = cmd.replace(/^(!ask |!pergunta )/, "").trim();
+    return handleAskSystem(jid, binding, arg);
+  }
+  if (cmd === "!ask" || cmd === "!pergunta") {
+    return safeSend(jid, "Uso: *!ask <pergunta sobre o sistema>*\nEx: !ask como funciona o roteamento de providers?");
+  }
+  if (cmd.startsWith("!perm ")) {
+    return handlePerm(jid, binding, identities, isGroup, cmd.slice(6).trim());
+  }
+  if (cmd === "!perm") {
+    return handlePerm(jid, binding, identities, isGroup, "list");
+  }
   if (cmd.startsWith("!task ")) return handleTask(jid, binding, cmd.slice(6).trim());
   if (cmd === "!task") {
     return safeSend(jid, "Uso: *!task <descricao>*\nExemplo: !task corrigir bug do login");
@@ -433,7 +637,11 @@ const handleIncoming = async (msg: import("@whiskeysockets/baileys").WAMessage):
 
 // ── Command handlers ─────────────────────────────────────────────
 
-const handleStart = async (jid: string, token: string): Promise<void> => {
+const handleStart = async (
+  jid: string,
+  token: string,
+  group?: { isGroup: boolean; senderJid: string; groupSubject?: string }
+): Promise<void> => {
   if (!token) {
     await safeSend(jid, "Uso: *!start <token>*\nGere um token nas Configuracoes do MathAI.");
     return;
@@ -457,22 +665,211 @@ const handleStart = async (jid: string, token: string): Promise<void> => {
     return;
   }
 
+  const isGroup = group?.isGroup ?? false;
+  const set: Partial<ChatBindingRecord> = {
+    chatId: jid,
+    active: true,
+    displayName: isGroup ? (group?.groupSubject ?? "Grupo") : jidToPhone(jid)
+  };
+  if (isGroup) {
+    set.isGroup = true;
+    set.groupSubject = group?.groupSubject;
+    // Quem parear vira o primeiro admin do grupo (controle total). Resolve pro
+    // JID de telefone quando o grupo expoe (participant pode vir como @lid).
+    let adminJid = group?.senderJid;
+    if (adminJid) {
+      const meta = await getGroupMeta(jid);
+      const raw = digitsOf(adminJid);
+      const part = meta?.participants?.find(
+        (p) => digitsOf(p.id) === raw || digitsOf(p.lid) === raw || digitsOf(p.jid) === raw
+      );
+      if (part?.jid) adminJid = part.jid;
+    }
+    set.admins = adminJid ? [adminJid] : [];
+  }
+
   await col.updateOne(
     { _id: pending._id },
     {
-      $set: {
-        chatId: jid,
-        active: true,
-        displayName: jidToPhone(jid)
-      },
+      $set: set,
       $unset: { bindToken: "", bindTokenExpiresAt: "" }
     }
   );
 
   await safeSend(
     jid,
-    `✅ *Vinculado!*\n\nVoce ja pode usar:\n• *!task <desc>* — disparar nova task\n• *!now* — o que esta rodando\n• *!help* — ajuda completa`
+    isGroup
+      ? `✅ *Grupo vinculado!*\n\nVoce e o admin. Configure permissoes por comando:\n• *!perm list* — ver permissoes\n• *!perm allow <cmd> <numero>* — liberar\n• *!perm admin add <numero>* — novo admin\n• *!project <id>* — vincular projeto\n• *!ask <pergunta>* — perguntar sobre o sistema`
+      : `✅ *Vinculado!*\n\nVoce ja pode usar:\n• *!task <desc>* — disparar nova task\n• *!ask <pergunta>* — perguntar sobre o sistema\n• *!now* — o que esta rodando\n• *!help* — ajuda completa`
   );
+};
+
+// ── !ask — agente que responde sobre o REPO do projeto vinculado ──
+//
+// O agente explora o CODIGO-FONTE REAL do repositorio do projeto vinculado ao
+// chat/grupo (defaultProjectId) — nao o MathAI. Usa o clone base read-only
+// (ensureBaseRepo), que vive no volume compartilhado com os containers OpenClaude.
+
+// Ordem importa: anthropic primeiro. O !ask explora o REPO do projeto vinculado
+// via workingDirectory (gRPC). O build codex do OpenClaude so honra o cwd no shell
+// Bash — suas ferramentas nativas Glob/Grep resetam pro cwd do servidor (/openclaude),
+// entao ele responde "nao encontrei" mesmo com o repo certo montado. O build anthropic
+// honra o workingDirectory em todas as ferramentas. Codex fica so como fallback.
+const ASK_FLEET: { provider: string; model: string }[] = [
+  { provider: "anthropic", model: "claude-opus-4-8" },
+  { provider: "codex", model: "codexplan" }
+];
+
+const handleAskSystem = async (jid: string, binding: ChatBindingRecord, question: string): Promise<void> => {
+  if (!question) {
+    await safeSend(jid, "Uso: *!ask <pergunta sobre o projeto>*\nEx: !ask como funciona o login desse sistema?");
+    return;
+  }
+
+  if (!binding.defaultProjectId) {
+    await safeSend(jid, "🔒 Nenhum projeto vinculado a este chat. Defina com *!project <id>* ou pela UI antes de usar o !ask.");
+    return;
+  }
+
+  const opts = await resolveProjectOptions(binding.defaultProjectId);
+  const repoCfg = opts?.github?.[0];
+  if (!opts || !repoCfg) {
+    await safeSend(jid, "⚠️ O projeto vinculado nao tem repositorio GitHub configurado. Nao consigo responder sobre o codigo.");
+    return;
+  }
+
+  await safeSend(jid, `🤔 _Analisando o projeto *${opts.project.name}*..._`);
+
+  let dir: string;
+  try {
+    dir = await ensureBaseRepo(repoCfg.owner, repoCfg.repo, repoCfg.token);
+  } catch (err) {
+    console.warn("[whatsappBot] !ask ensureBaseRepo falhou:", err instanceof Error ? err.message : err);
+    await safeSend(jid, "❌ Nao consegui acessar o repositorio do projeto agora. Tente novamente em instantes.");
+    return;
+  }
+
+  const prompt =
+    `Voce e um assistente que responde perguntas sobre o projeto "${opts.project.name}" ` +
+    `(repositorio ${repoCfg.owner}/${repoCfg.repo}).\n\n` +
+    `IMPORTANTE — LOCALIZACAO DO CODIGO:\n` +
+    `- O codigo-fonte REAL do projeto JA ESTA no seu diretorio de trabalho ATUAL (cwd).\n` +
+    `- Comece SEMPRE rodando \`ls\` (sem argumentos) e explore a partir do diretorio atual (".").\n` +
+    `- Use SEMPRE caminhos RELATIVOS ao diretorio atual (ex: ".", "backend", "frontend/src") nas ferramentas de arquivo.\n` +
+    `- NUNCA use caminhos absolutos e NUNCA explore fora do diretorio atual — tudo que voce precisa esta aqui.\n` +
+    `- Explore os arquivos relevantes ANTES de responder. Baseie-se no que o codigo realmente faz, nao em suposicoes.\n\n` +
+    `REGRAS DA RESPOSTA:\n` +
+    `- Responda SOMENTE em linguagem natural, em portugues, de forma clara e direta.\n` +
+    `- NAO inclua trechos de codigo, nomes de arquivos/funcoes tecnicos, nem jargao — explique como um usuario entenderia.\n` +
+    `- Se a informacao nao existir no projeto, diga que nao encontrou. Nao invente.\n` +
+    `- Seja conciso (cabe numa mensagem de WhatsApp).\n\n` +
+    `PERGUNTA: ${question}`;
+
+  for (const route of ASK_FLEET) {
+    const grpcUrl = config.openclaude.providers?.[route.provider as keyof typeof config.openclaude.providers];
+    try {
+      const result = await runOpenClaude(prompt, {
+        workingDirectory: dir,
+        model: route.model,
+        grpcUrl,
+        autoApprove: true,
+        timeoutMs: 180_000,
+        onEvent: () => {}
+      });
+      const answer = (result.fullText ?? "").trim();
+      if (!answer) {
+        // Stream vazio = provider caiu antes do upstream; marca e tenta o proximo.
+        markProviderDown(route.provider);
+        continue;
+      }
+      const truncated = answer.length > 4000 ? answer.slice(0, 3997) + "..." : answer;
+      await safeSend(jid, truncated);
+      return;
+    } catch (err) {
+      markProviderDown(route.provider);
+      console.warn(`[whatsappBot] !ask via ${route.provider} falhou:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  await safeSend(jid, "❌ Nao consegui consultar o projeto agora (providers indisponiveis). Tente novamente em instantes.");
+};
+
+// ── !perm — gestao de permissoes do grupo ────────────────────────
+
+const PERM_KEYS = ["task", "ask", "ideas", "schedule", "project"] as const;
+
+const handlePerm = async (
+  jid: string,
+  binding: ChatBindingRecord,
+  identities: string[],
+  isGroup: boolean,
+  arg: string
+): Promise<void> => {
+  if (!isGroup) {
+    await safeSend(jid, "ℹ️ Permissoes so se aplicam a grupos. Em chat privado voce tem acesso total.");
+    return;
+  }
+
+  const parts = arg.split(/\s+/).filter(Boolean);
+  const sub = (parts[0] ?? "list").toLowerCase();
+
+  // list e sempre liberado; alteracoes exigem admin.
+  if (sub === "list") {
+    const admins = (binding.admins ?? []).map(jidToPhone).join(", ") || "(nenhum)";
+    const lines = [`🔐 *Permissoes do grupo*`, `Admins: ${admins}`, ""];
+    for (const k of PERM_KEYS) {
+      const list = binding.commandPermissions?.[k] ?? [];
+      const who = list.length ? list.map(jidToPhone).join(", ") : "(so admin)";
+      lines.push(`• *${k}*: ${who}`);
+    }
+    lines.push("", "_Admins podem tudo. Use !perm allow/deny/admin._");
+    await safeSend(jid, lines.join("\n"));
+    return;
+  }
+
+  if (!isGroupAdmin(binding, identities)) {
+    await safeSend(jid, "🔒 So admins do grupo podem alterar permissoes.");
+    return;
+  }
+
+  const col = await getChatBindingsCollection();
+
+  // !perm admin add/remove <numero>
+  if (sub === "admin") {
+    const action = (parts[1] ?? "").toLowerCase();
+    const targetJid = toJid(parts.slice(2).join(" "));
+    if (!["add", "remove"].includes(action) || !targetJid) {
+      await safeSend(jid, "Uso: *!perm admin add <numero>* ou *!perm admin remove <numero>*");
+      return;
+    }
+    const admins = new Set(binding.admins ?? []);
+    if (action === "add") admins.add(targetJid);
+    else admins.delete(targetJid);
+    await col.updateOne({ _id: binding._id }, { $set: { admins: Array.from(admins) } });
+    await safeSend(jid, `✅ Admin ${action === "add" ? "adicionado" : "removido"}: ${jidToPhone(targetJid)}`);
+    return;
+  }
+
+  // !perm allow/deny <cmd> <numero>
+  if (sub === "allow" || sub === "deny") {
+    const key = (parts[1] ?? "").toLowerCase();
+    const targetJid = toJid(parts.slice(2).join(" "));
+    if (!PERM_KEYS.includes(key as (typeof PERM_KEYS)[number]) || !targetJid) {
+      await safeSend(jid, `Uso: *!perm ${sub} <cmd> <numero>*\ncmd: ${PERM_KEYS.join(" | ")}`);
+      return;
+    }
+    const current = new Set(binding.commandPermissions?.[key] ?? []);
+    if (sub === "allow") current.add(targetJid);
+    else current.delete(targetJid);
+    await col.updateOne(
+      { _id: binding._id },
+      { $set: { [`commandPermissions.${key}`]: Array.from(current) } }
+    );
+    await safeSend(jid, `✅ *${key}* ${sub === "allow" ? "liberado para" : "bloqueado para"}: ${jidToPhone(targetJid)}`);
+    return;
+  }
+
+  await safeSend(jid, `Uso: *!perm* [list | allow <cmd> <numero> | deny <cmd> <numero> | admin add|remove <numero>]\ncmd: ${PERM_KEYS.join(" | ")}`);
 };
 
 const handleHelp = async (jid: string): Promise<void> => {
@@ -500,7 +897,8 @@ const handleHelp = async (jid: string): Promise<void> => {
     `📌 *!project <id|nome>* — define default deste chat\n` +
     `🪄 *!setup-preview <id|nome>* — configura MSW automaticamente\n\n` +
     `*Comportamento*\n` +
-    `🛂 *!approve on|off* — aprovar plano antes de executar\n\n` +
+    `🛂 *!approve on|off* — aprovar plano antes de executar\n` +
+    `💤 *!idle on|off* — perguntar se quero rodar algo quando ocioso\n\n` +
     `*Saude*\n` +
     `🩺 *!health* — status, metricas e saude do bot\n\n` +
     `❓ *!help* — esta mensagem\n` +
@@ -662,7 +1060,12 @@ const handleNow = async (jid: string, binding: ChatBindingRecord): Promise<void>
   await safeSend(jid, lines.join("\n").trim());
 };
 
-const handleTask = async (jid: string, binding: ChatBindingRecord, description: string): Promise<void> => {
+const handleTask = async (
+  jid: string,
+  binding: ChatBindingRecord,
+  description: string,
+  execProvider?: "anthropic" | "codex" | "deepseek"
+): Promise<void> => {
   if (!description) {
     await safeSend(jid, "Uso: *!task <descricao>*");
     return;
@@ -690,7 +1093,7 @@ const handleTask = async (jid: string, binding: ChatBindingRecord, description: 
 
   if (!requireApproval) {
     // Direto, sem gate
-    return fireTaskExecution(jid, binding, description, project.name, github, trello);
+    return fireTaskExecution(jid, binding, description, project.name, github, trello, undefined, execProvider);
   }
 
   // ── Gate de aprovacao: planeja, salva pending, manda preview ──
@@ -729,6 +1132,7 @@ const handleTask = async (jid: string, binding: ChatBindingRecord, description: 
     plannedSubtasks: plan.subtasks,
     resolvedGithub: plan.resolvedGithub,
     resolvedTrello: plan.resolvedTrello,
+    execProvider,
     createdAt: new Date(),
     expiresAt
   });
@@ -744,7 +1148,8 @@ const fireTaskExecution = async (
   projectName: string,
   github: import("../orchestrator/types.js").GithubRepoConfig[] | undefined,
   trello: { boardId: string; listId?: string; doneListId?: string } | undefined,
-  presetSubtasks?: PendingPlanRecord["plannedSubtasks"]
+  presetSubtasks?: PendingPlanRecord["plannedSubtasks"],
+  execProvider?: "anthropic" | "codex" | "deepseek"
 ): Promise<void> => {
   const lines: string[] = [
     presetSubtasks ? `🚀 *Iniciando (plano aprovado)*` : `🚀 *Iniciando*`,
@@ -773,7 +1178,8 @@ const fireTaskExecution = async (
     trello,
     whatsapp: { jid },
     presetSubtasks,
-    previewMocksDir: projectDoc?.previewMocksDir
+    previewMocksDir: projectDoc?.previewMocksDir,
+    execProvider
   } as import("../orchestrator/types.js").TaskExecuteOptions).catch(err => {
     console.error("[whatsappBot] executeTask error:", err);
     void safeSend(jid, `❌ *Erro ao disparar task:* ${err instanceof Error ? err.message : String(err)}`);
@@ -827,6 +1233,11 @@ const findPendingPlan = async (jid: string): Promise<PendingPlanRecord | null> =
 const APPROVE_RX = /^(1|sim|s|aprovar|aprovo|ok|yes|y)\b/i;
 const REJECT_RX = /^(2|n[ãa]o|nao|n|cancelar|cancel|no)\b/i;
 
+/** Janela apos o nudge de ociosidade em que texto livre vira descricao de task. */
+const REPLY_WINDOW_MS = 30 * 60 * 1000; // 30min
+/** Respostas curtas de "sim" sem descricao — pedem a descricao em seguida. */
+const AFFIRMATIVE_ONLY_RX = /^(1|sim|s|ok|yes|y|claro|pode|bora|vamos)\b[\s!.]*$/i;
+
 const isApprovalResponse = (text: string): boolean =>
   APPROVE_RX.test(text) || REJECT_RX.test(text);
 
@@ -862,10 +1273,76 @@ const handlePlanApprovalResponse = async (
       projectName,
       pending.resolvedGithub,
       pending.resolvedTrello,
-      pending.plannedSubtasks
+      pending.plannedSubtasks,
+      pending.execProvider
     );
     return;
   }
+};
+
+/** Limpa o marcador do nudge (fecha a janela de resposta). */
+const clearIdleNudge = async (binding: ChatBindingRecord): Promise<void> => {
+  const col = await getChatBindingsCollection();
+  await col.updateOne({ _id: binding._id }, { $unset: { lastIdleNudgeAt: "", idleSuggestions: "" } });
+};
+
+/**
+ * Processa a resposta do usuario ao nudge de ociosidade.
+ *  - "nao"/cancela  -> encerra, sem rodar nada.
+ *  - "sim" puro     -> pede a descricao (janela continua aberta).
+ *  - texto qualquer -> vira descricao de task via handleTask (herda o gate de aprovacao).
+ */
+const handleIdleReply = async (
+  jid: string,
+  binding: ChatBindingRecord,
+  text: string
+): Promise<void> => {
+  if (REJECT_RX.test(text)) {
+    await clearIdleNudge(binding);
+    await safeSend(jid, "👍 Ok, quando precisar é só me chamar.");
+    return;
+  }
+  // Resposta numerada: casa com uma sugestao persistida no nudge → roda ela (execucao claude).
+  // Precisa vir ANTES do AFFIRMATIVE_ONLY_RX (senao "1" seria interpretado como "sim").
+  const numMatch = text.trim().match(/^(\d+)\b/);
+  if (numMatch && binding.idleSuggestions && binding.idleSuggestions.length > 0) {
+    const n = Number(numMatch[1]);
+    const picked = binding.idleSuggestions.find(s => s.n === n);
+    if (picked) {
+      await clearIdleNudge(binding);
+      await handleTask(jid, binding, picked.description, "anthropic");
+      return;
+    }
+    // Numero fora da lista — segue pro fluxo abaixo (pode ser "1" afirmativo sem sugestoes validas).
+  }
+  if (AFFIRMATIVE_ONLY_RX.test(text)) {
+    // "sim" sem descricao — mantem a janela aberta e pede o que rodar.
+    await safeSend(jid, "Beleza! Me diz o que rodar (ex: *corrigir bug do login*), ou *!ideas* pra sugestões.");
+    return;
+  }
+  // Texto livre = descricao. Fecha a janela e dispara o fluxo normal de task (execucao claude).
+  await clearIdleNudge(binding);
+  await handleTask(jid, binding, text, "anthropic");
+};
+
+const handleIdleToggle = async (
+  jid: string,
+  binding: ChatBindingRecord,
+  arg: string
+): Promise<void> => {
+  const lower = arg.toLowerCase();
+  let value: boolean;
+  if (lower === "on" || lower === "true" || lower === "sim" || lower === "1") {
+    value = true;
+  } else if (lower === "off" || lower === "false" || lower === "nao" || lower === "não" || lower === "0") {
+    value = false;
+  } else {
+    await safeSend(jid, "Uso: *!idle on* ou *!idle off*");
+    return;
+  }
+  const col = await getChatBindingsCollection();
+  await col.updateOne({ _id: binding._id }, { $set: { idleNudgeEnabled: value } });
+  await safeSend(jid, `✅ Aviso de ociosidade: *${value ? "ON" : "OFF"}*\n_${value ? "Vou perguntar se quero rodar algo quando o sistema ficar parado." : "Não vou mais avisar quando estiver ocioso."}_`);
 };
 
 const handleApproveToggle = async (
@@ -1480,6 +1957,11 @@ const handleIdeas = async (jid: string, binding: ChatBindingRecord): Promise<voi
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await safeSend(jid, `❌ Erro ao gerar ideias: ${msg}`);
+    return;
+  }
+
+  if (result.failed) {
+    await safeSend(jid, `❌ A geracao de ideias falhou (${result.error ?? "erro no LLM"}). Tente de novo em instantes — isso NAO significa que nao ha nada relevante.`);
     return;
   }
 

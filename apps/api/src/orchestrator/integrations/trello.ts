@@ -70,6 +70,11 @@ export const getBoards = (): Promise<TrelloBoard[]> =>
 export const getBoardLists = (boardId: string): Promise<TrelloList[]> =>
   trelloFetch("GET", `/boards/${boardId}/lists`);
 
+/** Cards abertos do board (id, nome, coluna) — usado pelo agente Trello pra
+ *  nao duplicar cards ja existentes ao decidir create_card. */
+export const getBoardCards = (boardId: string): Promise<{ id: string; name: string; idList: string }[]> =>
+  trelloFetch("GET", `/boards/${boardId}/cards`, { fields: "name,idList", filter: "open" });
+
 /** Marker pra card de subtask (1 por subtask github separada que o planner gerar). */
 export const buildCardMarker = (taskId: string, subtaskId: string): string =>
   `mathai:${taskId}/${subtaskId}`;
@@ -171,6 +176,24 @@ export const updateCard = (
 export const moveCard = (cardId: string, listId: string): Promise<TrelloCard> =>
   updateCard(cardId, { idList: listId });
 
+/** Le o estado atual de um card (nome, desc, lista atual). */
+export const getCard = (cardId: string): Promise<TrelloCard> =>
+  trelloFetch("GET", `/cards/${cardId}`, { fields: "name,desc,url,idList,idBoard" });
+
+/** Adiciona um comentario ao card (aparece no feed de atividade). */
+export const addComment = (
+  cardId: string,
+  text: string
+): Promise<{ id: string }> =>
+  trelloFetch("POST", `/cards/${cardId}/actions/comments`, { text });
+
+/** Adiciona um label ao card (sem sobrescrever os existentes). */
+export const addLabelToCard = (
+  cardId: string,
+  labelId: string
+): Promise<unknown> =>
+  trelloFetch("POST", `/cards/${cardId}/idLabels`, { value: labelId });
+
 /* ── Checklists ──────────────────────────────────────────────────── */
 
 export type TrelloChecklist = { id: string; name: string; idCard: string };
@@ -189,6 +212,22 @@ export const addChecklistItem = (
   trelloFetch("POST", `/checklists/${checklistId}/checkItems`, {
     name,
     ...(checked ? { checked: "true" } : {})
+  });
+
+export type TrelloChecklistFull = {
+  id: string;
+  name: string;
+  idCard: string;
+  checkItems: { id: string; name: string; state: string }[];
+};
+
+/** Le as checklists de um card, com seus itens (nome + state). */
+export const getCardChecklists = (
+  cardId: string
+): Promise<TrelloChecklistFull[]> =>
+  trelloFetch("GET", `/cards/${cardId}/checklists`, {
+    fields: "name",
+    checkItem_fields: "name,state"
   });
 
 /* ── Labels ──────────────────────────────────────────────────────── */

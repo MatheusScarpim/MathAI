@@ -525,6 +525,57 @@ export type SetupPreviewResult = {
   results: SetupPreviewRepoResult[];
 };
 
+export type ScaffoldResult = { modifications: string[]; entryDisplay: string | null };
+
+/**
+ * Aplica o scaffold deterministico do preview (package.json + mocks + entry +
+ * index.html) num worktree JA criado. Idempotente. NAO faz git/commit/PR — so
+ * muta arquivos. Reusado por:
+ *   - runSetupPreviewDirect (abre PR no repo alvo)
+ *   - previewManager (worktree efemero de cada `!test`, pra MSW valer mesmo sem
+ *     o PR de setup ter sido mergeado na branch da task)
+ */
+export const applyPreviewScaffold = async (
+  worktreePath: string,
+  frontendDir: string
+): Promise<ScaffoldResult> => {
+  const modifications: string[] = [];
+
+  // 1. package.json — msw devDep + build:preview
+  const pkgPath = join(worktreePath, frontendDir, "package.json");
+  if (await patchPackageJson(pkgPath)) {
+    modifications.push(`${frontendDir}/package.json — msw devDep + build:preview script`);
+  }
+
+  // 2. mocks (browser.ts + handlers.ts + .env.preview + mockServiceWorker.js)
+  const createdMocks = await writeMockFiles(worktreePath, frontendDir);
+  createdMocks.forEach(m => modifications.push(`${m} — scaffold MSW`));
+
+  // 3. entry file — bootstrap condicional do worker
+  const entryRel = await detectEntryFile(worktreePath, frontendDir);
+  let entryDisplay: string | null = null;
+  if (entryRel) {
+    const patched = await patchEntryFile(worktreePath, frontendDir, entryRel);
+    entryDisplay = `${frontendDir}/${entryRel}`;
+    if (patched) modifications.push(`${entryDisplay} — bootstrap MSW worker em modo preview`);
+  } else {
+    modifications.push("(entrypoint nao encontrado — pulei bootstrap; adicione manualmente)");
+  }
+
+  // 4. index.html — script de bypass de login (roda antes do bundle ESM)
+  const indexRel = await detectIndexHtml(worktreePath, frontendDir);
+  if (indexRel) {
+    const patchedIndex = await patchIndexHtml(worktreePath, frontendDir, indexRel);
+    if (patchedIndex) {
+      modifications.push(`${frontendDir}/${indexRel} — script de bypass de login (pre-bundle)`);
+    }
+  } else {
+    modifications.push("(index.html nao encontrado — pulei script de bypass)");
+  }
+
+  return { modifications, entryDisplay };
+};
+
 /**
  * Roda o setup-preview em cada repo do projeto. Cada repo gera 1 PR.
  */
@@ -571,37 +622,10 @@ export const runSetupPreviewDirect = async (
         continue;
       }
 
-      // 1. package.json
-      const pkgPath = join(ws.worktreePath, frontendDir, "package.json");
-      if (await patchPackageJson(pkgPath)) {
-        acc.modifications.push(`${frontendDir}/package.json — msw devDep + build:preview script`);
-      }
-
-      // 2. mocks
-      const createdMocks = await writeMockFiles(ws.worktreePath, frontendDir);
-      createdMocks.forEach(m => acc.modifications.push(`${m} — scaffold MSW`));
-
-      // 3. entry file
-      const entryRel = await detectEntryFile(ws.worktreePath, frontendDir);
-      let entryDisplay: string | null = null;
-      if (entryRel) {
-        const patched = await patchEntryFile(ws.worktreePath, frontendDir, entryRel);
-        entryDisplay = `${frontendDir}/${entryRel}`;
-        if (patched) acc.modifications.push(`${entryDisplay} — bootstrap MSW worker em modo preview`);
-      } else {
-        acc.modifications.push("(entrypoint nao encontrado — pulei bootstrap; adicione manualmente)");
-      }
-
-      // 4. index.html — script de bypass de login (roda antes do bundle ESM)
-      const indexRel = await detectIndexHtml(ws.worktreePath, frontendDir);
-      if (indexRel) {
-        const patchedIndex = await patchIndexHtml(ws.worktreePath, frontendDir, indexRel);
-        if (patchedIndex) {
-          acc.modifications.push(`${frontendDir}/${indexRel} — script de bypass de login (pre-bundle)`);
-        }
-      } else {
-        acc.modifications.push("(index.html nao encontrado — pulei script de bypass)");
-      }
+      // 1-4. scaffold deterministico (package.json + mocks + entry + index.html)
+      const scaffold = await applyPreviewScaffold(ws.worktreePath, frontendDir);
+      acc.modifications.push(...scaffold.modifications);
+      const entryDisplay = scaffold.entryDisplay;
 
       if (acc.modifications.filter(m => !m.startsWith("(")).length === 0) {
         acc.status = "no-changes";

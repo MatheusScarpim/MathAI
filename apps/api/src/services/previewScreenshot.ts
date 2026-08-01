@@ -263,6 +263,38 @@ export const captureUrl = async (
     viewport,
     recordVideo: videoDir ? { dir: videoDir, size: viewport } : undefined
   });
+
+  // Seed de auth no localStorage ANTES de qualquer JS do app rodar. Muitos SPAs
+  // (ex: ScarlatMercadinho) hidratam o auth store SO do localStorage no boot e
+  // NAO chamam /auth/me — entao mockar HTTP via MSW nao basta: sem token+user o
+  // router guard redireciona a rota protegida (/admin/dashboard) pra /login e o
+  // preview nunca mostra a feature. Semeamos as chaves comuns com um usuario
+  // ADMIN full-permission. Roda em toda pagina do context (persiste no goto).
+  const previewUser = {
+    id: "preview-user",
+    name: "Preview User",
+    email: "preview@mathai.dev",
+    role: "ADMIN",
+    permissions: ["*"]
+  };
+  const previewToken = "preview-fake-token";
+  await context.addInitScript(
+    ([user, token]: [typeof previewUser, string]) => {
+      try {
+        const userJson = JSON.stringify(user);
+        // Chaves de token comuns (string crua).
+        for (const k of ["token", "accessToken", "access_token", "authToken", "auth_token", "jwt", "id_token"]) {
+          window.localStorage.setItem(k, token);
+        }
+        // Chaves de usuario comuns (JSON).
+        for (const k of ["user", "currentUser", "auth", "authUser", "profile"]) {
+          window.localStorage.setItem(k, userJson);
+        }
+      } catch { /* localStorage indisponivel — ignora */ }
+    },
+    [previewUser, previewToken] as [typeof previewUser, string]
+  );
+
   const page = await context.newPage();
 
   // 1. Navegacao inicial — combina url base + route opcional.

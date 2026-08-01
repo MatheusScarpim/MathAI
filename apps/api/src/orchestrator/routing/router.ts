@@ -1,6 +1,6 @@
 import { getSettingsCollection } from "../../core/mongo.js";
 import { config } from "../../core/config.js";
-import { pingOpenClaude } from "../integrations/openclaude.js";
+import { pingOpenClaude, deepPingOpenClaude } from "../integrations/openclaude.js";
 import { DEFAULT_ROUTING_RULES } from "./defaults.js";
 import type { SubTaskType } from "../types.js";
 import type { AgentSlot, ProviderName, Route, RouteContext, RoutingRule } from "./types.js";
@@ -141,18 +141,57 @@ const HEALTH_TTL_MS = 10_000;
 const HEALTH_PING_TIMEOUT_MS = 1_000;
 const healthCache = new Map<string, { status: "ok" | "down"; expiresAt: number }>();
 
+// Deep health: detecta "porta aberta mas pipeline morto" (empty-stream
+// in=0 out=0) que o pingOpenClaude (TCP) nao pega. Caro (1 LLM round-trip),
+// entao roda em BACKGROUND e nunca bloqueia o hot path do selectRoute.
+// Cache proprio: "ok" dura 60s, "down" dura 20s (re-checa recuperacao mais rapido).
+const DEEP_HEALTH_TTL_OK_MS = 60_000;
+const DEEP_HEALTH_TTL_DOWN_MS = 20_000;
+const DEEP_PING_TIMEOUT_MS = 8_000;
+const deepHealthCache = new Map<string, { status: "ok" | "down"; expiresAt: number }>();
+const deepInFlight = new Set<string>();
+
+const refreshDeepHealth = (grpcUrl: string): void => {
+  if (deepInFlight.has(grpcUrl)) return;
+  deepInFlight.add(grpcUrl);
+  void deepPingOpenClaude(grpcUrl, DEEP_PING_TIMEOUT_MS)
+    .then((status) => {
+      const ttl = status === "ok" ? DEEP_HEALTH_TTL_OK_MS : DEEP_HEALTH_TTL_DOWN_MS;
+      deepHealthCache.set(grpcUrl, { status, expiresAt: Date.now() + ttl });
+    })
+    .catch(() => {
+      deepHealthCache.set(grpcUrl, { status: "down", expiresAt: Date.now() + DEEP_HEALTH_TTL_DOWN_MS });
+    })
+    .finally(() => deepInFlight.delete(grpcUrl));
+};
+
 const checkProviderHealth = async (grpcUrl: string): Promise<"ok" | "down"> => {
   const now = Date.now();
   const cached = healthCache.get(grpcUrl);
-  if (cached && cached.expiresAt > now) return cached.status;
-  const status = await pingOpenClaude(grpcUrl, HEALTH_PING_TIMEOUT_MS).catch(() => "down" as const);
-  healthCache.set(grpcUrl, { status, expiresAt: now + HEALTH_TTL_MS });
-  return status;
+  let tcpStatus: "ok" | "down";
+  if (cached && cached.expiresAt > now) {
+    tcpStatus = cached.status;
+  } else {
+    tcpStatus = await pingOpenClaude(grpcUrl, HEALTH_PING_TIMEOUT_MS).catch(() => "down" as const);
+    healthCache.set(grpcUrl, { status: tcpStatus, expiresAt: now + HEALTH_TTL_MS });
+  }
+  // Porta fechada (rebuild/crash) — TCP ja resolve, sem deep check.
+  if (tcpStatus === "down") return "down";
+
+  // TCP ok: consulta o deep cache pra pegar pipeline-morto-com-porta-aberta.
+  const deep = deepHealthCache.get(grpcUrl);
+  if (deep && deep.expiresAt > now) {
+    return deep.status;
+  }
+  // Deep cache vencido/ausente: refresca em background e confia no TCP agora.
+  refreshDeepHealth(grpcUrl);
+  return "ok";
 };
 
 /** Permite invalidar o cache de health (uso: UI provider-health page). */
 export const clearProviderHealthCache = (): void => {
   healthCache.clear();
+  deepHealthCache.clear();
 };
 
 /**
@@ -164,7 +203,9 @@ export const clearProviderHealthCache = (): void => {
  */
 export const markProviderDown = (grpcUrl: string | undefined, ttlMs = 60_000): void => {
   if (!grpcUrl) return;
-  healthCache.set(grpcUrl, { status: "down", expiresAt: Date.now() + ttlMs });
+  const expiresAt = Date.now() + ttlMs;
+  healthCache.set(grpcUrl, { status: "down", expiresAt });
+  deepHealthCache.set(grpcUrl, { status: "down", expiresAt });
 };
 
 /**
@@ -179,10 +220,38 @@ export const markProviderDown = (grpcUrl: string | undefined, ttlMs = 60_000): v
  * Always returns a Route — falls back to deepseek if nothing matches (shouldn't happen
  * given the priority-99 catch-all in defaults).
  */
+/** Modelo default por provider, usado ao sintetizar rota via preferProvider quando nenhuma rule casa. */
+const DEFAULT_MODEL_BY_PROVIDER: Record<ProviderName, string> = {
+  anthropic: "claude-opus-4-8",
+  codex: "codexplan",
+  deepseek: "deepseek-chat"
+};
+
 export const selectRoute = async (agent: AgentSlot, ctx: RouteContext = {}): Promise<Route> => {
   const rules = await getRoutingRules();
   const sorted = [...rules].sort((a, b) => a.priority - b.priority);
   const skipped: string[] = [];
+
+  // preferProvider: honra o provider pedido (ex: idle-nudge → claude) ANTES do match normal.
+  // Se saudavel, usa uma rule desse provider (agent OU any); senao sintetiza rota c/ model default.
+  // Se o provider estiver down, cai no fluxo de rules normal (nunca quebra).
+  if (ctx.preferProvider) {
+    const grpcUrl = resolveGrpcUrl(ctx.preferProvider);
+    const healthy = grpcUrl ? (await checkProviderHealth(grpcUrl)) === "ok" : true;
+    if (healthy) {
+      const preferredRule = sorted.find(
+        (r) => (r.agent === agent || r.agent === "any") && r.route.provider === ctx.preferProvider && matchesWhen(r, ctx)
+      );
+      const model = preferredRule?.route.model ?? DEFAULT_MODEL_BY_PROVIDER[ctx.preferProvider];
+      return {
+        provider: ctx.preferProvider,
+        model,
+        grpcUrl,
+        reason: `preferProvider=${ctx.preferProvider}${preferredRule ? ` (rule p=${preferredRule.priority})` : " (synth)"}`
+      };
+    }
+    skipped.push(`prefer:${ctx.preferProvider}(down)`);
+  }
 
   for (const rule of sorted) {
     if (rule.agent !== agent && rule.agent !== "any") continue;

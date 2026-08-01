@@ -16,9 +16,12 @@ type CreateProjectBody = {
   trelloBoardId?: string;
   trelloListId?: string;
   trelloDoneListId?: string;
+  trelloAgentEnabled?: boolean;
+  trelloAgentCreateCards?: boolean;
   previewBuildCmd?: string;
   previewMocksDir?: string;
   previewDistDir?: string;
+  previewUseMsw?: boolean;
 };
 
 type UpdateProjectBody = Partial<CreateProjectBody>;
@@ -31,9 +34,12 @@ type ProjectView = {
   trelloBoardId?: string;
   trelloListId?: string;
   trelloDoneListId?: string;
+  trelloAgentEnabled?: boolean;
+  trelloAgentCreateCards?: boolean;
   previewBuildCmd?: string;
   previewMocksDir?: string;
   previewDistDir?: string;
+  previewUseMsw?: boolean;
   isInbox: boolean;
   taskCount?: number;
   openTaskCount?: number;
@@ -49,9 +55,12 @@ const toView = (doc: ProjectRecord, counts?: { total: number; open: number }): P
   trelloBoardId: doc.trelloBoardId,
   trelloListId: doc.trelloListId,
   trelloDoneListId: doc.trelloDoneListId,
+  trelloAgentEnabled: doc.trelloAgentEnabled,
+  trelloAgentCreateCards: doc.trelloAgentCreateCards,
   previewBuildCmd: doc.previewBuildCmd,
   previewMocksDir: doc.previewMocksDir,
   previewDistDir: doc.previewDistDir,
+  previewUseMsw: doc.previewUseMsw,
   isInbox: !!doc.isInbox,
   taskCount: counts?.total,
   openTaskCount: counts?.open,
@@ -240,9 +249,12 @@ export default async function projectsRoutes(app: FastifyInstance) {
             trelloBoardId: { type: "string" },
             trelloListId: { type: "string" },
             trelloDoneListId: { type: "string" },
+            trelloAgentEnabled: { type: "boolean" },
+            trelloAgentCreateCards: { type: "boolean" },
             previewBuildCmd: { type: "string" },
             previewMocksDir: { type: "string" },
-            previewDistDir: { type: "string" }
+            previewDistDir: { type: "string" },
+            previewUseMsw: { type: "boolean" }
           },
           required: ["name"]
         }
@@ -271,9 +283,12 @@ export default async function projectsRoutes(app: FastifyInstance) {
         trelloBoardId: trelloBoardId || undefined,
         trelloListId: trelloListId || undefined,
         trelloDoneListId: trelloDoneListId || undefined,
+        trelloAgentEnabled: typeof body.trelloAgentEnabled === "boolean" ? body.trelloAgentEnabled : undefined,
+        trelloAgentCreateCards: typeof body.trelloAgentCreateCards === "boolean" ? body.trelloAgentCreateCards : undefined,
         previewBuildCmd: previewBuildCmd || undefined,
         previewMocksDir: previewMocksDir || undefined,
         previewDistDir: previewDistDir || undefined,
+        previewUseMsw: typeof body.previewUseMsw === "boolean" ? body.previewUseMsw : undefined,
         createdAt: now,
         updatedAt: now
       };
@@ -313,9 +328,12 @@ export default async function projectsRoutes(app: FastifyInstance) {
             trelloBoardId: { type: "string" },
             trelloListId: { type: "string" },
             trelloDoneListId: { type: "string" },
+            trelloAgentEnabled: { type: "boolean" },
+            trelloAgentCreateCards: { type: "boolean" },
             previewBuildCmd: { type: "string" },
             previewMocksDir: { type: "string" },
-            previewDistDir: { type: "string" }
+            previewDistDir: { type: "string" },
+            previewUseMsw: { type: "boolean" }
           }
         }
       }
@@ -367,6 +385,14 @@ export default async function projectsRoutes(app: FastifyInstance) {
         if (trimmed) update.trelloDoneListId = trimmed;
         else unset.trelloDoneListId = "";
       }
+      if (body.trelloAgentEnabled !== undefined) {
+        if (typeof body.trelloAgentEnabled === "boolean") update.trelloAgentEnabled = body.trelloAgentEnabled;
+        else unset.trelloAgentEnabled = "";
+      }
+      if (body.trelloAgentCreateCards !== undefined) {
+        if (typeof body.trelloAgentCreateCards === "boolean") update.trelloAgentCreateCards = body.trelloAgentCreateCards;
+        else unset.trelloAgentCreateCards = "";
+      }
       if (body.previewBuildCmd !== undefined) {
         const trimmed = body.previewBuildCmd.trim();
         if (trimmed) update.previewBuildCmd = trimmed;
@@ -381,6 +407,10 @@ export default async function projectsRoutes(app: FastifyInstance) {
         const trimmed = body.previewDistDir.trim();
         if (trimmed) update.previewDistDir = trimmed;
         else unset.previewDistDir = "";
+      }
+      if (body.previewUseMsw !== undefined) {
+        if (typeof body.previewUseMsw === "boolean") update.previewUseMsw = body.previewUseMsw;
+        else unset.previewUseMsw = "";
       }
 
       const updateOps: Record<string, unknown> = { $set: update };

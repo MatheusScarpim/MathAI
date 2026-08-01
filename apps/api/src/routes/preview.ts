@@ -16,19 +16,29 @@ import {
 
 export default async function previewRoutes(app: FastifyInstance) {
   // POST /api/tasks/:id/preview
-  app.post<{ Params: { id: string } }>(
+  app.post<{ Params: { id: string }; Body?: { useMsw?: boolean } }>(
     "/api/tasks/:id/preview",
     {
       schema: {
         tags: ["preview"],
         summary: "Inicia preview deploy efemero pra task",
-        params: { type: "object", properties: { id: { type: "string" } }, required: ["id"] }
+        params: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+        body: {
+          type: "object",
+          properties: {
+            useMsw: {
+              type: "boolean",
+              description: "Override do MSW pra este preview. Omitido = usa default do projeto (ligado)."
+            }
+          }
+        }
       }
     },
     async (request, reply) => {
       const { id } = request.params;
       const userId = (request.user as { id?: string } | undefined)?.id;
-      const result = await startPreview(id, userId);
+      const useMsw = request.body?.useMsw;
+      const result = await startPreview(id, userId, useMsw === undefined ? undefined : { useMsw });
       if (!result.ok) {
         reply.status(400).send({ errorMessage: result.reason });
         return;

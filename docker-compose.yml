@@ -26,6 +26,12 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
+      # Gate api boot on the universal fallback provider only. Codex/anthropic
+      # are flaky and self-heal via the router's per-request health skip, so
+      # gating on them would risk api never starting. deepseek-healthy
+      # guarantees the router always has at least one working provider.
+      openclaude-deepseek:
+        condition: service_healthy
 
   # Legacy single-provider container (mantém compatibilidade — OPENCLAUDE_GRPC_URL aponta aqui por padrão).
   openclaude:
@@ -36,8 +42,8 @@ services:
     command: >
       sh -c "
         apt-get update && apt-get install -y git gh 2>/dev/null || apk add --no-cache git github-cli 2>/dev/null;
-        if [ ! -d .git ]; then
-          git clone https://github.com/Gitlawb/openclaude.git .;
+        if ! git rev-parse --git-dir >/dev/null 2>&1 || [ ! -f package.json ]; then
+          echo '[entrypoint] no valid clone (missing/partial), re-cloning main' && find . -mindepth 1 -delete 2>/dev/null; git clone https://github.com/Gitlawb/openclaude.git .;
         fi &&
         if [ -n \"${OPENCLAUDE_PR}\" ]; then
           git fetch origin pull/${OPENCLAUDE_PR}/head &&
@@ -45,10 +51,15 @@ services:
         else
           git fetch origin && git checkout ${OPENCLAUDE_BRANCH:-main} && git reset --hard origin/${OPENCLAUDE_BRANCH:-main};
         fi &&
-        bun install &&
-        bun run build &&
-        # HACK: defer detectStubLeaks to avoid TDZ error with circular dep (skip if file absent or already patched)
+        PREV_BUILT=$$(cat .openclaude-built-head 2>/dev/null || echo none) &&
+        CUR_HEAD=$$(git rev-parse HEAD 2>/dev/null || echo nohead) &&
+        if [ \"$$PREV_BUILT\" != \"$$CUR_HEAD\" ] || [ ! -d node_modules ] || [ ! -d dist ]; then
+          echo \"[entrypoint] building $$PREV_BUILT -> $$CUR_HEAD\" && bun install && bun run build && git rev-parse HEAD > .openclaude-built-head;
+        else
+          echo \"[entrypoint] up-to-date at $$CUR_HEAD, skipping install/build\";
+        fi &&
         if [ -f src/entrypoints/sdk/index.ts ] && ! grep -q 'setTimeout(detectStubLeaks' src/entrypoints/sdk/index.ts; then sed -i '/^detectStubLeaks()/c\setTimeout(detectStubLeaks, 0)' src/entrypoints/sdk/index.ts; fi &&
+        ( while sleep 60; do DIRTY=$$(git status --porcelain --untracked-files=no 2>/dev/null | grep -v 'entrypoints/sdk/index.ts'); CUR=$$(git rev-parse HEAD 2>/dev/null || echo x); WANT=$$(cat .openclaude-built-head 2>/dev/null || echo \"$$CUR\"); if [ -n \"$$DIRTY\" ] || [ \"$$CUR\" != \"$$WANT\" ]; then echo '[self-heal] openclaude source drift detected, restoring built source'; git reset --hard \"$$WANT\" >/dev/null 2>&1; if [ -f src/entrypoints/sdk/index.ts ] && ! grep -q 'setTimeout(detectStubLeaks' src/entrypoints/sdk/index.ts; then sed -i '/^detectStubLeaks()/c\setTimeout(detectStubLeaks, 0)' src/entrypoints/sdk/index.ts; fi; fi; done ) &
         bun run dev:grpc
       "
     environment:
@@ -63,6 +74,12 @@ services:
     volumes:
       - openclaude_app:/openclaude
       - auraia_workspaces:/data/auraia-workspaces
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const s=require('net').connect(50051,'127.0.0.1');s.on('connect',()=>process.exit(0));s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),2000)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 300s
 
   # ─── Multi-provider fleet (router escolhe um destes por subtask) ───
   # Cada container tem seu próprio /root pra persistir OAuth tokens
@@ -76,30 +93,55 @@ services:
     command: >
       sh -c "
         apt-get update && apt-get install -y git gh 2>/dev/null || apk add --no-cache git github-cli 2>/dev/null;
-        if [ ! -d .git ]; then
-          git clone https://github.com/Gitlawb/openclaude.git .;
+        if ! git rev-parse --git-dir >/dev/null 2>&1 || [ ! -f package.json ]; then
+          echo '[entrypoint] no valid clone (missing/partial), re-cloning main' && find . -mindepth 1 -delete 2>/dev/null; git clone https://github.com/Gitlawb/openclaude.git .;
         fi &&
-        if [ -n \"${OPENCLAUDE_PR}\" ]; then
-          git fetch origin pull/${OPENCLAUDE_PR}/head &&
+        if [ -n \"${OPENCLAUDE_ANTHROPIC_PR}\" ]; then
+          git fetch origin pull/${OPENCLAUDE_ANTHROPIC_PR}/head &&
           git reset --hard FETCH_HEAD;
         else
           git fetch origin && git checkout ${OPENCLAUDE_BRANCH:-main} && git reset --hard origin/${OPENCLAUDE_BRANCH:-main};
         fi &&
-        bun install &&
-        bun run build &&
+        PREV_BUILT=$$(cat .openclaude-built-head 2>/dev/null || echo none) &&
+        CUR_HEAD=$$(git rev-parse HEAD 2>/dev/null || echo nohead) &&
+        if [ \"$$PREV_BUILT\" != \"$$CUR_HEAD\" ] || [ ! -d node_modules ] || [ ! -d dist ]; then
+          echo \"[entrypoint] building $$PREV_BUILT -> $$CUR_HEAD\" && bun install && bun run build && git rev-parse HEAD > .openclaude-built-head;
+        else
+          echo \"[entrypoint] up-to-date at $$CUR_HEAD, skipping install/build\";
+        fi &&
         if [ -f src/entrypoints/sdk/index.ts ] && ! grep -q 'setTimeout(detectStubLeaks' src/entrypoints/sdk/index.ts; then sed -i '/^detectStubLeaks()/c\setTimeout(detectStubLeaks, 0)' src/entrypoints/sdk/index.ts; fi &&
+        ( while sleep 60; do DIRTY=$$(git status --porcelain --untracked-files=no 2>/dev/null | grep -v 'entrypoints/sdk/index.ts'); CUR=$$(git rev-parse HEAD 2>/dev/null || echo x); WANT=$$(cat .openclaude-built-head 2>/dev/null || echo \"$$CUR\"); if [ -n \"$$DIRTY\" ] || [ \"$$CUR\" != \"$$WANT\" ]; then echo '[self-heal] openclaude source drift detected, restoring built source'; git reset --hard \"$$WANT\" >/dev/null 2>&1; if [ -f src/entrypoints/sdk/index.ts ] && ! grep -q 'setTimeout(detectStubLeaks' src/entrypoints/sdk/index.ts; then sed -i '/^detectStubLeaks()/c\setTimeout(detectStubLeaks, 0)' src/entrypoints/sdk/index.ts; fi; fi; done ) &
         bun run dev:grpc
       "
     environment:
       - GRPC_PORT=50051
       - GRPC_HOST=0.0.0.0
       - OPENCLAUDE_PROVIDER_HINT=anthropic
+      # Bypass do fallback "default Codex" do start-grpc.ts quando settings.json esta vazio.
+      # Sem isso o gRPC server tenta carregar codex auth (que nao existe aqui), emite warning
+      # "ignoring saved provider profile" e fica num estado meio-quebrado onde requests
+      # vao via gRPC retornam stream vazio. Com a flag, buildStartupEnvFromProfile retorna
+      # process.env limpo e o engine usa OAuth nativo de /root/.openclaude/.credentials.json.
+      - CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED=1
+      # openclaude origin/main tem bug na feature de global prompt-cache firstParty:
+      # aplica cache_control.scope:"global" no system[0], mas as tool definitions
+      # renderizam antes → nao e prefixo verdadeiro → Anthropic rejeita com
+      # "API Error 400 invalid_request cache_control.scope global". Resultado: gRPC
+      # retorna stream vazio (in=0) enquanto o CLI -p (sem tools) funciona. Desligar
+      # o prompt caching contorna o bug (validado 2026-07-20: in=22578, PONG).
+      - DISABLE_PROMPT_CACHING=1
     ports:
       - "${OPENCLAUDE_ANTHROPIC_PORT:-50052}:50051"
     volumes:
       - openclaude_anthropic_app:/openclaude
       - openclaude_anthropic_home:/root
       - auraia_workspaces:/data/auraia-workspaces
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const s=require('net').connect(50051,'127.0.0.1');s.on('connect',()=>process.exit(0));s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),2000)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 300s
 
   openclaude-codex:
     image: oven/bun:1
@@ -109,18 +151,24 @@ services:
     command: >
       sh -c "
         apt-get update && apt-get install -y git gh 2>/dev/null || apk add --no-cache git github-cli 2>/dev/null;
-        if [ ! -d .git ]; then
-          git clone https://github.com/Gitlawb/openclaude.git .;
+        if ! git rev-parse --git-dir >/dev/null 2>&1 || [ ! -f package.json ]; then
+          echo '[entrypoint] no valid clone (missing/partial), re-cloning main' && find . -mindepth 1 -delete 2>/dev/null; git clone https://github.com/Gitlawb/openclaude.git .;
         fi &&
-        if [ -n \"${OPENCLAUDE_PR}\" ]; then
-          git fetch origin pull/${OPENCLAUDE_PR}/head &&
+        if [ -n \"${OPENCLAUDE_CODEX_PR}\" ]; then
+          git fetch origin pull/${OPENCLAUDE_CODEX_PR}/head &&
           git reset --hard FETCH_HEAD;
         else
           git fetch origin && git checkout ${OPENCLAUDE_BRANCH:-main} && git reset --hard origin/${OPENCLAUDE_BRANCH:-main};
         fi &&
-        bun install &&
-        bun run build &&
+        PREV_BUILT=$$(cat .openclaude-built-head 2>/dev/null || echo none) &&
+        CUR_HEAD=$$(git rev-parse HEAD 2>/dev/null || echo nohead) &&
+        if [ \"$$PREV_BUILT\" != \"$$CUR_HEAD\" ] || [ ! -d node_modules ] || [ ! -d dist ]; then
+          echo \"[entrypoint] building $$PREV_BUILT -> $$CUR_HEAD\" && bun install && bun run build && git rev-parse HEAD > .openclaude-built-head;
+        else
+          echo \"[entrypoint] up-to-date at $$CUR_HEAD, skipping install/build\";
+        fi &&
         if [ -f src/entrypoints/sdk/index.ts ] && ! grep -q 'setTimeout(detectStubLeaks' src/entrypoints/sdk/index.ts; then sed -i '/^detectStubLeaks()/c\setTimeout(detectStubLeaks, 0)' src/entrypoints/sdk/index.ts; fi &&
+        ( while sleep 60; do DIRTY=$$(git status --porcelain --untracked-files=no 2>/dev/null | grep -v 'entrypoints/sdk/index.ts'); CUR=$$(git rev-parse HEAD 2>/dev/null || echo x); WANT=$$(cat .openclaude-built-head 2>/dev/null || echo \"$$CUR\"); if [ -n \"$$DIRTY\" ] || [ \"$$CUR\" != \"$$WANT\" ]; then echo '[self-heal] openclaude source drift detected, restoring built source'; git reset --hard \"$$WANT\" >/dev/null 2>&1; if [ -f src/entrypoints/sdk/index.ts ] && ! grep -q 'setTimeout(detectStubLeaks' src/entrypoints/sdk/index.ts; then sed -i '/^detectStubLeaks()/c\setTimeout(detectStubLeaks, 0)' src/entrypoints/sdk/index.ts; fi; fi; done ) &
         bun run dev:grpc
       "
     environment:
@@ -133,6 +181,12 @@ services:
       - openclaude_codex_app:/openclaude
       - openclaude_codex_home:/root
       - auraia_workspaces:/data/auraia-workspaces
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const s=require('net').connect(50051,'127.0.0.1');s.on('connect',()=>process.exit(0));s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),2000)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 300s
 
   openclaude-deepseek:
     image: oven/bun:1
@@ -142,8 +196,8 @@ services:
     command: >
       sh -c "
         apt-get update && apt-get install -y git gh 2>/dev/null || apk add --no-cache git github-cli 2>/dev/null;
-        if [ ! -d .git ]; then
-          git clone https://github.com/Gitlawb/openclaude.git .;
+        if ! git rev-parse --git-dir >/dev/null 2>&1 || [ ! -f package.json ]; then
+          echo '[entrypoint] no valid clone (missing/partial), re-cloning main' && find . -mindepth 1 -delete 2>/dev/null; git clone https://github.com/Gitlawb/openclaude.git .;
         fi &&
         if [ -n \"${OPENCLAUDE_PR}\" ]; then
           git fetch origin pull/${OPENCLAUDE_PR}/head &&
@@ -151,9 +205,15 @@ services:
         else
           git fetch origin && git checkout ${OPENCLAUDE_BRANCH:-main} && git reset --hard origin/${OPENCLAUDE_BRANCH:-main};
         fi &&
-        bun install &&
-        bun run build &&
+        PREV_BUILT=$$(cat .openclaude-built-head 2>/dev/null || echo none) &&
+        CUR_HEAD=$$(git rev-parse HEAD 2>/dev/null || echo nohead) &&
+        if [ \"$$PREV_BUILT\" != \"$$CUR_HEAD\" ] || [ ! -d node_modules ] || [ ! -d dist ]; then
+          echo \"[entrypoint] building $$PREV_BUILT -> $$CUR_HEAD\" && bun install && bun run build && git rev-parse HEAD > .openclaude-built-head;
+        else
+          echo \"[entrypoint] up-to-date at $$CUR_HEAD, skipping install/build\";
+        fi &&
         if [ -f src/entrypoints/sdk/index.ts ] && ! grep -q 'setTimeout(detectStubLeaks' src/entrypoints/sdk/index.ts; then sed -i '/^detectStubLeaks()/c\setTimeout(detectStubLeaks, 0)' src/entrypoints/sdk/index.ts; fi &&
+        ( while sleep 60; do DIRTY=$$(git status --porcelain --untracked-files=no 2>/dev/null | grep -v 'entrypoints/sdk/index.ts'); CUR=$$(git rev-parse HEAD 2>/dev/null || echo x); WANT=$$(cat .openclaude-built-head 2>/dev/null || echo \"$$CUR\"); if [ -n \"$$DIRTY\" ] || [ \"$$CUR\" != \"$$WANT\" ]; then echo '[self-heal] openclaude source drift detected, restoring built source'; git reset --hard \"$$WANT\" >/dev/null 2>&1; if [ -f src/entrypoints/sdk/index.ts ] && ! grep -q 'setTimeout(detectStubLeaks' src/entrypoints/sdk/index.ts; then sed -i '/^detectStubLeaks()/c\setTimeout(detectStubLeaks, 0)' src/entrypoints/sdk/index.ts; fi; fi; done ) &
         bun run dev:grpc
       "
     environment:
@@ -170,6 +230,12 @@ services:
       - openclaude_deepseek_app:/openclaude
       - openclaude_deepseek_home:/root
       - auraia_workspaces:/data/auraia-workspaces
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const s=require('net').connect(50051,'127.0.0.1');s.on('connect',()=>process.exit(0));s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),2000)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 300s
 
   frontend:
     image: node:20-alpine

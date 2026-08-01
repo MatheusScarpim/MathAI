@@ -260,3 +260,27 @@ export const pingOpenClaude = (address: string, timeoutMs = 1500): Promise<"ok" 
       }
     });
   });
+
+/**
+ * Deep gRPC health check: issues a minimal Chat request and verifies the
+ * stream returns non-empty text. Unlike pingOpenClaude (TCP-level), this
+ * detects the "port open but pipeline dead" case — the empty-stream
+ * (in=0 out=0) failure where the container is listening but emits a done
+ * event with zero text/tool events. More expensive (one tiny LLM round-trip),
+ * so callers MUST cache the result (see router deepHealthCache, 60s TTL).
+ */
+export const deepPingOpenClaude = async (
+  address: string,
+  timeoutMs = 8000
+): Promise<"ok" | "down"> => {
+  try {
+    const res = await runOpenClaude("Reply with exactly the single word: PONG", {
+      grpcUrl: address,
+      workingDirectory: "/tmp",
+      timeoutMs
+    });
+    return res.fullText.trim().length > 0 ? "ok" : "down";
+  } catch {
+    return "down";
+  }
+};

@@ -87,6 +87,20 @@
           </select>
         </div>
 
+        <div v-if="form.trelloBoardId" class="field">
+          <label class="field-checkbox">
+            <input type="checkbox" v-model="form.trelloAgentEnabled" />
+            <span>Agente Trello <span class="field-sub">(LLM move o card de coluna e comenta o progresso automaticamente a cada etapa)</span></span>
+          </label>
+        </div>
+
+        <div v-if="form.trelloBoardId && form.trelloAgentEnabled" class="field">
+          <label class="field-checkbox">
+            <input type="checkbox" v-model="form.trelloAgentCreateCards" />
+            <span>Permitir criar cards <span class="field-sub">(deixa o agente criar novos cards no board quando necessario — desligado por padrao pra evitar excesso)</span></span>
+          </label>
+        </div>
+
         <details class="preview-section">
           <summary>Preview deploy (opcional)</summary>
           <p class="preview-help">
@@ -185,6 +199,8 @@ type Project = {
   trelloBoardId?: string
   trelloListId?: string
   trelloDoneListId?: string
+  trelloAgentEnabled?: boolean
+  trelloAgentCreateCards?: boolean
   previewBuildCmd?: string
   previewMocksDir?: string
   previewDistDir?: string
@@ -217,6 +233,8 @@ const form = ref({
   trelloBoardId: props.project?.trelloBoardId ?? '',
   trelloListId: props.project?.trelloListId ?? '',
   trelloDoneListId: props.project?.trelloDoneListId ?? '',
+  trelloAgentEnabled: props.project?.trelloAgentEnabled ?? true,
+  trelloAgentCreateCards: props.project?.trelloAgentCreateCards ?? false,
   previewBuildCmd: props.project?.previewBuildCmd ?? '',
   previewMocksDir: props.project?.previewMocksDir ?? '',
   previewDistDir: props.project?.previewDistDir ?? '',
@@ -276,6 +294,8 @@ const handleSave = async () => {
       trelloBoardId: form.value.trelloBoardId || '',
       trelloListId: form.value.trelloListId || '',
       trelloDoneListId: form.value.trelloDoneListId || '',
+      trelloAgentEnabled: form.value.trelloAgentEnabled,
+      trelloAgentCreateCards: form.value.trelloAgentCreateCards,
       previewBuildCmd: form.value.previewBuildCmd.trim() || '',
       previewMocksDir: form.value.previewMocksDir.trim() || '',
       previewDistDir: form.value.previewDistDir.trim() || ''
@@ -349,6 +369,8 @@ onMounted(async () => {
 .field { display: flex; flex-direction: column; gap: .3rem; }
 .field-label { font-size: .72rem; color: var(--text-secondary, #888); font-weight: 500; }
 .field-sub { color: var(--text-secondary, #666); font-weight: 400; margin-left: .25rem; }
+.field-checkbox { display: flex; align-items: flex-start; gap: .5rem; cursor: pointer; }
+.field-checkbox input { margin-top: .2rem; }
 .field-input { padding: .5rem .7rem; background: var(--bg-primary, #0f0f23); border: 1px solid var(--border, #333); border-radius: 7px; color: var(--text, #fff); font-size: .88rem; outline: none; transition: border-color .15s; resize: vertical; font-family: inherit; }
 .field-input:focus { border-color: var(--primary, #6c5ce7); }
 select.field-input { cursor: pointer; }

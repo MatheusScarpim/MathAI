@@ -86,9 +86,13 @@ const buildProviderClient = (provider: ProviderClient): OpenAI => {
     case "codex": {
       const apiKey = process.env.OPENAI_API_KEY;
       if (!apiKey) throw new Error("OPENAI_API_KEY not set — required for codex/openai provider via SDK.");
+      // NAO herdar o OPENAI_BASE_URL global (que aponta pra deepseek nesta stack) —
+      // senao requests "codex" caem silenciosamente no endpoint deepseek e falham com
+      // "supported API model names are deepseek-v4-*", travando o agente no fallback.
+      // Sem OPENAI_BASE_URL_CODEX explicito, forca o endpoint real da OpenAI.
       return new OpenAI({
         apiKey,
-        ...(process.env.OPENAI_BASE_URL_CODEX ? { baseURL: process.env.OPENAI_BASE_URL_CODEX } : {})
+        baseURL: process.env.OPENAI_BASE_URL_CODEX ?? "https://api.openai.com/v1"
       });
     }
     case "deepseek": {

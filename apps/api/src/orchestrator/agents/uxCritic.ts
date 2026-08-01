@@ -482,7 +482,7 @@ export const criticizeUI = async (input: UxCriticInput): Promise<UxCriticResult>
   try {
     // playwright resolve em /app/node_modules/playwright (workspace root),
     // mas tsc do api/ nao encontra. Mesmo padrao de previewScreenshot.ts.
-    // @ts-expect-error -- runtime ok, tsc nao acha types da playwright aqui
+    // @ts-ignore -- runtime ok, tsc nao acha types da playwright aqui (pode ou nao resolver dependendo do ambiente de build)
     const { chromium } = await import("playwright");
     const chromiumExe = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || findFullChromium();
     browser = await chromium.launch({

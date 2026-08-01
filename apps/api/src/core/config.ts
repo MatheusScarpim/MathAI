@@ -1,5 +1,15 @@
 import dotenv from "dotenv";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
+const currentDir = path.dirname(fileURLToPath(import.meta.url));
+
+// Load the repo-root .env regardless of the process CWD. When started via
+// `npm --workspace apps/api run dev`, npm sets CWD to apps/api, where no .env
+// exists — so a plain dotenv.config() (CWD-relative) misses the root file.
+// apps/api/src/core -> repo root is four levels up.
+dotenv.config({ path: path.resolve(currentDir, "../../../../.env") });
+// Also honour a CWD-local .env (e.g. Docker) without overriding what's set.
 dotenv.config();
 
 const requireEnv = (name: string): string => {
@@ -46,6 +56,11 @@ export const config = {
     grpcUrl: process.env.OPENCLAUDE_GRPC_URL ?? "openclaude:50051",
     defaultModel: process.env.OPENCLAUDE_MODEL ?? "",
     provider: process.env.OPENCLAUDE_PROVIDER ?? "openai",
+    // Timeout do code agent (fluxo completo: explorar repo -> implementar ->
+    // review -> testar -> push). Bem maior que o commandTimeoutMs (300s, feito
+    // pra 1 comando de shell) — mudancas de backend estouravam 5min e o subtask
+    // morria com "OpenClaude timeout (300000ms)". Default 15min.
+    codeTimeoutMs: Number(process.env.OPENCLAUDE_CODE_TIMEOUT_MS ?? "900000"),
     // Multi-provider gRPC endpoints (router uses these). Fall back to defaults
     // matching docker-compose service names + ports.
     providers: {

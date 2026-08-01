@@ -259,65 +259,100 @@ export const validatePlan = async (input: PlanValidationInput): Promise<PlanVali
     return { refinedSubtasks: draftSubtasks, usage: ZERO_USAGE, exploration: "", changed: false, skipped: true, reason: "empty_draft" };
   }
 
-  // 1. EXPLORATION via OpenClaude (route default = mesma do code agent)
-  const explorationRoute = input.explorationRoute ?? await selectRoute("taskCode", {
-    type: "github",
-    description: `[PLAN VALIDATION] ${taskDescription}`
-  });
-
+  // 1. EXPLORATION via OpenClaude — retry loop sobre providers OpenClaude.
+  // Validator DEVE rodar via OpenClaude (contrato do projeto). Empty stream em
+  // um provider marca-o down e re-seleciona route, esgotando todos antes de
+  // skip. Cap=4 cobre os 3 providers configurados + 1 folga.
+  const EXPLORATION_PROVIDER_ATTEMPTS = 4;
   let exploration = "";
   let explorationUsage: TokenUsage = ZERO_USAGE;
   let writeAttempted = false;
+  const triedRoutes: { provider: string; grpcUrl?: string }[] = [];
+  const errorsByProvider: string[] = [];
+  let explorationSucceeded = false;
+  let lastErrorMsg = "";
 
-  try {
-    const result = await runOpenClaude(
-      buildExplorationPrompt(taskDescription, draftSubtasks, language, projectContextText),
-      {
-        workingDirectory: worktreePath,
-        model: explorationRoute.model,
-        grpcUrl: explorationRoute.grpcUrl,
-        autoApprove: true,
-        timeoutMs: EXPLORATION_TIMEOUT_MS,
-        onEvent: (event) => {
-          // Detect write attempts — confirma que validator NAO esta mutando o repo
-          if (event.type === "tool_start") {
-            if (FORBIDDEN_TOOLS.has(event.toolName)) {
-              writeAttempted = true;
-            }
-            if (event.toolName === "Bash" || event.toolName === "bash") {
-              try {
-                const args = JSON.parse(event.args);
-                const cmd: string = args.command ?? "";
-                if (BASH_WRITE_RE.test(cmd)) writeAttempted = true;
-              } catch {/* noop */}
+  for (let attempt = 0; attempt < EXPLORATION_PROVIDER_ATTEMPTS && !explorationSucceeded; attempt++) {
+    // Na primeira tentativa usa explorationRoute do input (se houver);
+    // depois re-seleciona via router (que pula providers marcados down).
+    const explorationRoute = (attempt === 0 && input.explorationRoute)
+      ? input.explorationRoute
+      : await selectRoute("taskCode", {
+          type: "github",
+          description: `[PLAN VALIDATION] ${taskDescription}`
+        });
+
+    // Detecta esgotamento: router caiu pra fallback deepseek que ja tentamos.
+    const alreadyTried = triedRoutes.some(r =>
+      r.provider === explorationRoute.provider && r.grpcUrl === explorationRoute.grpcUrl
+    );
+    if (alreadyTried) {
+      console.info(`[planValidator] all OpenClaude providers exhausted after ${attempt} attempts`);
+      break;
+    }
+    triedRoutes.push({ provider: explorationRoute.provider, grpcUrl: explorationRoute.grpcUrl });
+
+    try {
+      const result = await runOpenClaude(
+        buildExplorationPrompt(taskDescription, draftSubtasks, language, projectContextText),
+        {
+          workingDirectory: worktreePath,
+          model: explorationRoute.model,
+          grpcUrl: explorationRoute.grpcUrl,
+          autoApprove: true,
+          timeoutMs: EXPLORATION_TIMEOUT_MS,
+          onEvent: (event) => {
+            // Detect write attempts — confirma que validator NAO esta mutando o repo
+            if (event.type === "tool_start") {
+              if (FORBIDDEN_TOOLS.has(event.toolName)) {
+                writeAttempted = true;
+              }
+              if (event.toolName === "Bash" || event.toolName === "bash") {
+                try {
+                  const args = JSON.parse(event.args);
+                  const cmd: string = args.command ?? "";
+                  if (BASH_WRITE_RE.test(cmd)) writeAttempted = true;
+                } catch {/* noop */}
+              }
             }
           }
         }
+      );
+      exploration = result.fullText;
+      explorationUsage = toTokenUsage({
+        prompt_tokens: result.promptTokens,
+        completion_tokens: result.completionTokens,
+        total_tokens: result.promptTokens + result.completionTokens
+      });
+      explorationSucceeded = true;
+      if (attempt > 0) {
+        console.info(`[planValidator] exploration recovered on attempt ${attempt + 1} via ${explorationRoute.provider}`);
       }
-    );
-    exploration = result.fullText;
-    explorationUsage = toTokenUsage({
-      prompt_tokens: result.promptTokens,
-      completion_tokens: result.completionTokens,
-      total_tokens: result.promptTokens + result.completionTokens
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // Provider falhou (empty stream, truncated, etc.) — marca down pra o
-    // code agent subsequente nao perder tempo no mesmo provider.
-    if (/empty|EMPTY_STREAM|stream ended without result|truncated|rate-limit|auth/i.test(msg)) {
-      markProviderDown(explorationRoute.grpcUrl, 60_000);
-      console.info(`[planValidator] exploration FAILED → markProviderDown(${explorationRoute.provider}) | ${msg.slice(0, 120)}`);
-    } else {
-      console.info(`[planValidator] exploration FAILED (no mark) | ${msg.slice(0, 200)}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      lastErrorMsg = msg;
+      errorsByProvider.push(`${explorationRoute.provider}: ${msg.slice(0, 80)}`);
+      // Provider falhou — marca down e re-seleciona na proxima iteracao.
+      if (/empty|EMPTY_STREAM|stream ended without result|truncated|rate-limit|auth/i.test(msg)) {
+        markProviderDown(explorationRoute.grpcUrl, 60_000);
+        console.info(`[planValidator] attempt ${attempt + 1}/${EXPLORATION_PROVIDER_ATTEMPTS} FAILED → markProviderDown(${explorationRoute.provider}) | ${msg.slice(0, 120)}`);
+        // continua loop pra proxima route
+      } else {
+        // Erro nao-recuperavel (network, config) — para o loop
+        console.info(`[planValidator] attempt ${attempt + 1} FAILED (non-retryable) | ${msg.slice(0, 200)}`);
+        break;
+      }
     }
+  }
+
+  if (!explorationSucceeded) {
     return {
       refinedSubtasks: draftSubtasks,
       usage: ZERO_USAGE,
       exploration: "",
       changed: false,
       skipped: true,
-      reason: `exploration_failed: ${msg.slice(0, 200)}`
+      reason: `exploration_failed_all_providers (tried=${triedRoutes.map(r => r.provider).join(",")}): ${lastErrorMsg.slice(0, 160)}`
     };
   }
 

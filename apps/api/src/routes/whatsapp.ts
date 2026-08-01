@@ -4,7 +4,8 @@ import {
   startWhatsappBot,
   stopWhatsappBot,
   logoutWhatsappBot,
-  createBindToken
+  createBindToken,
+  listGroupMembers
 } from "../services/whatsappBot.js";
 import {
   onQr,
@@ -154,9 +155,175 @@ export default async function whatsappRoutes(app: FastifyInstance) {
           chatId: d.chatId,
           displayName: d.displayName,
           defaultProjectId: d.defaultProjectId,
+          isGroup: d.isGroup ?? false,
+          groupSubject: d.groupSubject,
+          admins: d.admins ?? [],
+          commandPermissions: d.commandPermissions ?? {},
           createdAt: d.createdAt
         }))
       );
+    }
+  );
+
+  // GET /api/whatsapp/bindings/:id — detalhe (projeto, admins, permissoes)
+  app.get<{ Params: { id: string } }>(
+    "/api/whatsapp/bindings/:id",
+    {
+      schema: {
+        tags: ["whatsapp"],
+        summary: "Detalhe de um chat vinculado",
+        params: { type: "object", properties: { id: { type: "string" } }, required: ["id"] }
+      }
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      if (!ObjectId.isValid(id)) {
+        reply.status(400).send({ errorMessage: "ID invalido." });
+        return;
+      }
+      const userId = (request.user as { id?: string } | undefined)?.id;
+      const col = await getChatBindingsCollection();
+      const filter: Record<string, unknown> = { _id: new ObjectId(id) };
+      if (userId) filter.userId = userId;
+      const d = await col.findOne(filter);
+      if (!d) {
+        reply.status(404).send({ errorMessage: "Vinculo nao encontrado." });
+        return;
+      }
+      reply.send({
+        id: d._id?.toString(),
+        chatId: d.chatId,
+        displayName: d.displayName,
+        defaultProjectId: d.defaultProjectId,
+        requirePlanApproval: d.requirePlanApproval,
+        isGroup: d.isGroup ?? false,
+        groupSubject: d.groupSubject,
+        admins: d.admins ?? [],
+        commandPermissions: d.commandPermissions ?? {},
+        createdAt: d.createdAt
+      });
+    }
+  );
+
+  // GET /api/whatsapp/bindings/:id/members — lista membros do grupo (pra seletor UI)
+  app.get<{ Params: { id: string } }>(
+    "/api/whatsapp/bindings/:id/members",
+    {
+      schema: {
+        tags: ["whatsapp"],
+        summary: "Lista membros de um grupo vinculado (pra selecionar admins/permissoes)",
+        params: { type: "object", properties: { id: { type: "string" } }, required: ["id"] }
+      }
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      if (!ObjectId.isValid(id)) {
+        reply.status(400).send({ errorMessage: "ID invalido." });
+        return;
+      }
+      const userId = (request.user as { id?: string } | undefined)?.id;
+      const col = await getChatBindingsCollection();
+      const filter: Record<string, unknown> = { _id: new ObjectId(id) };
+      if (userId) filter.userId = userId;
+      const d = await col.findOne(filter);
+      if (!d) {
+        reply.status(404).send({ errorMessage: "Vinculo nao encontrado." });
+        return;
+      }
+      if (!d.isGroup || !d.chatId) {
+        reply.send({ members: [] });
+        return;
+      }
+      try {
+        const members = await listGroupMembers(d.chatId);
+        reply.send({ members });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        reply.status(502).send({ errorMessage: `Nao foi possivel obter membros: ${msg}` });
+      }
+    }
+  );
+
+  // PATCH /api/whatsapp/bindings/:id — atualiza projeto, admins e permissoes
+  app.patch<{
+    Params: { id: string };
+    Body: {
+      defaultProjectId?: string | null;
+      admins?: string[];
+      commandPermissions?: Record<string, string[]>;
+    };
+  }>(
+    "/api/whatsapp/bindings/:id",
+    {
+      schema: {
+        tags: ["whatsapp"],
+        summary: "Atualiza projeto/admins/permissoes de um chat vinculado",
+        params: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+        body: {
+          type: "object",
+          properties: {
+            defaultProjectId: { type: ["string", "null"] },
+            admins: { type: "array", items: { type: "string" } },
+            commandPermissions: {
+              type: "object",
+              additionalProperties: { type: "array", items: { type: "string" } }
+            }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      if (!ObjectId.isValid(id)) {
+        reply.status(400).send({ errorMessage: "ID invalido." });
+        return;
+      }
+      const body = request.body ?? {};
+      const set: Record<string, unknown> = {};
+      const unset: Record<string, unknown> = {};
+
+      if ("defaultProjectId" in body) {
+        const pid = body.defaultProjectId;
+        if (pid === null || pid === "") {
+          unset.defaultProjectId = "";
+        } else if (typeof pid === "string" && ObjectId.isValid(pid)) {
+          set.defaultProjectId = pid;
+        } else {
+          reply.status(400).send({ errorMessage: "defaultProjectId invalido." });
+          return;
+        }
+      }
+      if (Array.isArray(body.admins)) {
+        set.admins = body.admins.filter(j => typeof j === "string" && j.length > 0);
+      }
+      if (body.commandPermissions && typeof body.commandPermissions === "object") {
+        const clean: Record<string, string[]> = {};
+        for (const [k, v] of Object.entries(body.commandPermissions)) {
+          if (Array.isArray(v)) clean[k] = v.filter(j => typeof j === "string" && j.length > 0);
+        }
+        set.commandPermissions = clean;
+      }
+
+      if (Object.keys(set).length === 0 && Object.keys(unset).length === 0) {
+        reply.status(400).send({ errorMessage: "Nada para atualizar." });
+        return;
+      }
+
+      const userId = (request.user as { id?: string } | undefined)?.id;
+      const col = await getChatBindingsCollection();
+      const filter: Record<string, unknown> = { _id: new ObjectId(id) };
+      if (userId) filter.userId = userId;
+
+      const update: Record<string, unknown> = {};
+      if (Object.keys(set).length) update.$set = set;
+      if (Object.keys(unset).length) update.$unset = unset;
+
+      const result = await col.updateOne(filter, update);
+      if (result.matchedCount === 0) {
+        reply.status(404).send({ errorMessage: "Vinculo nao encontrado." });
+        return;
+      }
+      reply.send({ ok: true });
     }
   );
 

@@ -22,6 +22,7 @@ export type AgentRole =
   | "reviewer"
   | "uxCritic"
   | "runtimeVerifier"
+  | "trelloAgent"
   | "reporter";
 
 export type RecordAgentCallParams = {

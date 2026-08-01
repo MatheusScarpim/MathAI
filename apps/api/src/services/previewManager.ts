@@ -17,7 +17,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { simpleGit } from "simple-git";
 import { createServer } from "node:net";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve as pathResolve } from "node:path";
+import { join, resolve as pathResolve, relative as pathRelative } from "node:path";
 import { ObjectId } from "mongodb";
 import {
   getPreviewsCollection,
@@ -28,6 +28,7 @@ import { resolveProjectOptions } from "../helpers/projectOptionsResolver.js";
 import { createWorktree, getWorktreePath } from "../orchestrator/integrations/github.js";
 import { detectStack } from "../orchestrator/context/stackDetector.js";
 import { config } from "../core/config.js";
+import { applyPreviewScaffold } from "../helpers/setupPreviewDirect.js";
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -81,7 +82,8 @@ export type StartResult =
  */
 export const startPreview = async (
   taskId: string,
-  userId?: string
+  userId?: string,
+  overrides?: { useMsw?: boolean }
 ): Promise<StartResult> => {
   if (!ObjectId.isValid(taskId)) {
     return { ok: false, reason: "taskId invalido" };
@@ -259,6 +261,34 @@ export const startPreview = async (
   // 8. Localiza o frontend dir + garante build:preview (injeta se faltar mas tem build).
   //    Comandos abaixo rodam dentro desse dir, nao no worktree root.
   const frontendDir = prepareFrontend(worktreePath, project.previewDistDir);
+
+  // 8b. Aplica o scaffold do MSW no worktree efemero (best-effort). Garante que
+  //     o preview mostra dados mesmo quando o PR de setup-preview nao foi mergeado
+  //     na branch da task — sem isso, MODE=preview nao acha bootstrap/handlers e o
+  //     app renderiza telas vazias (chamadas de dados vao pra rede inexistente).
+  //     Idempotente: no-op se a branch ja tem o scaffold. Roda ANTES do npm install
+  //     pra que a devDep `msw` seja instalada.
+  //
+  //     Toggle: override por-request (opts.useMsw) tem prioridade sobre o default
+  //     do projeto (project.previewUseMsw). Ambos undefined = ligado.
+  const useMsw = overrides?.useMsw ?? project.previewUseMsw ?? true;
+  if (useMsw) {
+    try {
+      const frontendRel = pathRelative(worktreePath, frontendDir) || ".";
+      const scaffold = await applyPreviewScaffold(worktreePath, frontendRel);
+      const applied = scaffold.modifications.filter(m => !m.startsWith("("));
+      console.info(
+        `[previewManager] scaffold MSW: ${applied.length ? applied.join("; ") : "nada a fazer (ja presente)"}`
+      );
+    } catch (err) {
+      console.warn(
+        `[previewManager] applyPreviewScaffold falhou (segue sem MSW):`,
+        err instanceof Error ? err.message : err
+      );
+    }
+  } else {
+    console.info(`[previewManager] MSW desligado (useMsw=false) task=${taskId} — build sem mock`);
+  }
 
   // 9. npm install dentro do frontend dir
   try {

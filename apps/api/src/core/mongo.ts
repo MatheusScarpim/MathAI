@@ -238,6 +238,8 @@ export type TaskRecord = {
   projectId?: string;
   subtasks: SubTask[];
   trelloCardIds: string[];
+  /** Cards criados pelo agente Trello (subconjunto de trelloCardIds). Usado pro teto por-task. */
+  trelloAgentCardIds?: string[];
   githubPrUrls: string[];
   summary?: string;
   language: "pt" | "en" | "es";
@@ -355,6 +357,10 @@ export type ProjectRecord = {
   trelloListId?: string;
   /** Override da lista (coluna) "done" pra onde os cards sao movidos no fim da task */
   trelloDoneListId?: string;
+  /** Liga o agente Trello (LLM move/comenta/label o card a cada stage). Default (undefined) = ligado quando board configurado. */
+  trelloAgentEnabled?: boolean;
+  /** Permite o agente Trello CRIAR novos cards no board. Default (undefined/false) = desligado (evita flood). */
+  trelloAgentCreateCards?: boolean;
   /** Inbox default — criado automaticamente, nao deletavel */
   isInbox?: boolean;
   /** Comando que builda o frontend em modo preview (com MSW ativado). Ex: "npm run build:preview". */
@@ -363,6 +369,13 @@ export type ProjectRecord = {
   previewMocksDir?: string;
   /** Diretorio do build output. Ex: "frontend/dist". Default detectado. */
   previewDistDir?: string;
+  /**
+   * Liga/desliga a injecao automatica do scaffold MSW no worktree efemero do
+   * preview. Default (undefined) = ligado. Setar `false` faz o preview buildar
+   * o app SEM mock — bate no backend real (ou quebra se nao houver). Util quando
+   * a app ja tem seus proprios mocks ou aponta pra um backend de staging.
+   */
+  previewUseMsw?: boolean;
   /** Stack detectada do repositorio primario (#12 plan W4). Atualizado on-demand. */
   stack?: {
     primary: "node" | "python" | "go" | "rust" | "unknown";
@@ -442,6 +455,27 @@ export type ChatBindingRecord = {
    * Quando false, executa direto sem confirmacao.
    */
   requirePlanApproval?: boolean;
+  /** True quando o chat e um grupo WhatsApp (`chatId` termina em @g.us). */
+  isGroup?: boolean;
+  /** Nome/assunto do grupo (cache pra exibir na UI). */
+  groupSubject?: string;
+  /**
+   * JIDs com controle total no grupo: gerenciam permissoes e rodam qualquer comando.
+   * Semeado com quem parear o grupo (!start). So relevante quando isGroup.
+   */
+  admins?: string[];
+  /**
+   * Allow-list de JIDs por comando (ex: { task: ["55...@..."], ask: [...] }).
+   * Em grupos, um comando e permitido se sender ∈ admins OU sender ∈ commandPermissions[cmd].
+   * Comando sem entrada = so admin. Ignorado em chat privado.
+   */
+  commandPermissions?: Record<string, string[]>;
+  /** Última vez que o watchdog de ociosidade perguntou algo neste chat (cooldown anti-spam). */
+  lastIdleNudgeAt?: Date;
+  /** Quando false, desliga o nudge de ociosidade neste chat. Default true. */
+  idleNudgeEnabled?: boolean;
+  /** Sugestoes numeradas enviadas no ultimo idle-nudge (cards + ideias). Respondidas por numero. */
+  idleSuggestions?: Array<{ n: number; kind: "card" | "idea"; description: string }>;
   active: boolean;
   createdAt: Date;
 };
@@ -483,6 +517,8 @@ export type PendingPlanRecord = {
   }>;
   /** Trello resolvido. */
   resolvedTrello?: { boardId: string; listId?: string; doneListId?: string };
+  /** Provider preferido pra execucao (ex: "anthropic" pra tasks do idle-nudge). Sobrevive ao gate de aprovacao. */
+  execProvider?: "anthropic" | "codex" | "deepseek";
   createdAt: Date;
   /** TTL: Mongo deleta documento neste horario. */
   expiresAt: Date;
@@ -564,4 +600,55 @@ export type ScheduledRecord = {
 export const getScheduledCollection = async (): Promise<Collection<ScheduledRecord>> => {
   const mongo = await getMongoClient();
   return mongo.db(config.mongo.db).collection<ScheduledRecord>("scheduled");
+};
+
+// ============== Ideas agent (dedup + entrega pendente) ==============
+
+/**
+ * Fingerprint de uma ideia ja sugerida — usado pra nao repetir a mesma
+ * sugestao todo fim de semana. TTL de 14d (apos isso a ideia pode reaparecer).
+ */
+export type IdeaSuggestionRecord = {
+  _id?: ObjectId;
+  /** `null` = escopo global (ex. schedule autonomo sem userId). Sentinela estavel. */
+  userId?: string | null;
+  /** Hash estavel de (category + suggestion normalizada). */
+  fingerprint: string;
+  category: string;
+  suggestion: string;
+  /** TTL — Mongo apaga 14d apos a ultima vez que foi sugerida. */
+  lastSuggestedAt: Date;
+};
+
+export const getIdeaSuggestionsCollection = async (): Promise<Collection<IdeaSuggestionRecord>> => {
+  const mongo = await getMongoClient();
+  const col = mongo.db(config.mongo.db).collection<IdeaSuggestionRecord>("idea_suggestions");
+  // Snooze de 14d — apos isso o doc some e a ideia pode reaparecer.
+  await col.createIndex({ lastSuggestedAt: 1 }, { expireAfterSeconds: 14 * 24 * 60 * 60 }).catch(() => {});
+  await col.createIndex({ userId: 1, fingerprint: 1 }).catch(() => {});
+  return col;
+};
+
+/**
+ * Entrega de ideias que nao pode ser enviada na hora (WhatsApp offline).
+ * Reenviada no reconnect / proximo boot. TTL de 7d pra nao acumular lixo.
+ */
+export type IdeaDeliveryRecord = {
+  _id?: ObjectId;
+  whatsappJid: string;
+  userId?: string;
+  /** Mensagem ja formatada, pronta pra sendText. */
+  text: string;
+  status: "pending" | "sent";
+  attempts?: number;
+  createdAt: Date;
+  sentAt?: Date;
+};
+
+export const getIdeaDeliveriesCollection = async (): Promise<Collection<IdeaDeliveryRecord>> => {
+  const mongo = await getMongoClient();
+  const col = mongo.db(config.mongo.db).collection<IdeaDeliveryRecord>("idea_deliveries");
+  await col.createIndex({ createdAt: 1 }, { expireAfterSeconds: 7 * 24 * 60 * 60 }).catch(() => {});
+  await col.createIndex({ status: 1 }).catch(() => {});
+  return col;
 };
