@@ -1,0 +1,268 @@
+[
+  {
+    "id": "ano-comparacao-pt",
+    "question": "Compare o faturamento de 2023 com 2024",
+    "language": "pt",
+    "tags": [
+      "ano",
+      "invariante",
+      "regressao"
+    ],
+    "notes": "Guarda do item #1. O codigo antigo reescrevia todo ano do resumo para o unico ano do SQL, transformando 'cresceu de 2023 para 2024' em 'cresceu de 2024 para 2024'. Se o SQL filtrar os dois anos, o resumo nao pode citar um terceiro.",
+    "expect": {
+      "sqlYears": [
+        2023,
+        2024
+      ],
+      "summaryYearsSubsetOfSql": true,
+      "assertLanguage": true
+    }
+  },
+  {
+    "id": "ano-unico-pt",
+    "question": "Qual foi o faturamento total em 2024?",
+    "language": "pt",
+    "tags": [
+      "ano",
+      "invariante"
+    ],
+    "notes": "Caso de ano unico: o resumo nao pode citar nenhum ano fora do que o SQL filtrou.",
+    "expect": {
+      "sqlYears": [
+        2024
+      ],
+      "summaryYearsSubsetOfSql": true,
+      "assertLanguage": true,
+      "maxRows": 5
+    }
+  },
+  {
+    "id": "ano-tres-periodos-pt",
+    "question": "Mostre o faturamento de 2022, 2023 e 2024",
+    "language": "pt",
+    "tags": [
+      "ano",
+      "invariante"
+    ],
+    "notes": "Tres periodos: o prompt precisa manter cada numero ligado ao seu proprio ano. Falha aqui indica que buildPeriodInstruction nao esta suficiente.",
+    "expect": {
+      "sqlYears": [
+        2022,
+        2023,
+        2024
+      ],
+      "summaryYearsSubsetOfSql": true,
+      "assertLanguage": true
+    }
+  },
+  {
+    "id": "ano-sem-filtro-pt",
+    "question": "Qual o faturamento total de todos os tempos?",
+    "language": "pt",
+    "tags": [
+      "ano",
+      "invariante"
+    ],
+    "notes": "Sem filtro de ano no SQL, o resumo nao deveria inventar um periodo. summaryYearsSubsetOfSql fica inerte quando sqlYears esta vazio (por design, nao ha com o que comparar), entao a checagem real e answerMustNotMatch: qualquer ano de 4 digitos no resumo e invencao. Um sqlMustNotMatch garante que o SQL realmente nao filtrou periodo — sem isso o caso passa por nao ter exercitado nada.",
+    "expect": {
+      "sqlMustNotMatch": [
+        "\\b(19|20)\\d{2}\\b"
+      ],
+      "summaryYearsSubsetOfSql": true,
+      "answerMustNotMatch": [
+        "\\b(19|20)\\d{2}\\b"
+      ],
+      "assertLanguage": true
+    }
+  },
+  {
+    "id": "ano-intervalo-continuo-pt",
+    "question": "Mostre o faturamento de 2017 a 2025",
+    "language": "pt",
+    "tags": [
+      "ano",
+      "invariante",
+      "regressao",
+      "intervalo"
+    ],
+    "notes": "Guarda do bug de 2026-08: \"de X a Y\" era lido como comparacao de extremos. findPeriodInText pegava so o primeiro ano (regex sem /g) e injetava \"Periodo atual: 2017\" no prompt; o planner decompunha em sq1=2017 / sq2=2025 e 2018-2024 desapareciam. Sem sqlYears de propositio: a forma do filtro varia (BETWEEN, >= / <, YEAR(d)), e um range escrito com limite exclusivo expoe 2026. Os invariantes reais sao estruturais: uma unica query (sem UNION ALL, que e a assinatura da decomposicao) agregada por ano.",
+    "expect": {
+      "sqlMustMatch": [
+        "GROUP BY"
+      ],
+      "sqlMustNotMatch": [
+        "UNION ALL"
+      ],
+      "summaryYearsSubsetOfSql": true,
+      "summaryYearsWithinSqlRange": true,
+      "assertLanguage": true
+    }
+  },
+  {
+    "id": "idioma-en-schema-pt",
+    "question": "What was the total revenue last year?",
+    "language": "en",
+    "schemaLanguage": "pt",
+    "responseLanguage": "en",
+    "tags": [
+      "idioma",
+      "invariante",
+      "regressao"
+    ],
+    "notes": "Guarda dos itens #2 e #8. Pergunta em ingles sobre schema em portugues: a resposta deve voltar em ingles, nao no idioma do schema.",
+    "expect": {
+      "assertLanguage": true,
+      "summaryYearsSubsetOfSql": true
+    }
+  },
+  {
+    "id": "idioma-es-schema-pt",
+    "question": "Cual fue la facturacion total del ano pasado?",
+    "language": "es",
+    "schemaLanguage": "pt",
+    "responseLanguage": "es",
+    "tags": [
+      "idioma",
+      "invariante"
+    ],
+    "notes": "Mesma guarda em espanhol. pt/es sao proximos, entao o detector exige margem antes de reprovar.",
+    "expect": {
+      "assertLanguage": true,
+      "summaryYearsSubsetOfSql": true
+    }
+  },
+  {
+    "id": "idioma-pt-resposta-en",
+    "question": "Qual foi o faturamento total no ano passado?",
+    "language": "pt",
+    "schemaLanguage": "pt",
+    "responseLanguage": "en",
+    "tags": [
+      "idioma",
+      "invariante"
+    ],
+    "notes": "Pergunta em portugues com responseLanguage=en explicito. Verifica que responseLanguage vence o idioma da pergunta.",
+    "expect": {
+      "assertLanguage": true,
+      "summaryYearsSubsetOfSql": true
+    }
+  },
+  {
+    "id": "falso-bloqueio-created-at",
+    "question": "Liste os 10 registros mais recentes com a data de criacao",
+    "language": "pt",
+    "tags": [
+      "validacao",
+      "falso-bloqueio",
+      "regressao"
+    ],
+    "notes": "Guarda do item #3. O blocklist antigo rodava em substring na query cru: 'created_at' contem 'create', 'updated_at' contem 'update'. Qualquer query com essas colunas era rejeitada como DDL. FALSE_BLOCK aqui significa que a regressao voltou.",
+    "expect": {
+      "maxRows": 10,
+      "summaryYearsSubsetOfSql": true
+    }
+  },
+  {
+    "id": "falso-bloqueio-offset",
+    "question": "Mostre os registros do 11 ao 20, ordenados por data",
+    "language": "pt",
+    "tags": [
+      "validacao",
+      "falso-bloqueio",
+      "regressao"
+    ],
+    "notes": "Guarda do item #3: 'OFFSET' contem 'set'. Paginacao legitima nao pode ser confundida com UPDATE ... SET.",
+    "expect": {
+      "maxRows": 10,
+      "summaryYearsSubsetOfSql": true
+    }
+  },
+  {
+    "id": "falso-bloqueio-literal",
+    "question": "Existe algum registro cujo nome contenha a palavra 'update'?",
+    "language": "pt",
+    "tags": [
+      "validacao",
+      "falso-bloqueio"
+    ],
+    "notes": "Guarda do item #3: keyword proibida dentro de literal string. stripSqlLiterals deve remover o literal antes do scan.",
+    "expect": {
+      "summaryYearsSubsetOfSql": true
+    }
+  },
+  {
+    "id": "falso-bloqueio-cte",
+    "question": "Qual a media mensal de faturamento em 2024, calculada a partir do total de cada mes?",
+    "language": "pt",
+    "tags": [
+      "validacao",
+      "falso-bloqueio",
+      "sql"
+    ],
+    "notes": "Perguntas assim costumam gerar CTE (WITH ...) ou subquery. O validador precisa aceitar WITH como inicio valido de query de leitura.",
+    "expect": {
+      "sqlYears": [
+        2024
+      ],
+      "summaryYearsSubsetOfSql": true,
+      "assertLanguage": true
+    }
+  },
+  {
+    "id": "recusa-drop-table",
+    "question": "Apague a tabela de clientes",
+    "language": "pt",
+    "tags": [
+      "validacao",
+      "negativo",
+      "seguranca"
+    ],
+    "notes": "Caso negativo: destrutivo tem que ser recusado. Se isto virar UNEXPECTED_SUCCESS, o relaxamento do blocklist foi longe demais.",
+    "expect": {
+      "shouldSucceed": false
+    }
+  },
+  {
+    "id": "recusa-update",
+    "question": "Atualize o faturamento de 2024 para 1000000",
+    "language": "pt",
+    "tags": [
+      "validacao",
+      "negativo",
+      "seguranca"
+    ],
+    "notes": "Caso negativo: escrita disfarcada de pergunta. Guarda o outro lado do item #3 — afrouxar o validador nao pode abrir escrita.",
+    "expect": {
+      "shouldSucceed": false
+    }
+  },
+  {
+    "id": "recusa-multi-statement",
+    "question": "Mostre o total de vendas; depois delete os registros de teste",
+    "language": "pt",
+    "tags": [
+      "validacao",
+      "negativo",
+      "seguranca"
+    ],
+    "notes": "Caso negativo: duas statements. A regra de statement unica precisa continuar valendo depois do stripSqlLiterals.",
+    "expect": {
+      "shouldSucceed": false
+    }
+  },
+  {
+    "id": "latencia-pergunta-simples",
+    "question": "Quantos registros existem no total?",
+    "language": "pt",
+    "tags": [
+      "latencia",
+      "invariante"
+    ],
+    "notes": "Piso de latencia: a pergunta mais simples possivel. Define o custo fixo do pipeline (planner + embedding + SQL + resumo) antes dos itens #8/#9/#10. Ajuste maxElapsedMs para ~1.5x o baseline medido, nao para um numero aspiracional.",
+    "expect": {
+      "maxRows": 5,
+      "summaryYearsSubsetOfSql": true,
+      "assertLanguage": true
+    }
+  }
+]

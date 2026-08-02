@@ -1,5 +1,13 @@
 import { getOpenAI, getSummaryModel } from "../core/openai.js";
 import { getAgentsConfig } from "../core/agentConfig.js";
+import type { YearRange } from "../helpers/period.js";
+import {
+  buildPeriodInstruction,
+  extractYearsFromSql,
+  findSummaryYearMismatch
+} from "./summaryPeriod.js";
+
+export { buildPeriodInstruction, extractYearsFromSql, findSummaryYearMismatch };
 
 const shouldLogPrompts = (): boolean => {
   const flag = process.env.LOG_PROMPTS?.toLowerCase();
@@ -24,27 +32,6 @@ const logPrompt = (
   }
 };
 
-export const extractYearsFromSql = (sql: string): number[] => {
-  const matches = sql.match(/\b(20\d{2})\b/g);
-  if (!matches || matches.length === 0) return [];
-  const uniqueYears = [...new Set(matches.map((m) => Number.parseInt(m, 10)))];
-  return uniqueYears.sort((a, b) => a - b);
-};
-
-export const extractYearFromSql = (sql: string): number | null => {
-  const years = extractYearsFromSql(sql);
-  if (years.length !== 1) return null;
-  return years[0] ?? null;
-};
-
-const enforceSummaryYear = (summary: string, year: number | null): string => {
-  if (!year) return summary;
-  const yearText = String(year);
-  const years = summary.match(/\b20\d{2}\b/g) ?? [];
-  if (years.length === 0) return summary;
-  if (years.every((value) => value === yearText)) return summary;
-  return summary.replace(/\b20\d{2}\b/g, yearText);
-};
 
 const buildSummaryPrompt = (
   question: string,
@@ -72,6 +59,10 @@ const buildSummaryPrompt = (
 export type SummaryResult = {
   summary?: string;
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  /** Years the SQL filtered on, in ascending order. */
+  sqlYears?: number[];
+  /** Years the summary cited that the SQL never filtered on. Empty when consistent. */
+  yearMismatch?: number[];
 };
 
 export const summarizeResult = async (
@@ -79,24 +70,18 @@ export const summarizeResult = async (
   sql: string,
   columns: string[],
   rows: Record<string, unknown>[],
-  language: "pt" | "en" | "es"
+  language: "pt" | "en" | "es",
+  periodRange: YearRange | null = null
 ): Promise<SummaryResult> => {
   const sample = rows.slice(0, 20);
-  const sqlYear = extractYearFromSql(sql);
-  const periodInstruction =
-    sqlYear && Number.isFinite(sqlYear)
-      ? language === "en"
-        ? `Period year must be ${sqlYear}.`
-        : language === "es"
-          ? `El ano del periodo debe ser ${sqlYear}.`
-          : `O ano do periodo deve ser ${sqlYear}.`
-      : "";
+  const sqlYears = extractYearsFromSql(sql);
+  const periodInstruction = buildPeriodInstruction(sqlYears, language, periodRange);
   const systemBase =
     language === "en"
-      ? "You are a data assistant. Respond in markdown with 1 short paragraph (max 2 sentences), non-technical, no bullets or headings. Do not mention SQL or query details. Always respect the period used in the SQL. Clearly differentiate between absolute numbers and percentage rates - do not confuse them."
+      ? "You are a data analyst talking to a colleague. Respond in markdown, 1 paragraph of up to 4 sentences, in natural spoken language - like someone explaining the number out loud, not a written report. Lead with the main figure, then point out what stands out (highest, lowest, variation) using only what the data actually shows - never invent causes or explanations. No bullets, no headings, and no bureaucratic openers like 'The total presented is' or 'According to the data'. Do not mention SQL or query details. Always respect the period used in the SQL. Clearly differentiate between absolute numbers and percentage rates - do not confuse them."
     : language === "es"
-        ? "Eres un asistente de datos. Responde en markdown con 1 parrafo corto (max 2 frases), sin tecnicismos, sin bullets ni titulos. No menciones SQL ni detalles de consulta. Respeta siempre el periodo usado en el SQL. Diferencia claramente entre numeros absolutos y tasas porcentuales - no los confundas."
-        : "Voce e um assistente de dados. Responda em markdown com 1 paragrafo curto (max 2 frases), sem tecnicismos, sem bullets ou titulos. Nao mencione SQL nem detalhes da consulta. Sempre respeite o periodo usado no SQL. Diferencie claramente entre numeros absolutos e taxas percentuais - nao os confunda.";
+        ? "Eres un analista de datos hablando con un colega. Responde en markdown, 1 parrafo de hasta 4 frases, en lenguaje natural y directo - como alguien explicando el numero en voz alta, no como un informe. Empieza por la cifra principal y luego senala lo que llama la atencion (mayor, menor, variacion) usando solo lo que los datos muestran - nunca inventes causas ni explicaciones. Sin bullets, sin titulos y sin aperturas burocraticas como 'El total presentado es' o 'Conforme a los datos'. No menciones SQL ni detalles de consulta. Respeta siempre el periodo usado en el SQL. Diferencia claramente entre numeros absolutos y tasas porcentuales - no los confundas."
+        : "Voce e um analista de dados conversando com um colega. Responda em markdown, 1 paragrafo de ate 4 frases, em linguagem natural e direta - como alguem explicando o numero em voz alta, nao como um relatorio escrito. Comece pelo dado principal e depois aponte o que chama atencao (maior, menor, variacao) usando apenas o que os dados realmente mostram - nunca invente causas ou explicacoes. Sem bullets, sem titulos e sem aberturas burocraticas como 'O total apresentado e' ou 'Conforme os dados'. Nao mencione SQL nem detalhes da consulta. Sempre respeite o periodo usado no SQL. Diferencie claramente numeros absolutos de taxas percentuais - nao os confunda.";
   const system = periodInstruction ? `${systemBase} ${periodInstruction}` : systemBase;
 
   const summaryPrompt = buildSummaryPrompt(question, sql, columns, sample, language);
@@ -108,9 +93,10 @@ export const summarizeResult = async (
     meta: { model, language }
   });
   const client = await getOpenAI();
+  const temperature = agentsCfg.summary.temperature;
   const completion = await client.chat.completions.create({
     model,
-    temperature: agentsCfg.summary.temperature ?? 0.2,
+    ...(temperature !== undefined && temperature !== null ? { temperature } : {}),
     messages: [
       { role: "system", content: system },
       { role: "user", content: summaryPrompt }
@@ -120,11 +106,25 @@ export const summarizeResult = async (
   if (shouldLogPrompts() && completion.usage) {
     console.info(`[tokens] summary | input=${completion.usage.prompt_tokens} output=${completion.usage.completion_tokens} total=${completion.usage.total_tokens}`);
   }
-  const summary = completion.choices[0]?.message?.content?.trim();
-  return {
-    summary: summary
-      ? enforceSummaryYear(summary.replace(/\s+/g, " "), sqlYear)
-      : undefined,
-    usage: completion.usage
-  };
+  const choice = completion.choices[0];
+  const raw = choice?.message?.content?.trim();
+  const summary = raw ? raw.replace(/\s+/g, " ") : undefined;
+
+  // An empty completion is not an exception, so without this the caller would
+  // silently serve the "A consulta retornou N resultados" fallback with no
+  // trace of why the real summary never arrived.
+  if (!summary) {
+    console.warn(
+      `[summary-empty] modelo=${model} finish_reason=${choice?.finish_reason ?? "n/a"} choices=${completion.choices.length} - usando fallback`
+    );
+  }
+  const yearMismatch = summary ? findSummaryYearMismatch(summary, sqlYears) : [];
+
+  if (yearMismatch.length > 0) {
+    console.warn(
+      `[summary-year-mismatch] o resumo citou ${yearMismatch.join(", ")} mas o SQL filtrou ${sqlYears.join(", ")}`
+    );
+  }
+
+  return { summary, usage: completion.usage, sqlYears, yearMismatch };
 };

@@ -21,14 +21,26 @@ import { answerQuestionApi } from "./askApi.js";
 import { config } from "../core/config.js";
 import { cosineSimilarity } from "../utils/math.js";
 import { getTableReferenceCountSetting } from "../helpers/settings.js";
+import {
+  findPeriodInText,
+  formatPeriodText,
+  formatMonth,
+  formatYearRange,
+  parseYearRange,
+  type DetectedPeriod,
+  type YearRange
+} from "../helpers/period.js";
+
+export { findPeriodInText, formatPeriodText };
 
 // Import agents
 import { translateText, buildStandaloneQuestion } from "../agents/translation.js";
 import { expandTables, searchRelevantTables, generateEmbedding, buildEmbeddingInput, estimateQueryComplexity } from "../agents/schema.js";
-import { buildPrompt, generateSql, generateCorrectedSql, classifyError, reflectOnError } from "../agents/sql.js";
+import { buildPrompt, generateSql, generateCorrectedSql, reflectOnError } from "../agents/sql.js";
+import { classifyError, isRetriableError } from "../agents/sqlErrors.js";
 import { profileTables, type TableProfileMap } from "../agents/profiler.js";
 import { decomposeQuestion, combineSubQueries, type DecompositionPlan } from "../agents/planner.js";
-import { summarizeResult, extractYearFromSql } from "../agents/summary.js";
+import { summarizeResult } from "../agents/summary.js";
 import { inferChart, inferChartWithLLM } from "../agents/chart.js";
 import { getAgentsConfig } from "../core/agentConfig.js";
 
@@ -82,24 +94,30 @@ const applyInstructionTemplate = (
   responseLanguage: "pt" | "en" | "es"
 ): string => text.replace(/{{\s*language\s*}}/gi, languageName(responseLanguage));
 
-const extractYearFromText = (text: string): number | null => {
-  const match = text.match(/\b(20\d{2})\b/);
-  if (!match?.[1]) return null;
-  return Number.parseInt(match[1], 10);
-};
-
-const enforceQuestionYear = (question: string, year: number | null): string => {
-  if (!year) return question;
-  const yearText = String(year);
-  if (!/\b20\d{2}\b/.test(question)) return question;
-  return question.replace(/\b20\d{2}\b/g, yearText);
-};
-
 const truncate = (value: string, max: number): string =>
   value.length > max ? `${value.slice(0, max)}...` : value;
 
 const truncateRows = <T>(rows: T[]): T[] =>
   rows.slice(0, config.historyMaxRows);
+
+const fallbackSummary = (
+  rowCount: number,
+  language: "pt" | "en" | "es"
+): string => {
+  if (language === "en") {
+    return rowCount === 0 ? "No results were found for this question." : `The query returned ${rowCount} result${rowCount === 1 ? "" : "s"}.`;
+  }
+  if (language === "es") {
+    return rowCount === 0 ? "No se encontraron resultados para esta pregunta." : `La consulta devolvio ${rowCount} resultado${rowCount === 1 ? "" : "s"}.`;
+  }
+  return rowCount === 0 ? "Nenhum resultado foi encontrado para esta pergunta." : `A consulta retornou ${rowCount} resultado${rowCount === 1 ? "" : "s"}.`;
+};
+
+const ensureSummary = (
+  summary: string | undefined,
+  rowCount: number,
+  language: "pt" | "en" | "es"
+): string => summary?.trim() || fallbackSummary(rowCount, language);
 
 // ============== HISTORY & FEW-SHOT LOADERS ==============
 
@@ -283,46 +301,6 @@ const buildHistorySnippet = async (
   return lines.join("\n");
 };
 
-// ============== PERIOD HELPERS ==============
-
-const monthMap: Array<{ key: string; value: number }> = [
-  { key: "janeiro", value: 1 }, { key: "jan", value: 1 },
-  { key: "february", value: 2 }, { key: "feb", value: 2 }, { key: "fevereiro", value: 2 }, { key: "fev", value: 2 },
-  { key: "march", value: 3 }, { key: "mar", value: 3 }, { key: "marco", value: 3 }, { key: "março", value: 3 },
-  { key: "abril", value: 4 }, { key: "apr", value: 4 }, { key: "april", value: 4 },
-  { key: "mayo", value: 5 }, { key: "may", value: 5 }, { key: "maio", value: 5 },
-  { key: "junho", value: 6 }, { key: "jun", value: 6 }, { key: "june", value: 6 },
-  { key: "julho", value: 7 }, { key: "jul", value: 7 }, { key: "july", value: 7 },
-  { key: "agosto", value: 8 }, { key: "aug", value: 8 }, { key: "august", value: 8 },
-  { key: "septiembre", value: 9 }, { key: "sept", value: 9 }, { key: "september", value: 9 }, { key: "setembro", value: 9 },
-  { key: "outubro", value: 10 }, { key: "oct", value: 10 }, { key: "october", value: 10 },
-  { key: "novembro", value: 11 }, { key: "nov", value: 11 }, { key: "november", value: 11 },
-  { key: "dezembro", value: 12 }, { key: "dec", value: 12 }, { key: "december", value: 12 }, { key: "diciembre", value: 12 }
-];
-
-const findPeriodInText = (text: string): { month?: number; year?: number } | null => {
-  const lowered = text.toLowerCase();
-  const yearMatch = lowered.match(/\b(20\d{2})\b/);
-  const year = yearMatch?.[1] ? Number.parseInt(yearMatch[1], 10) : undefined;
-  for (const item of monthMap) {
-    const pattern = new RegExp(`\\b${item.key}\\b`, "i");
-    if (pattern.test(lowered)) {
-      return { month: item.value, year };
-    }
-  }
-  return year ? { year } : null;
-};
-
-const formatMonth = (month: number, language: "pt" | "en" | "es"): string => {
-  const names =
-    language === "en"
-      ? ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
-      : language === "es"
-        ? ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
-        : ["janeiro", "fevereiro", "marco", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
-  return names[month - 1] ?? `${month}`;
-};
-
 const buildPeriodHint = async (
   chatId: string | undefined,
   question: string,
@@ -330,7 +308,7 @@ const buildPeriodHint = async (
 ): Promise<string | null> => {
   if (!chatId) return null;
   const current = findPeriodInText(question);
-  if (current?.month || current?.year) return null;
+  if (current?.month || current?.year || current?.range) return null;
 
   const collection = await getHistoryCollection();
   const items = await collection
@@ -341,6 +319,7 @@ const buildPeriodHint = async (
 
   for (const item of items) {
     const period = findPeriodInText(item.question);
+    if (period?.range) return formatYearRange(period.range, language);
     if (period?.month || period?.year) {
       const monthLabel = period.month ? formatMonth(period.month, language) : null;
       if (monthLabel && period.year) return `${monthLabel} ${period.year}`;
@@ -349,18 +328,6 @@ const buildPeriodHint = async (
     }
   }
 
-  return null;
-};
-
-const formatPeriodText = (
-  period: { month?: number; year?: number },
-  language: "pt" | "en" | "es"
-): string | null => {
-  if (!period.month && !period.year) return null;
-  const monthLabel = period.month ? formatMonth(period.month, language) : null;
-  if (monthLabel && period.year) return `${monthLabel} ${period.year}`;
-  if (monthLabel) return monthLabel;
-  if (period.year) return String(period.year);
   return null;
 };
 
@@ -438,8 +405,7 @@ export const answerQuestion = async (
         const result = await buildStandaloneQuestion(translatedQuestion, historyForRewrite, resolvedSchemaLanguage);
         isNewTopic = result.isNewTopic;
         if (result.question.trim()) {
-          const currentYear = extractYearFromText(translatedQuestion) ?? extractYearFromText(normalizedQuestion);
-          concreteQuestion = enforceQuestionYear(result.question, currentYear);
+          concreteQuestion = result.question;
         }
       } catch {
         concreteQuestion = translatedQuestion.trim() || normalizedQuestion;
@@ -465,7 +431,7 @@ export const answerQuestion = async (
   // ── Mode branching: delegate to API orchestrator if mode === "api" ──
   const currentConfig = resolvedEnvironmentId ? await getEnvironment(resolvedEnvironmentId) : await getAppConfig();
   if (currentConfig?.mode === "api") {
-    return answerQuestionApi(
+    return answerQuestionApi({
       normalizedQuestion,
       embeddingQuestion,
       concreteQuestion,
@@ -474,8 +440,9 @@ export const answerQuestion = async (
       language,
       resolvedSchemaLanguage,
       resolvedResponseLanguage,
+      environmentId: resolvedEnvironmentId,
       emit
-    );
+    });
   }
 
   if (cached) {
@@ -485,7 +452,7 @@ export const answerQuestion = async (
       environmentId: resolvedEnvironmentId,
       question: normalizedQuestion,
       embeddingQuestion,
-      sql: cached.sql,
+      sql: cached.sql ?? "",
       rows: truncateRows(cached.rows ?? []),
       columns: cached.columns ?? [],
       chart: cached.chart,
@@ -505,6 +472,7 @@ export const answerQuestion = async (
       ok: true,
       data: {
         ...cached,
+        summary: ensureSummary(cached.summary, cached.rows?.length ?? 0, resolvedResponseLanguage),
         cacheHit: true,
         historyId: historyResult.insertedId.toString(),
         responseLanguage: resolvedResponseLanguage,
@@ -623,7 +591,11 @@ export const answerQuestion = async (
           const settled = summaryResultSettled.value as { summary?: string; usage?: typeof summaryUsage };
           summary = settled.summary;
           if (settled.usage) summaryUsage = settled.usage;
+        } else if (summaryEnabled && summaryResultSettled.status === "rejected") {
+          console.warn("[summary-failed] usando fallback:", summaryResultSettled.reason);
         }
+
+        summary = ensureSummary(summary, rowCount, resolvedResponseLanguage);
 
         if (summary && resolvedSchemaLanguage !== resolvedResponseLanguage && agentsCfg.translation.enabled !== false) {
           try {
@@ -688,7 +660,12 @@ export const answerQuestion = async (
     tableProfiles = await profileTables(context.tables, adapter, dbType, resolvedEnvironmentId);
   } catch { /* non-critical, proceed without profiles */ }
 
-  const rawPeriod = findPeriodInText(schemaQuestion) ?? {};
+  // `buildStandaloneQuestion` rewrites follow-ups like "e de 2017 a 2025" and can
+  // drop the interval syntax, so the raw question is consulted first.
+  const detectedRange = parseYearRange(question) ?? parseYearRange(schemaQuestion);
+  const rawPeriod: DetectedPeriod = detectedRange
+    ? { range: detectedRange }
+    : findPeriodInText(schemaQuestion) ?? {};
   const currentPeriodText = formatPeriodText(rawPeriod, resolvedSchemaLanguage);
   const historySnippet = currentPeriodText || isNewTopic ? null : await buildHistorySnippet(resolvedChatId, resolvedSchemaLanguage);
   const periodHint = await buildPeriodHint(resolvedChatId, schemaQuestion, resolvedSchemaLanguage);
@@ -721,14 +698,29 @@ export const answerQuestion = async (
   }
 
   // Step 10: Query Decomposition (PlannerAgent)
-  emit?.("step", { step: "planning", label: "Analisando complexidade da pergunta..." });
   let decompositionPlan: DecompositionPlan | null = null;
   let plannerUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } = {};
-  try {
-    decompositionPlan = await decomposeQuestion(schemaQuestion, context, resolvedSchemaLanguage, dbType);
-    if (decompositionPlan.usage) plannerUsage = decompositionPlan.usage;
-  } catch {
-    decompositionPlan = null;
+  if (rawPeriod.range) {
+    // A continuous interval is one aggregated query. Decomposing it turns the
+    // range into its two endpoints and silently drops every year in between.
+    emit?.("step", {
+      step: "planning",
+      label: `Intervalo continuo detectado (${rawPeriod.range.startYear}-${rawPeriod.range.endYear}) — consulta unica agregada por ano.`
+    });
+  } else {
+    emit?.("step", { step: "planning", label: "Analisando complexidade da pergunta..." });
+    try {
+      decompositionPlan = await decomposeQuestion(schemaQuestion, context, resolvedSchemaLanguage, dbType);
+      if (decompositionPlan.usage) plannerUsage = decompositionPlan.usage;
+    } catch (error) {
+      // decomposeQuestion already degrades gracefully on its own failures, so
+      // reaching here means something unexpected broke. Swallowing it without a
+      // trace is what made a dead planner look like an idle one.
+      decompositionPlan = null;
+      console.warn(
+        `[planner-error] ${error instanceof Error ? error.message : String(error)} - seguindo sem decomposicao`
+      );
+    }
   }
 
   // Step 11: SQL Generation Loop (SQLAgent) with Self-Correction Feedback Loop
@@ -808,7 +800,7 @@ export const answerQuestion = async (
               ? inferChartWithLLM(displayQuestion, queryResult.recordset ?? [], columns, resolvedResponseLanguage)
               : Promise.resolve(undefined),
             summaryEnabled2
-              ? summarizeResult(schemaQuestion, sql, columns, queryResult.recordset ?? [], resolvedSchemaLanguage)
+              ? summarizeResult(schemaQuestion, sql, columns, queryResult.recordset ?? [], resolvedSchemaLanguage, rawPeriod.range ?? null)
               : Promise.resolve({ summary: undefined, usage: undefined })
           ];
           const [chartResult, summaryResultSettled] = await Promise.allSettled(parallelTasks2);
@@ -826,9 +818,13 @@ export const answerQuestion = async (
             if (settled.usage) {
               addTo(summaryUsage, settled.usage);
             }
+          } else if (summaryEnabled2 && summaryResultSettled.status === "rejected") {
+            console.warn("[summary-failed] usando fallback:", summaryResultSettled.reason);
           }
 
-          if (summary && resolvedSchemaLanguage !== resolvedResponseLanguage && agentsCfg.translation.enabled !== false) {
+          summary = ensureSummary(summary, rowCount, resolvedResponseLanguage);
+
+        if (summary && resolvedSchemaLanguage !== resolvedResponseLanguage && agentsCfg.translation.enabled !== false) {
             try {
               summary = await translateText(summary, resolvedResponseLanguage, "summary");
             } catch { /* keep original */ }
@@ -889,7 +885,7 @@ export const answerQuestion = async (
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const isRetry = attempt > 0 && lastClassifiedError && lastReflection && lastSql;
 
-    const prompt = buildPrompt(schemaQuestion, context, historySnippet, fewShotExamples, lastError, lastSql, resolvedSchemaLanguage, currentPeriodText, tableProfiles);
+    const prompt = buildPrompt(schemaQuestion, context, historySnippet, fewShotExamples, lastError, lastSql, resolvedSchemaLanguage, currentPeriodText, tableProfiles, rawPeriod.range ?? null);
     const promptWithPeriod = periodHint
       ? `${prompt}\n\n${resolvedSchemaLanguage === "en" ? `Fixed period from chat history: ${periodHint}` : resolvedSchemaLanguage === "es" ? `Periodo fijo del historial del chat: ${periodHint}` : `Periodo fixo do historico do chat: ${periodHint}`}`
       : prompt;
@@ -993,7 +989,7 @@ export const answerQuestion = async (
           ? inferChartWithLLM(displayQuestion, queryResult.recordset ?? [], columns, resolvedResponseLanguage)
           : Promise.resolve(undefined),
         summaryEnabled2
-          ? summarizeResult(schemaQuestion, sql, columns, queryResult.recordset ?? [], resolvedSchemaLanguage)
+          ? summarizeResult(schemaQuestion, sql, columns, queryResult.recordset ?? [], resolvedSchemaLanguage, rawPeriod.range ?? null)
           : Promise.resolve({ summary: undefined, usage: undefined })
       ];
       const [chartResult, summaryResultSettled] = await Promise.allSettled(parallelTasks2);
@@ -1011,7 +1007,11 @@ export const answerQuestion = async (
         if (settled.usage) {
           addTo(summaryUsage, settled.usage);
         }
+      } else if (summaryEnabled2 && summaryResultSettled.status === "rejected") {
+        console.warn("[summary-failed] usando fallback:", summaryResultSettled.reason);
       }
+
+      summary = ensureSummary(summary, rowCount, resolvedResponseLanguage);
 
       if (summary && resolvedSchemaLanguage !== resolvedResponseLanguage && agentsCfg.translation.enabled !== false) {
         try {
@@ -1072,6 +1072,13 @@ export const answerQuestion = async (
       lastClassifiedError = classifyError(rawError, false);
       forceLargeModel = true;
 
+      // A dead database will not be revived by a different SELECT. Stop now
+      // instead of paying the connect timeout twice more.
+      if (!isRetriableError(lastClassifiedError.category)) {
+        console.error(`[ask] erro nao-retentavel (${lastClassifiedError.category}):`, rawError);
+        break;
+      }
+
       if (attempt < maxAttempts - 1) {
         try {
           emit?.("step", { step: "reflecting", label: "Analisando erro..." });
@@ -1085,9 +1092,16 @@ export const answerQuestion = async (
     }
   }
 
-  // Fallback response
-  const fallbackSummary =
-    resolvedResponseLanguage === "en" ? "I could not produce a reliable answer this time. Please try rephrasing your question."
+  // Fallback response. A connection failure is not the user's fault and
+  // rephrasing will not help, so it gets its own honest message.
+  const isConnectionFailure = lastClassifiedError?.category === "connection_error";
+  const fallbackSummary = isConnectionFailure
+    ? resolvedResponseLanguage === "en"
+        ? "I could not reach the database, so there is no data to answer with. This is a connection problem, not a problem with your question."
+      : resolvedResponseLanguage === "es"
+        ? "No pude conectarme a la base de datos, asi que no hay datos para responder. Es un problema de conexion, no de tu pregunta."
+        : "Nao consegui conectar ao banco de dados, entao nao ha dados para responder. E um problema de conexao, nao da sua pergunta."
+    : resolvedResponseLanguage === "en" ? "I could not produce a reliable answer this time. Please try rephrasing your question."
       : resolvedResponseLanguage === "es" ? "No pude producir una respuesta confiable esta vez. Intenta reformular tu pregunta."
       : "Nao consegui produzir uma resposta confiavel desta vez. Tente reformular a pergunta.";
 

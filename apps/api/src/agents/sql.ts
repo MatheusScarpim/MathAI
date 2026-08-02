@@ -4,103 +4,14 @@ import { getAgentsConfig } from "../core/agentConfig.js";
 import type { DbType } from "../core/appConfig.js";
 import type { ExpandedContext } from "./schema.js";
 import type { TableProfileMap } from "./profiler.js";
+import type { ClassifiedError } from "./sqlErrors.js";
+import type { YearRange } from "../helpers/period.js";
 
 type FewShotExample = {
   question: string;
   sql: string;
   tags: string[];
   similarity: number;
-};
-
-// ============== ERROR CLASSIFICATION ==============
-
-export type ErrorCategory =
-  | "column_not_found"
-  | "type_mismatch"
-  | "syntax_error"
-  | "timeout"
-  | "table_not_found"
-  | "ambiguous_column"
-  | "aggregation_error"
-  | "join_error"
-  | "permission_denied"
-  | "validation_error"
-  | "unknown";
-
-export type ClassifiedError = {
-  category: ErrorCategory;
-  originalMessage: string;
-  hint: string;
-};
-
-const errorPatterns: Array<{ pattern: RegExp; category: ErrorCategory; hint: string }> = [
-  {
-    pattern: /invalid column name|column .+ (not found|does not exist|nao existe)|unknown column|ORA-00904/i,
-    category: "column_not_found",
-    hint: "A coluna referenciada nao existe na tabela. Verifique os nomes exatos das colunas no schema fornecido e use apenas colunas listadas."
-  },
-  {
-    pattern: /invalid object name|table .+ (not found|does not exist|nao existe)|relation .+ does not exist|ORA-00942/i,
-    category: "table_not_found",
-    hint: "A tabela referenciada nao existe. Use apenas tabelas listadas no schema fornecido, com schema e nome completos (ex: dbo.NomeTabela)."
-  },
-  {
-    pattern: /conversion failed|cannot convert|type mismatch|incompatible|operand type clash|ORA-01722|ORA-01858/i,
-    category: "type_mismatch",
-    hint: "Ha incompatibilidade de tipos. Verifique os tipos das colunas no schema e use CAST/CONVERT quando necessario. Datas devem usar o formato correto do banco."
-  },
-  {
-    pattern: /syntax error|incorrect syntax|unexpected token|ORA-00933|ORA-00936|parse error/i,
-    category: "syntax_error",
-    hint: "Erro de sintaxe SQL. Revise a estrutura da query: parenteses, virgulas, palavras-chave e clausulas obrigatorias."
-  },
-  {
-    pattern: /timeout|timed out|execution time|ORA-01013|wait timeout/i,
-    category: "timeout",
-    hint: "A query excedeu o tempo limite. Simplifique: reduza JOINs, adicione filtros mais restritivos, evite subqueries correlacionadas e use TOP/LIMIT menor."
-  },
-  {
-    pattern: /ambiguous column|ambiguous .+ reference|ORA-00918/i,
-    category: "ambiguous_column",
-    hint: "Coluna ambigua encontrada. Quando usar JOINs, qualifique todas as colunas com o alias da tabela (ex: t1.coluna, t2.coluna)."
-  },
-  {
-    pattern: /not .+ in .+ aggregate|not contained in .+ group by|aggregate function|ORA-00937|ORA-00979/i,
-    category: "aggregation_error",
-    hint: "Erro de agregacao. Toda coluna no SELECT que nao esta em uma funcao de agregacao (SUM, COUNT, etc.) precisa estar no GROUP BY."
-  },
-  {
-    pattern: /multi-part identifier .+ could not be bound|join .+ failed|cannot resolve|ORA-00905/i,
-    category: "join_error",
-    hint: "Erro no JOIN. Verifique se as tabelas e colunas de juncao existem no schema e se os aliases estao corretos."
-  },
-  {
-    pattern: /permission denied|access denied|ORA-01031|unauthorized/i,
-    category: "permission_denied",
-    hint: "Sem permissao para acessar o objeto. Tente usar tabelas/views alternativas do schema fornecido."
-  }
-];
-
-export const classifyError = (errorMessage: string, isValidationError: boolean = false): ClassifiedError => {
-  if (isValidationError) {
-    return {
-      category: "validation_error",
-      originalMessage: errorMessage,
-      hint: "O SQL gerado violou regras de validacao. Releia as regras: apenas SELECT/WITH, sem SELECT *, com limitacao de linhas (TOP/LIMIT/FETCH), sem keywords proibidas."
-    };
-  }
-
-  for (const { pattern, category, hint } of errorPatterns) {
-    if (pattern.test(errorMessage)) {
-      return { category, originalMessage: errorMessage, hint };
-    }
-  }
-
-  return {
-    category: "unknown",
-    originalMessage: errorMessage,
-    hint: "Analise a mensagem de erro com cuidado e tente uma abordagem diferente para a query."
-  };
 };
 
 const shouldLogPrompts = (): boolean => {
@@ -165,7 +76,8 @@ export const buildPrompt = (
   previousSql: string | null,
   language: "pt" | "en" | "es",
   currentPeriod: string | null = null,
-  tableProfiles?: TableProfileMap
+  tableProfiles?: TableProfileMap,
+  periodRange: YearRange | null = null
 ): string => {
   const includeForeignKeys = context.joins.length === 0;
   const tableDetails = context.tables
@@ -230,8 +142,21 @@ export const buildPrompt = (
         ? "Regla: si la pregunta actual es un seguimiento corto (ej., 'y en 2024?'), conserva las mismas metricas, dimensiones y filtros de la pregunta mas reciente, y cambia solo el periodo."
         : "Regra: se a pergunta atual for um follow-up curto (ex.: 'e em 2024?'), mantenha as mesmas metricas, dimensoes e filtros da pergunta mais recente e altere apenas o periodo.";
 
+  /**
+   * The interval must survive as a single aggregated query. Without this the
+   * agent tends to filter only the first year or to emit one branch per
+   * endpoint, dropping every year in between.
+   */
+  const rangeRule = periodRange
+    ? language === "en"
+      ? `Rule: the question covers the continuous interval ${periodRange.startYear} to ${periodRange.endYear}. Write ONE query with a range filter covering every year from ${periodRange.startYear} through ${periodRange.endYear} (inclusive), group by year, and order by year ascending. Do NOT filter a single year and do NOT emit one branch per endpoint.`
+      : language === "es"
+        ? `Regla: la pregunta cubre el intervalo continuo ${periodRange.startYear} a ${periodRange.endYear}. Escribe UNA sola consulta con filtro de rango que cubra todos los anos de ${periodRange.startYear} a ${periodRange.endYear} (inclusive), agrupa por ano y ordena por ano ascendente. NO filtres un solo ano y NO generes una rama por extremo.`
+        : `Regra: a pergunta cobre o intervalo continuo de ${periodRange.startYear} a ${periodRange.endYear}. Escreva UMA unica consulta com filtro de intervalo cobrindo todos os anos de ${periodRange.startYear} a ${periodRange.endYear} (inclusive), agrupe por ano e ordene por ano crescente. NAO filtre um ano isolado e NAO gere um ramo por extremo.`
+    : null;
+
   const lines: Array<string | null> = [];
-  lines.push(priorityRule, periodRule, followUpRule);
+  lines.push(priorityRule, periodRule, followUpRule, rangeRule);
   if (historySnippet) {
     lines.push(historyLabel, historySnippet);
   }

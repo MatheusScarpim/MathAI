@@ -2,25 +2,16 @@ import { getOpenAI, getSqlModel, getSqlModelMini } from "../core/openai.js";
 import { getAgentsConfig } from "../core/agentConfig.js";
 import type { DbType } from "../core/appConfig.js";
 import type { ExpandedContext } from "./schema.js";
+import {
+  noDecomposition,
+  parsePlannerResponse,
+  type CombinationStrategy,
+  type DecompositionPlan,
+  type SubQuestion
+} from "./plannerResponse.js";
 
-// ============== TYPES ==============
-
-export type SubQuestion = {
-  id: string;
-  question: string;
-  focus: string;
-};
-
-export type CombinationStrategy = "cte" | "join" | "union" | "single";
-
-export type DecompositionPlan = {
-  needsDecomposition: boolean;
-  subQuestions: SubQuestion[];
-  combinationStrategy: CombinationStrategy;
-  combinationHint: string;
-  originalQuestion: string;
-  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-};
+export { parsePlannerResponse, noDecomposition };
+export type { CombinationStrategy, DecompositionPlan, SubQuestion };
 
 // ============== HELPERS ==============
 
@@ -61,6 +52,7 @@ QUANDO NAO DECOMPOR (retorne needsDecomposition=false):
 - Perguntas que envolvem apenas JOINs normais entre tabelas relacionadas
 - Perguntas com GROUP BY simples
 - Perguntas que podem ser resolvidas com uma unica query SELECT
+- Intervalos continuos de periodo (ex: "de 2017 a 2025", "de 2017 ate 2025", "entre 2017 e 2025", "2017-2025"). Isso pede a serie inteira, nao os dois extremos: resolva com UMA query, filtro de intervalo e GROUP BY ano. Decompor descartaria 2018 a 2024.
 
 RESPONDA SEMPRE em JSON valido com esta estrutura:
 {
@@ -83,7 +75,7 @@ Maximo de 4 sub-consultas.`,
 WHEN TO DECOMPOSE:
 - Questions comparing different periods (e.g., "revenue 2024 vs 2023")
 - Questions asking for metrics from distinct sources/dimensions in the same result
-- Questions with "compared to", "versus", "difference between", "growth from X to Y"
+- Questions with "compared to", "versus", "difference between", "growth of X vs Y"
 - Questions combining incompatible aggregations (e.g., total + average + ranking)
 
 WHEN NOT TO DECOMPOSE (return needsDecomposition=false):
@@ -91,6 +83,7 @@ WHEN NOT TO DECOMPOSE (return needsDecomposition=false):
 - Questions involving only normal JOINs between related tables
 - Questions with simple GROUP BY
 - Questions that can be solved with a single SELECT query
+- Continuous period intervals (e.g., "from 2017 to 2025", "from 2017 through 2025", "between 2017 and 2025", "2017-2025"). These ask for the whole series, not the two endpoints: solve with ONE query, a range filter and GROUP BY year. Decomposing would discard 2018 through 2024.
 
 ALWAYS respond in valid JSON with this structure:
 {
@@ -113,7 +106,7 @@ Maximum 4 sub-queries.`,
 CUANDO DESCOMPONER:
 - Preguntas que comparan periodos diferentes (ej: "facturacion de 2024 vs 2023")
 - Preguntas que piden metricas de fuentes/dimensiones distintas en el mismo resultado
-- Preguntas con "comparado con", "versus", "diferencia entre", "crecimiento de X a Y"
+- Preguntas con "comparado con", "versus", "diferencia entre", "crecimiento de X vs Y"
 - Preguntas que combinan agregaciones incompatibles (ej: total + promedio + ranking)
 
 CUANDO NO DESCOMPONER (retorna needsDecomposition=false):
@@ -121,6 +114,7 @@ CUANDO NO DESCOMPONER (retorna needsDecomposition=false):
 - Preguntas que solo involucran JOINs normales entre tablas relacionadas
 - Preguntas con GROUP BY simple
 - Preguntas que se pueden resolver con un solo SELECT
+- Intervalos continuos de periodo (ej: "de 2017 a 2025", "desde 2017 hasta 2025", "entre 2017 y 2025", "2017-2025"). Piden la serie completa, no los dos extremos: resuelve con UNA sola query, filtro de rango y GROUP BY ano. Descomponer descartaria 2018 a 2024.
 
 RESPONDE SIEMPRE en JSON valido con esta estructura:
 {
@@ -161,7 +155,9 @@ const buildCombinationSystemPrompt = (
 Regras:
 - Cada sub-query vira um CTE nomeado (WITH sq1 AS (...), sq2 AS (...))
 - O SELECT final combina os CTEs conforme a estrategia indicada
+- Se as sub-queries cobrem periodos diferentes, o SELECT final DEVE expor a coluna de periodo (ano/mes) e agregar por ela, para que cada periodo apareca como sua propria linha
 - Use ${limitClause} no SELECT final
+- Aplique o limite por periodo, nunca um limite global que deixe um periodo consumir todas as linhas e ocultar os outros
 - Nao use SELECT *
 - Retorne APENAS o SQL final, sem markdown ou comentarios
 - Proibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_`,
@@ -171,7 +167,9 @@ Regras:
 Rules:
 - Each sub-query becomes a named CTE (WITH sq1 AS (...), sq2 AS (...))
 - The final SELECT combines the CTEs according to the indicated strategy
+- If the sub-queries cover different periods, the final SELECT MUST expose the period column (year/month) and aggregate by it, so each period shows up as its own row
 - Use ${limitClause} in the final SELECT
+- Apply the limit per period, never a global limit that lets one period consume every row and hide the others
 - No SELECT *
 - Return ONLY the final SQL, no markdown or comments
 - Forbid DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_`,
@@ -181,7 +179,9 @@ Rules:
 Reglas:
 - Cada sub-query se convierte en un CTE nombrado (WITH sq1 AS (...), sq2 AS (...))
 - El SELECT final combina los CTEs segun la estrategia indicada
+- Si las sub-queries cubren periodos diferentes, el SELECT final DEBE exponer la columna de periodo (ano/mes) y agregar por ella, para que cada periodo aparezca como su propia fila
 - Usa ${limitClause} en el SELECT final
+- Aplica el limite por periodo, nunca un limite global que permita a un periodo consumir todas las filas y ocultar los demas
 - No uses SELECT *
 - Devuelve SOLO el SQL final, sin markdown ni comentarios
 - Prohibido DELETE/UPDATE/INSERT/MERGE/DROP/TRUNCATE/ALTER/EXEC/xp_`
@@ -202,17 +202,12 @@ export const decomposeQuestion = async (
   const plannerCfg = agentsCfg.planner;
 
   if (plannerCfg?.enabled === false) {
-    return {
-      needsDecomposition: false,
-      subQuestions: [],
-      combinationStrategy: "single",
-      combinationHint: "",
-      originalQuestion: question
-    };
+    return noDecomposition(question);
   }
 
   const client = await getOpenAI();
-  const model = plannerCfg?.model || await getSqlModelMini();
+  const fallbackModel = await getSqlModelMini();
+  const model = plannerCfg?.model || fallbackModel;
   const temperature = plannerCfg?.temperature ?? 0;
   const system = buildPlannerSystemPrompt(language, dbType);
 
@@ -226,64 +221,72 @@ export const decomposeQuestion = async (
 
   logPrompt("planner", { system, user: userPrompt, meta: { model, language } });
 
-  const completion = await client.chat.completions.create({
-    model,
-    temperature,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: userPrompt }
-    ]
-  });
+  const ask = (target: string) =>
+    client.chat.completions.create({
+      model: target,
+      temperature,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: userPrompt }
+      ]
+    });
+
+  // A misconfigured `planner.model` used to throw straight past this function
+  // into an empty catch in the pipeline, so the only symptom of a dead planner
+  // was that decomposition silently never happened. Fall back to the model the
+  // SQL agent already uses, and say so out loud.
+  let completion: Awaited<ReturnType<typeof ask>>;
+  let usedModel = model;
+  try {
+    completion = await ask(model);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (model === fallbackModel) {
+      console.warn(`[planner-failed] modelo=${model} erro=${message} - seguindo sem decomposicao`);
+      return noDecomposition(question);
+    }
+    console.warn(`[planner-model-fallback] modelo=${model} erro=${message} - tentando ${fallbackModel}`);
+    try {
+      completion = await ask(fallbackModel);
+      usedModel = fallbackModel;
+    } catch (fallbackError) {
+      const fallbackMessage =
+        fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      console.warn(
+        `[planner-failed] modelo=${fallbackModel} erro=${fallbackMessage} - seguindo sem decomposicao`
+      );
+      return noDecomposition(question);
+    }
+  }
 
   const raw = completion.choices[0]?.message?.content ?? "{}";
-  logPrompt("planner-response", { user: raw, meta: { model, language } });
+  logPrompt("planner-response", { user: raw, meta: { model: usedModel, language } });
 
   if (shouldLogPrompts() && completion.usage) {
-    console.info(`[tokens] planner (${model}) | input=${completion.usage.prompt_tokens} output=${completion.usage.completion_tokens} total=${completion.usage.total_tokens}`);
+    console.info(`[tokens] planner (${usedModel}) | input=${completion.usage.prompt_tokens} output=${completion.usage.completion_tokens} total=${completion.usage.total_tokens}`);
   }
 
-  try {
-    const parsed = JSON.parse(raw) as {
-      needsDecomposition?: boolean;
-      subQuestions?: SubQuestion[];
-      combinationStrategy?: string;
-      combinationHint?: string;
-    };
+  const parsed = parsePlannerResponse(raw);
 
-    const needsDecomposition = parsed.needsDecomposition === true;
-    const subQuestions = (parsed.subQuestions ?? []).slice(0, 4);
-    const strategy = (parsed.combinationStrategy ?? "single") as CombinationStrategy;
-
-    if (!needsDecomposition || subQuestions.length < 2) {
-      return {
-        needsDecomposition: false,
-        subQuestions: [],
-        combinationStrategy: "single",
-        combinationHint: "",
-        originalQuestion: question,
-        usage: completion.usage
-      };
-    }
-
-    return {
-      needsDecomposition: true,
-      subQuestions,
-      combinationStrategy: strategy === "single" ? "cte" : strategy,
-      combinationHint: parsed.combinationHint ?? "",
-      originalQuestion: question,
-      usage: completion.usage
-    };
-  } catch {
-    return {
-      needsDecomposition: false,
-      subQuestions: [],
-      combinationStrategy: "single",
-      combinationHint: "",
-      originalQuestion: question,
-      usage: completion.usage
-    };
+  if (!parsed.decompose) {
+    // Only a malformed response is a defect; "needsDecomposition=false" is the
+    // planner doing its job on a simple question, and stays at debug level.
+    const isRefusal = parsed.reason.startsWith("planner respondeu");
+    const line = `[planner-no-decomposition] modelo=${usedModel} motivo=${parsed.reason}`;
+    if (isRefusal) logPrompt("planner-no-decomposition", { meta: { reason: parsed.reason } });
+    else console.warn(line);
+    return noDecomposition(question, completion.usage);
   }
+
+  return {
+    needsDecomposition: true,
+    subQuestions: parsed.subQuestions,
+    combinationStrategy: parsed.strategy,
+    combinationHint: parsed.hint,
+    originalQuestion: question,
+    usage: completion.usage
+  };
 };
 
 // ============== COMBINE SUB-QUERIES ==============
