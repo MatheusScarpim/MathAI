@@ -1,9 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { TableChunk } from "@auraia/shared";
-import type { ColumnClass } from "../schema/lexicon.js";
-import type { TableFacts } from "../schema/tableFacts.js";
+import { classifyColumn, type ColumnClass } from "../schema/lexicon.js";
+import { inferTableFacts, periodStatus, type TableFacts } from "../schema/tableFacts.js";
 import { buildDictionaryIndex, type DictionaryRecord } from "../schema/dictionaryOps.js";
+import { resolveVocabulary } from "../schema/vocabulary.js";
+import { loadBundledSeed } from "../schema/seedFile.js";
+import { REAL_SCHEMA } from "../schema/realSchema.fixture.js";
 import { buildSemanticsSection, pruneContext, type SemanticContext } from "./sqlSemantics.js";
 
 const TABLE = "sch.medicao";
@@ -286,6 +289,245 @@ describe("E4 — coerencia entre poda e bloco", () => {
     for (const name of out.matchAll(/col\d{3}|acum_total/g)) {
       assert.ok(visible.has(name[0]), `${name[0]} citado mas podado`);
     }
+  });
+
+  /**
+   * O teste acima so exercita `tableNotes`, que ja itera as colunas visiveis
+   * — ele nao PODE falhar. O cabecalho e outra historia: ele le `facts.*`, que
+   * nomeia coluna de OUTRA tabela, e foi por essa fresta que o D1 passou.
+   */
+  it("o cabecalho nao manda juntar por coluna que a poda escondeu no ALVO", () => {
+    const alvo = "sch.datada";
+    const origem = table([...wide(200), "k_join", "c_grao"]);
+    const destino: TableChunk = {
+      ...table([...wide(200), "k_join", "c_grao", "dt_evento"]),
+      tableFullName: alvo
+    };
+
+    const semOrigem = facts({
+      requiresJoinForPeriod: true,
+      periodJoinTable: alvo,
+      periodJoinColumns: ["k_join", "c_grao"],
+      joinKey: "k_join"
+    });
+    const semAlvo = facts({ tableFullName: alvo, eventDateColumn: "dt_evento" });
+
+    const records: DictionaryRecord[] = [semOrigem, semAlvo].map((f) => ({
+      environmentId: "e",
+      tableFullName: f.tableFullName,
+      source: "inferred" as const,
+      grain: f.grain,
+      eventDateColumn: f.eventDateColumn,
+      updatedAt: new Date()
+    }));
+    const s: SemanticContext = {
+      facts: [semOrigem, semAlvo],
+      dictionary: buildDictionaryIndex(records),
+      overlappingBuckets: {}
+    };
+
+    const pruned = pruneContext({ tables: [origem, destino], joins: [] }, "pergunta", s);
+    const visivelNo = (nome: string): Set<string> =>
+      new Set(
+        pruned.tables
+          .find((t) => t.tableFullName === nome)!
+          .columns.map((c) => c.name)
+      );
+
+    // As duas pontas do ON: a instrucao e impossivel se faltar qualquer uma.
+    for (const col of semOrigem.periodJoinColumns) {
+      assert.ok(visivelNo(TABLE).has(col), `${col} podada da ORIGEM`);
+      assert.ok(visivelNo(alvo).has(col), `${col} podada do ALVO`);
+    }
+    assert.match(buildSemanticsSection(pruned, s, "pt") ?? "", /junte com sch\.datada por k_join, c_grao/);
+  });
+});
+
+/**
+ * Faixa que contem outra e meta-versus-realizado sao relacoes entre COLUNAS.
+ * As guardas do E3 resolvem coluna nao-qualificada por consenso entre todas as
+ * tabelas do SQL, entao elas disparam com as pontas separadas — e ate o D2 o
+ * prompt ficava calado justamente nesse caso.
+ */
+describe("E4 — avisos cujas pontas estao em tabelas diferentes", () => {
+  const OUTRA = "sch.outra";
+
+  const doisLados = (
+    aqui: Record<string, ColumnClass>,
+    la: Record<string, ColumnClass>,
+    overlappingBuckets: Record<string, readonly string[]> = {}
+  ) => {
+    const records: DictionaryRecord[] = [
+      ...Object.entries(aqui).map(([columnName, c]) => ({
+        environmentId: "e",
+        tableFullName: TABLE,
+        columnName,
+        source: "inferred" as const,
+        class: c,
+        updatedAt: new Date()
+      })),
+      ...Object.entries(la).map(([columnName, c]) => ({
+        environmentId: "e",
+        tableFullName: OUTRA,
+        columnName,
+        source: "inferred" as const,
+        class: c,
+        updatedAt: new Date()
+      }))
+    ];
+    const s: SemanticContext = {
+      facts: [],
+      dictionary: buildDictionaryIndex(records),
+      overlappingBuckets
+    };
+    const ctx = {
+      tables: [
+        table(Object.keys(aqui)),
+        { ...table(Object.keys(la)), tableFullName: OUTRA }
+      ],
+      joins: []
+    };
+    return buildSemanticsSection(ctx, s, "pt") ?? "";
+  };
+
+  it("faixa pai numa tabela e filha na outra vira aviso", () => {
+    const out = doisLados(
+      { f_pai: cls({ bucket: "00a07" }) },
+      { f_filho: cls({ bucket: "00a03" }) },
+      { "00a07": ["00a03"] }
+    );
+    assert.match(out, /JA CONTEM/);
+    assert.match(out, /sch\.medicao\.f_pai/);
+    assert.match(out, /sch\.outra\.f_filho/);
+  });
+
+  it("meta numa tabela e realizado na outra vira aviso", () => {
+    const out = doisLados(
+      { meta_y: cls({ nature: "target" }) },
+      { real_z: cls({ nature: "actual" }) }
+    );
+    assert.match(out, /nao se somam/);
+    assert.match(out, /sch\.medicao\.meta_y/);
+    assert.match(out, /sch\.outra\.real_z/);
+  });
+
+  it("nao repete o aviso quando as duas pontas estao na mesma tabela", () => {
+    const out = doisLados(
+      { meta_y: cls({ nature: "target" }), real_z: cls({ nature: "actual" }) },
+      { neutra: cls() }
+    );
+    assert.equal(out.includes("Entre tabelas:"), false);
+  });
+
+  it("uma tabela so nao gera secao cross-table", () => {
+    const out =
+      buildSemanticsSection(
+        context(table(["meta_y", "real_z"])),
+        semantics({ meta_y: cls({ nature: "target" }), real_z: cls({ nature: "actual" }) }),
+        "pt"
+      ) ?? "";
+    assert.equal(out.includes("Entre tabelas:"), false);
+  });
+});
+
+/**
+ * O invariante do D1 sobre o schema do cliente, nao sobre fixture escolhida a
+ * dedo: NENHUMA coluna nomeada em texto injetado pode estar ausente do schema
+ * podado, em qualquer tabela. O defeito original so aparecia aqui — com
+ * `facts()` vazio ele e invisivel.
+ */
+describe("E4 — o invariante vale no schema real", () => {
+  const SEED = loadBundledSeed("avicultura");
+  const VOCABULARY = resolveVocabulary(SEED.vocabulary);
+  const inputs = REAL_SCHEMA.map((t) => ({ fullName: t.tableFullName, columns: t.columns }));
+  const FACTS = inferTableFacts(inputs, VOCABULARY, SEED.tableFacts);
+
+  const records: DictionaryRecord[] = [];
+  for (const t of REAL_SCHEMA) {
+    for (const c of t.columns) {
+      records.push({
+        environmentId: "test",
+        tableFullName: t.tableFullName,
+        columnName: c.name,
+        source: "inferred",
+        class: classifyColumn(c.name, c.type, VOCABULARY),
+        updatedAt: new Date()
+      });
+    }
+  }
+  for (const f of FACTS) {
+    records.push({
+      environmentId: "test",
+      tableFullName: f.tableFullName,
+      source: "inferred",
+      grain: f.grain,
+      eventDateColumn: f.eventDateColumn,
+      updatedAt: new Date()
+    });
+  }
+
+  const s: SemanticContext = {
+    facts: FACTS,
+    dictionary: buildDictionaryIndex(records),
+    overlappingBuckets: VOCABULARY.overlappingBuckets
+  };
+
+  const fullContext = {
+    tables: REAL_SCHEMA.map((t) => ({
+      tableFullName: t.tableFullName,
+      columns: t.columns.map((c) => ({ name: c.name, type: c.type })),
+      primaryKey: [],
+      foreignKeys: [],
+      tags: []
+    })),
+    joins: []
+  };
+
+  const PERGUNTAS = [
+    "qual a eclosao media por granja em 2024?",
+    "quantos ovos foram incubados no mes passado?",
+    "compare o realizado com o padrao da linhagem"
+  ];
+
+  for (const pergunta of PERGUNTAS) {
+    it(`nenhuma coluna do ON some do alvo — "${pergunta}"`, () => {
+      const pruned = pruneContext(fullContext, pergunta, s);
+      const visiveis = new Map(
+        pruned.tables.map((t) => [
+          t.tableFullName.toLowerCase(),
+          new Set(t.columns.map((c) => c.name.toLowerCase()))
+        ])
+      );
+
+      const violacoes: string[] = [];
+      for (const f of FACTS) {
+        if (periodStatus(f) !== "requires-join" || !f.periodJoinTable) continue;
+        const doOn = f.periodJoinColumns.length
+          ? f.periodJoinColumns
+          : f.joinKey
+            ? [f.joinKey]
+            : [];
+        for (const col of doOn) {
+          for (const lado of [f.tableFullName, f.periodJoinTable]) {
+            const cols = visiveis.get(lado.toLowerCase());
+            if (cols && !cols.has(col.toLowerCase())) {
+              violacoes.push(`${col} ausente de ${lado} (ON de ${f.tableFullName})`);
+            }
+          }
+        }
+      }
+      assert.deepEqual(violacoes, []);
+    });
+  }
+
+  it("o alvo do join tem ao menos uma tabela requires-join no schema real", () => {
+    // Sem isto os testes acima passariam num schema onde nada precisa juntar.
+    const comJoin = FACTS.filter((f) => periodStatus(f) === "requires-join");
+    assert.ok(comJoin.length >= 1, "nenhuma tabela requires-join: o invariante nao foi exercitado");
+    assert.ok(
+      comJoin.some((f) => f.periodJoinColumns.length >= 2),
+      "nenhum ON com 2+ colunas: o caso do D1 nao foi exercitado"
+    );
   });
 });
 

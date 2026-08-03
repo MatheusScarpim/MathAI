@@ -322,8 +322,29 @@ const tokenize = (text: string): Set<string> => {
  * meia lingua para a lista de proibidos. `match` carrega `"token"`/`"suffix"`,
  * que sao valores do enum `SourceMatch` do proprio motor — estruturais, nao
  * do cliente.
+ *
+ * As metricas repetem os dois casos. `label` e `pitfalls` sao prosa ("nunca
+ * some a coluna acumulada"), e varre-las proibiria o motor de escrever em
+ * portugues. `kind`, `unit` e `provenance` sao enums declarados em
+ * `metrics.ts` — `ratio`, `percent`, `inferred` sao palavras do motor que o
+ * seed apenas SELECIONA, entao proibi-las seria o motor se auto-acusar.
+ *
+ * O que continua varrido nas metricas e o que de fato pertence ao cliente:
+ * `id`, `synonyms`, `table`, `numerator`, `denominator`, `column`,
+ * `precomputed` e `targetColumn`.
  */
-const NON_IDENTIFIER_FIELDS = new Set(["name", "description", "notes", "grain", "match"]);
+const NON_IDENTIFIER_FIELDS = new Set([
+  "name",
+  "description",
+  "notes",
+  "grain",
+  "match",
+  "label",
+  "pitfalls",
+  "kind",
+  "unit",
+  "provenance"
+]);
 
 const seedIdentifierText = (node: unknown): string[] => {
   if (typeof node === "string") return [node];
@@ -449,6 +470,18 @@ describe("nenhum termo de dominio voltou para o motor", () => {
     // ENGINE_WORDS e o unico jeito de liberar um termo. Se crescer, a guarda
     // vira decorativa por acumulo em vez de por bug.
     assert.ok(ENGINE_WORDS.size <= 3, `ENGINE_WORDS cresceu para ${ENGINE_WORDS.size}`);
+  });
+
+  it("a lista de campos nao-varridos continua curta", () => {
+    // NON_IDENTIFIER_FIELDS e a segunda valvula: cada nome aqui e um campo do
+    // seed que a guarda deixa de ler. Justificar campo a campo (prosa ou enum
+    // do motor) e barato; o risco e alguem enfiar um campo de identificador
+    // aqui para calar um teste vermelho. O limite forca essa conversa.
+    assert.ok(
+      NON_IDENTIFIER_FIELDS.size <= 12,
+      `NON_IDENTIFIER_FIELDS cresceu para ${NON_IDENTIFIER_FIELDS.size} — ` +
+        "campo novo aqui e campo do cliente que a guarda para de ver"
+    );
   });
 
   for (const file of engineFiles) {

@@ -97,6 +97,49 @@ const isNoteworthy = (cls: ColumnClass): boolean =>
   cls.cumulative || cls.unit === "rate" || cls.nature !== null || cls.bucket !== null;
 
 /**
+ * Colunas que o texto injetado nomeia numa tabela DIFERENTE da que as declara.
+ *
+ * `periodJoinColumns` vive nos fatos da tabela SEM data, mas o cabecalho dela
+ * manda "junte com T por a, b" — e `a, b` precisam estar visiveis tambem em
+ * `T`, senao a instrucao e impossivel de cumprir. Resolver isso dentro de
+ * `pruneTable` nao daria: quando `T` e podada, ninguem ali sabe que outra
+ * tabela vai apontar para ela. Por isso o fecho e calculado antes, sobre o
+ * conjunto inteiro.
+ *
+ * O modo de falha que isto evita e caro e silencioso: faltando uma coluna do
+ * ON, o modelo junta so pela chave, casa varias linhas do outro lado e infla
+ * o SUM sem erro nenhum.
+ */
+const crossTableKeeps = (semantics: SemanticContext): Map<string, Set<string>> => {
+  const keeps = new Map<string, Set<string>>();
+  const add = (table: string, name: string | null | undefined): void => {
+    if (!name) return;
+    const key = table.toLowerCase();
+    let set = keeps.get(key);
+    if (!set) {
+      set = new Set<string>();
+      keeps.set(key, set);
+    }
+    set.add(name.toLowerCase());
+  };
+
+  for (const f of semantics.facts) {
+    if (periodStatus(f) !== "requires-join" || !f.periodJoinTable) continue;
+    // Mesma escolha do cabecalho: as colunas do ON, ou a chave quando nao ha
+    // nenhuma. Ler daqui e do texto duas listas diferentes seria a divergencia
+    // que este modulo inteiro existe para nao ter.
+    if (f.periodJoinColumns.length) {
+      for (const c of f.periodJoinColumns) add(f.periodJoinTable, c);
+    } else {
+      add(f.periodJoinTable, f.joinKey);
+    }
+  }
+  return keeps;
+};
+
+const NO_KEEPS: ReadonlySet<string> = new Set<string>();
+
+/**
  * Corta colunas irrelevantes, preservando o que e estrutural, o que a pergunta
  * cita e o que as guardas comentam. O resto entra por ordem original ate o
  * teto — ordem original porque o ingest ja devolve as colunas na ordem do
@@ -105,7 +148,8 @@ const isNoteworthy = (cls: ColumnClass): boolean =>
 const pruneTable = (
   table: ContextTable,
   question: ReadonlySet<string>,
-  semantics: SemanticContext
+  semantics: SemanticContext,
+  fromOtherTables: ReadonlySet<string> = NO_KEEPS
 ): ContextTable => {
   if (table.columns.length <= MAX_COLUMNS_PER_TABLE) return table;
 
@@ -120,6 +164,7 @@ const pruneTable = (
     const cls = semantics.dictionary.column(table.tableFullName, col.name)?.class;
     const keep =
       structural.has(col.name.toLowerCase()) ||
+      fromOtherTables.has(col.name.toLowerCase()) ||
       overlaps(tokenize(col.name), question) ||
       (cls !== undefined && (cls.role === "date" || cls.role === "key" || isNoteworthy(cls)));
     (keep ? required : optional).push(col);
@@ -146,7 +191,13 @@ export const pruneContext = (
 ): ExpandedContext => {
   if (!semantics || semantics.dictionary.all.length === 0) return context;
   const tokens = tokenize(question);
-  return { ...context, tables: context.tables.map((t) => pruneTable(t, tokens, semantics)) };
+  const keeps = crossTableKeeps(semantics);
+  return {
+    ...context,
+    tables: context.tables.map((t) =>
+      pruneTable(t, tokens, semantics, keeps.get(t.tableFullName.toLowerCase()) ?? NO_KEEPS)
+    )
+  };
 };
 
 // --- bloco injetado ---------------------------------------------------------
@@ -217,7 +268,11 @@ const tableNotes = (
   for (const [parent, children] of Object.entries(semantics.overlappingBuckets)) {
     const parentCol = bucketOf.get(parent);
     if (!parentCol) continue;
-    const present2 = children.map((c) => bucketOf.get(c)).filter((c): c is string => !!c);
+    // `?? []` pela mesma razao de `sqlGuards.ts`: as duas leem a mesma
+    // estrutura e uma defesa so protege metade do caminho.
+    const present2 = (children ?? [])
+      .map((c) => bucketOf.get(c))
+      .filter((c): c is string => !!c);
     if (!present2.length) continue;
     notes.push(
       pick(
@@ -225,6 +280,90 @@ const tableNotes = (
         `"${parentCol}" JA CONTEM ${present2.join(", ")} — nunca some os dois niveis na mesma expressao`,
         `"${parentCol}" ALREADY INCLUDES ${present2.join(", ")} — never add both levels in the same expression`,
         `"${parentCol}" YA CONTIENE ${present2.join(", ")} — nunca sumes los dos niveles en la misma expresion`
+      )
+    );
+  }
+
+  return notes;
+};
+
+/**
+ * Avisos cujas duas pontas caem em TABELAS diferentes.
+ *
+ * `tableNotes` monta aviso tabela a tabela, mas `makeResolver` do `sqlGuards`
+ * resolve coluna nao-qualificada por consenso entre TODAS as tabelas do SQL.
+ * Faixa pai em t1 com faixa filha em t2, ou meta em t1 com realizado em t2,
+ * disparavam a guarda sem que o prompt tivesse avisado nada — o modelo era
+ * punido por uma regra que ninguem contou, que e exatamente o buraco que o E4
+ * existe para fechar.
+ *
+ * Faixa que contem outra e meta-versus-realizado sao relacoes ENTRE COLUNAS,
+ * nao propriedades de uma tabela. So o par no mesmo lugar e que era coberto.
+ */
+const crossTableNotes = (
+  context: ExpandedContext,
+  semantics: SemanticContext,
+  language: Language
+): string[] => {
+  if (context.tables.length < 2) return [];
+
+  type Located = { table: string; column: string };
+  const qualify = (l: Located): string => `${l.table}.${l.column}`;
+
+  const byBucket = new Map<string, Located[]>();
+  const targets: Located[] = [];
+  const actuals: Located[] = [];
+
+  for (const table of context.tables) {
+    for (const col of table.columns) {
+      const cls = semantics.dictionary.column(table.tableFullName, col.name)?.class;
+      if (!cls) continue;
+      const at: Located = { table: table.tableFullName, column: col.name };
+      if (cls.bucket) {
+        const list = byBucket.get(cls.bucket);
+        // Uma ocorrencia por tabela basta: o aviso e sobre o par de tabelas,
+        // e listar cinco colunas da mesma faixa so alonga o prompt.
+        if (!list) byBucket.set(cls.bucket, [at]);
+        else if (!list.some((l) => l.table === at.table)) list.push(at);
+      }
+      if (cls.nature === "target") targets.push(at);
+      if (cls.nature === "actual") actuals.push(at);
+    }
+  }
+
+  const notes: string[] = [];
+
+  // Guarda 3, cross-table. O par na mesma tabela ja saiu em `tableNotes`.
+  for (const [parent, children] of Object.entries(semantics.overlappingBuckets)) {
+    for (const p of byBucket.get(parent) ?? []) {
+      const cross = (children ?? [])
+        .flatMap((c) => byBucket.get(c) ?? [])
+        .filter((c) => c.table !== p.table);
+      if (!cross.length) continue;
+      const list = cross.map(qualify).join(", ");
+      notes.push(
+        pick(
+          language,
+          `"${qualify(p)}" JA CONTEM ${list} — nunca some os dois niveis, mesmo estando em tabelas separadas`,
+          `"${qualify(p)}" ALREADY INCLUDES ${list} — never add both levels, even from separate tables`,
+          `"${qualify(p)}" YA CONTIENE ${list} — nunca sumes los dos niveles, aunque esten en tablas separadas`
+        )
+      );
+    }
+  }
+
+  // Guarda 6, cross-table.
+  const crossTargets = targets.filter((t) => actuals.some((a) => a.table !== t.table));
+  const crossActuals = actuals.filter((a) => targets.some((t) => t.table !== a.table));
+  if (crossTargets.length && crossActuals.length) {
+    const t = crossTargets.map(qualify).join(", ");
+    const a = crossActuals.map(qualify).join(", ");
+    notes.push(
+      pick(
+        language,
+        `meta (${t}) e realizado (${a}) estao em tabelas separadas e mesmo assim nao se somam; compare por diferenca ou razao`,
+        `target (${t}) and actual (${a}) sit in separate tables and still must not be added; compare by difference or ratio`,
+        `meta (${t}) y realizado (${a}) estan en tablas separadas y aun asi no se suman; compara por diferencia o razon`
       )
     );
   }
@@ -329,6 +468,12 @@ export const buildSemanticsSection = (
     blocks.push(lines.join("\n"));
   }
 
+  const cross = crossTableNotes(context, semantics, language);
+  if (cross.length) {
+    const header = pick(language, "Entre tabelas:", "Across tables:", "Entre tablas:");
+    blocks.push([header, ...cross.map((n) => `  - ${n}`)].join("\n"));
+  }
+
   if (!blocks.length) return null;
 
   const label = pick(
@@ -340,4 +485,11 @@ export const buildSemanticsSection = (
   return [label, ...blocks].join("\n");
 };
 
-export const __semanticsTesting = { tokenize, pruneTable, tableNotes, tableHeader };
+export const __semanticsTesting = {
+  tokenize,
+  pruneTable,
+  tableNotes,
+  tableHeader,
+  crossTableNotes,
+  crossTableKeeps
+};
