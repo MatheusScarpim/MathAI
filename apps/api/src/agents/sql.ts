@@ -6,6 +6,11 @@ import type { ExpandedContext } from "./schema.js";
 import type { TableProfileMap } from "./profiler.js";
 import type { ClassifiedError } from "./sqlErrors.js";
 import type { YearRange } from "../helpers/period.js";
+import {
+  buildSemanticsSection,
+  pruneContext,
+  type SemanticContext
+} from "./sqlSemantics.js";
 
 type FewShotExample = {
   question: string;
@@ -69,7 +74,7 @@ const buildFewShotSection = (
 
 export const buildPrompt = (
   question: string,
-  context: ExpandedContext,
+  rawContext: ExpandedContext,
   historySnippet: string | null,
   fewShotExamples: FewShotExample[],
   errorContext: string | null,
@@ -77,8 +82,15 @@ export const buildPrompt = (
   language: "pt" | "en" | "es",
   currentPeriod: string | null = null,
   tableProfiles?: TableProfileMap,
-  periodRange: YearRange | null = null
+  periodRange: YearRange | null = null,
+  semantics: SemanticContext | null = null
 ): string => {
+  // Poda antes de montar o schema: o bloco semantico so pode citar coluna que
+  // sobreviveu, senao o prompt avisa sobre algo que o modelo nao esta vendo.
+  // Sem dicionario `pruneContext` devolve a mesma referencia.
+  const context = pruneContext(rawContext, question, semantics);
+  const semanticsSection = buildSemanticsSection(context, semantics, language);
+
   const includeForeignKeys = context.joins.length === 0;
   const tableDetails = context.tables
     .map((table) => {
@@ -164,6 +176,11 @@ export const buildPrompt = (
     lines.push(fewShotSection);
   }
   lines.push(schemaLabel, tableDetails);
+  // Depois do schema: as regras citam colunas, e o modelo precisa ter acabado
+  // de ler a lista para saber de quem se fala.
+  if (semanticsSection) {
+    lines.push(semanticsSection);
+  }
   if (joins) {
     lines.push(joinsLabel, joins);
   }

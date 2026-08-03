@@ -37,8 +37,12 @@ export { findPeriodInText, formatPeriodText };
 import { translateText, buildStandaloneQuestion } from "../agents/translation.js";
 import { expandTables, searchRelevantTables, generateEmbedding, buildEmbeddingInput, estimateQueryComplexity } from "../agents/schema.js";
 import { buildPrompt, generateSql, generateCorrectedSql, reflectOnError } from "../agents/sql.js";
-import { classifyError, isRetriableError } from "../agents/sqlErrors.js";
+import { classifyError, isRetriableError, type ClassifiedError } from "../agents/sqlErrors.js";
 import { profileTables, type TableProfileMap } from "../agents/profiler.js";
+import { checkSemanticGuards, factsFromDictionary } from "../agents/sqlGuards.js";
+import { getDictionary, getVocabulary } from "../schema/dictionary.js";
+import type { DictionaryIndex } from "../schema/dictionaryOps.js";
+import type { TableFacts } from "../schema/tableFacts.js";
 import { decomposeQuestion, combineSubQueries, type DecompositionPlan } from "../agents/planner.js";
 import { summarizeResult } from "../agents/summary.js";
 import { inferChart, inferChartWithLLM } from "../agents/chart.js";
@@ -556,9 +560,60 @@ export const answerQuestion = async (
     console.info(`[semantic-cache] Skipping cache due to ${reason} mismatch: question="${embeddingQuestion}", cached="${semanticMatch?.question ?? ""}"`);
   }
 
+  // Detected before the cache branch below: a cache hit returns early, and the
+  // summary needs the range there too or it describes a continuous interval as a
+  // two-point comparison. `buildStandaloneQuestion` rewrites follow-ups like
+  // "e de 2017 a 2025" and can drop the interval syntax, so the raw question is
+  // consulted first.
+  const detectedRange = parseYearRange(question) ?? parseYearRange(schemaQuestion);
+  const rawPeriod: DetectedPeriod = detectedRange
+    ? { range: detectedRange }
+    : findPeriodInText(schemaQuestion) ?? {};
+  const currentPeriodText = formatPeriodText(rawPeriod, resolvedSchemaLanguage);
+
+  // Guardas semanticas (E3). Carregadas aqui, antes do primeiro caminho que
+  // executa SQL: o cache semantico devolve consulta gerada em outro dia, que
+  // pode ser anterior as proprias guardas — e uma resposta errada servida do
+  // cache se repete a cada pergunta parecida, em vez de acontecer uma vez.
+  //
+  // Uma leitura por pergunta, nao por tentativa: o schema nao muda no meio.
+  // Qualquer falha aqui desliga as guardas em vez de derrubar a pergunta —
+  // ambiente que nunca rodou o ingest tem de continuar respondendo.
+  let semanticGuards: {
+    facts: TableFacts[];
+    dictionary: DictionaryIndex;
+    overlappingBuckets: Readonly<Record<string, readonly string[]>>;
+  } | null = null;
+  try {
+    const [dictionary, vocabulary] = await Promise.all([
+      getDictionary(resolvedEnvironmentId),
+      getVocabulary(resolvedEnvironmentId)
+    ]);
+    const facts = factsFromDictionary(dictionary);
+    if (facts.length > 0) {
+      semanticGuards = { facts, dictionary, overlappingBuckets: vocabulary.overlappingBuckets };
+    }
+  } catch { /* sem dicionario as guardas ficam caladas, nao quebram a pergunta */ }
+
+  const guardSql = (candidate: string): ClassifiedError | null =>
+    semanticGuards
+      ? checkSemanticGuards(candidate, semanticGuards.facts, semanticGuards.dictionary, {
+          dbType,
+          overlappingBuckets: semanticGuards.overlappingBuckets
+        })
+      : null;
+
   if (semanticMatch?.sql && !shouldSkipCache) {
     const validation = validateSql(semanticMatch.sql, dbType);
-    if (validation.ok) {
+    const cachedGuardError = validation.ok ? guardSql(semanticMatch.sql) : null;
+    if (cachedGuardError) {
+      // Nao ha o que corrigir num SQL que veio pronto: descartar o cache e
+      // deixar o fluxo normal gerar de novo ja e a correcao.
+      console.warn(
+        `[semantic-cache] SQL em cache rejeitado por guarda semantica (${cachedGuardError.originalMessage}); regenerando`
+      );
+    }
+    if (validation.ok && !cachedGuardError) {
       try {
         const start = Date.now();
         const result = await adapter.query(semanticMatch.sql);
@@ -574,7 +629,7 @@ export const answerQuestion = async (
             ? inferChartWithLLM(displayQuestion, result.recordset ?? [], columns, resolvedResponseLanguage)
             : Promise.resolve(undefined),
           summaryEnabled
-            ? summarizeResult(schemaQuestion, semanticMatch.sql, columns, result.recordset ?? [], resolvedSchemaLanguage)
+            ? summarizeResult(schemaQuestion, semanticMatch.sql, columns, result.recordset ?? [], resolvedSchemaLanguage, rawPeriod.range ?? null)
             : Promise.resolve({ summary: undefined, usage: undefined })
         ];
         const [chartResult, summaryResultSettled] = await Promise.allSettled(parallelTasks);
@@ -660,13 +715,6 @@ export const answerQuestion = async (
     tableProfiles = await profileTables(context.tables, adapter, dbType, resolvedEnvironmentId);
   } catch { /* non-critical, proceed without profiles */ }
 
-  // `buildStandaloneQuestion` rewrites follow-ups like "e de 2017 a 2025" and can
-  // drop the interval syntax, so the raw question is consulted first.
-  const detectedRange = parseYearRange(question) ?? parseYearRange(schemaQuestion);
-  const rawPeriod: DetectedPeriod = detectedRange
-    ? { range: detectedRange }
-    : findPeriodInText(schemaQuestion) ?? {};
-  const currentPeriodText = formatPeriodText(rawPeriod, resolvedSchemaLanguage);
   const historySnippet = currentPeriodText || isNewTopic ? null : await buildHistorySnippet(resolvedChatId, resolvedSchemaLanguage);
   const periodHint = await buildPeriodHint(resolvedChatId, schemaQuestion, resolvedSchemaLanguage);
 
@@ -755,7 +803,7 @@ export const answerQuestion = async (
     let decompositionFailed = false;
 
     for (const subQ of decompositionPlan.subQuestions) {
-      const subPrompt = buildPrompt(subQ.question, context, null, fewShotExamples, null, null, resolvedSchemaLanguage, currentPeriodText, tableProfiles);
+      const subPrompt = buildPrompt(subQ.question, context, null, fewShotExamples, null, null, resolvedSchemaLanguage, currentPeriodText, tableProfiles, null, semanticGuards);
       const subPromptWithPeriod = periodHint
         ? `${subPrompt}\n\n${resolvedSchemaLanguage === "en" ? `Fixed period from chat history: ${periodHint}` : resolvedSchemaLanguage === "es" ? `Periodo fijo del historial del chat: ${periodHint}` : `Periodo fixo do historico do chat: ${periodHint}`}`
         : subPrompt;
@@ -780,7 +828,18 @@ export const answerQuestion = async (
         accumulateLargeUsage(combined.usage);
 
         const combinedValidation = validateSql(combined.sql, dbType);
-        if (combinedValidation.ok) {
+        // Guarda semantica na consulta combinada. Aqui ela e ainda mais
+        // necessaria que no caminho normal: combinar sub-consultas e
+        // exatamente onde acumulado e taxa acabam dentro de um SUM que
+        // ninguem reviu. Rejeitada, cai no fallback de consulta unica logo
+        // abaixo, que tem loop de retry para corrigir.
+        const combinedGuardError = combinedValidation.ok ? guardSql(combined.sql) : null;
+        if (combinedGuardError) {
+          if (shouldLogPrompts()) {
+            console.info(`[planner] Combined query blocked by guard: ${combinedGuardError.originalMessage}`);
+          }
+        }
+        if (combinedValidation.ok && !combinedGuardError) {
           const sql = combined.sql;
           emit?.("sql", { sql });
 
@@ -885,7 +944,7 @@ export const answerQuestion = async (
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const isRetry = attempt > 0 && lastClassifiedError && lastReflection && lastSql;
 
-    const prompt = buildPrompt(schemaQuestion, context, historySnippet, fewShotExamples, lastError, lastSql, resolvedSchemaLanguage, currentPeriodText, tableProfiles, rawPeriod.range ?? null);
+    const prompt = buildPrompt(schemaQuestion, context, historySnippet, fewShotExamples, lastError, lastSql, resolvedSchemaLanguage, currentPeriodText, tableProfiles, rawPeriod.range ?? null, semanticGuards);
     const promptWithPeriod = periodHint
       ? `${prompt}\n\n${resolvedSchemaLanguage === "en" ? `Fixed period from chat history: ${periodHint}` : resolvedSchemaLanguage === "es" ? `Periodo fijo del historial del chat: ${periodHint}` : `Periodo fixo do historico do chat: ${periodHint}`}`
       : prompt;
@@ -970,7 +1029,36 @@ export const answerQuestion = async (
       continue;
     }
 
-    const sql = result.sql;
+    // Guardas semanticas (E3): o SQL e valido e o banco o executaria sem
+    // reclamar. O que se barra aqui e o erro que nao vira erro — media de
+    // percentual, soma de acumulado, filtro na data errada.
+    const guardError = guardSql(lastSql);
+
+    if (guardError) {
+      lastError = guardError.originalMessage;
+      lastClassifiedError = guardError;
+      // A guarda ja explica o erro e como sair dele. Chamar `reflectOnError`
+      // aqui gastaria uma ida ao modelo para reescrever, pior, um diagnostico
+      // que ja e deterministico.
+      lastReflection = guardError.hint;
+      forceLargeModel = true;
+      emit?.("step", { step: "reflecting", label: "Corrigindo uso das colunas..." });
+
+      if (attempt < maxAttempts - 1) continue;
+
+      // Sem tentativa sobrando. Executar assim devolveria um numero bem
+      // formatado que a guarda ja sabe estar errado — e um resultado errado
+      // que ninguem questiona custa mais que uma resposta faltando.
+      return {
+        ok: false,
+        error: {
+          errorMessage: `A consulta gerada usaria as colunas de um jeito que produz numero errado: ${guardError.originalMessage}`,
+          hint: guardError.hint
+        }
+      };
+    }
+
+    const sql = lastSql;
     emit?.("sql", { sql });
     try {
       emit?.("step", { step: "executing_query", label: "Executando query..." });
