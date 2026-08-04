@@ -138,8 +138,8 @@ class="fav-btn" :class="{ active: item.favorite }" @click="toggleFavorite(item)"
           {{ item.errorMessage }}
         </div>
 
-      <!-- Collapsible details: SQL + Tokens -->
-        <div class="details-row" v-if="item.sql || item.tokenUsage">
+      <!-- Collapsible details: SQL + Resultados + Tokens -->
+        <div class="details-row" v-if="item.sql || item.tokenUsage || item.rows?.length">
 
           <!-- SQL -->
           <div v-if="item.sql" class="detail-section">
@@ -169,6 +169,58 @@ class="detail-toggle" :class="{ open: expandedSqlIds.has(item.id) }" @click="tog
                  </button>
                 </div>
                <pre class="sql-code">{{ item.sql }}</pre>
+              </div>
+            </div>
+          </div>
+
+        <!-- Resultados -->
+          <div v-if="item.rows?.length && item.columns?.length" class="detail-section">
+            <button class="detail-toggle" :class="{ open: expandedRowsIds.has(item.id) }"
+              @click="toggleRows(item.id)">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                <line x1="3" y1="9" x2="21" y2="9" />
+                <line x1="9" y1="9" x2="9" y2="21" />
+              </svg>
+              Resultados
+              <span class="token-pill">{{ item.rows.length }}</span>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+                class="chevron">
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+            <div class="detail-body" :class="{ expanded: expandedRowsIds.has(item.id) }">
+              <div class="detail-inner">
+                <div class="rows-scroll">
+                  <table class="rows-table">
+                    <thead>
+                      <tr>
+                        <th
+                          v-for="col in item.columns"
+                          :key="col"
+                          :class="{ 'cell-num': isNumericFormat(item.columnFormats?.[col]) }"
+                        >
+                          {{ col }}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(row, i) in visibleRows(item)" :key="i">
+                        <td
+                          v-for="col in item.columns"
+                          :key="col"
+                          :class="{ 'cell-num': isNumericFormat(item.columnFormats?.[col]) }"
+                        >
+                          <span v-if="row[col] === null || row[col] === undefined" class="null-badge">null</span>
+                          <span v-else>{{ formatCell(row[col], item.columnFormats?.[col]) }}</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p v-if="item.rows.length > ROWS_PREVIEW_LIMIT" class="rows-truncated">
+                  Mostrando as primeiras {{ ROWS_PREVIEW_LIMIT }} de {{ item.rows.length }} linhas.
+                </p>
               </div>
             </div>
           </div>
@@ -322,6 +374,7 @@ class="detail-toggle" :class="{ open: expandedSqlIds.has(item.id) }" @click="tog
 import { ref, computed, inject, onMounted, watch, type Ref } from 'vue'
 import { api } from '../services/api'
 import type { HistoryRecord } from '../types'
+import { formatCell, isNumericFormat } from '../utils/formatters'
 
 const environmentVersion = inject<Ref<number>>('environmentVersion')
 
@@ -335,6 +388,19 @@ const copiedItemId = ref<string | null>(null)
 const expandedSqlIds = ref(new Set<string>())
 const expandedTokenIds = ref(new Set<string>())
 const expandedSummaryIds = ref(new Set<string>())
+const expandedRowsIds = ref(new Set<string>())
+
+/**
+ * Teto de linhas renderizadas por card.
+ *
+ * O Chat renderiza o resultado inteiro, mas la existe um resultado so na tela.
+ * Aqui sao ate 10 cards por pagina, e uma consulta de mil linhas em cada um
+ * multiplica em ordem de grandeza o numero de nos no DOM.
+ */
+const ROWS_PREVIEW_LIMIT = 50
+
+const visibleRows = (item: HistoryRecord): Record<string, unknown>[] =>
+  (item.rows ?? []).slice(0, ROWS_PREVIEW_LIMIT)
 
 // Pagination
 const currentPage = ref(1)
@@ -505,6 +571,9 @@ function toggleSql(id: string) {
 }
 function toggleToken(id: string) {
   const s = new Set(expandedTokenIds.value); s.has(id) ? s.delete(id) : s.add(id); expandedTokenIds.value = s
+}
+function toggleRows(id: string) {
+  const s = new Set(expandedRowsIds.value); s.has(id) ? s.delete(id) : s.add(id); expandedRowsIds.value = s
 }
 function toggleSummary(id: string) {
   const s = new Set(expandedSummaryIds.value); s.has(id) ? s.delete(id) : s.add(id); expandedSummaryIds.value = s
@@ -1049,6 +1118,63 @@ function formatDate(dateStr: string): string {
     max-height: 260px;
   }
   
+  /* results table inside detail */
+  .rows-scroll {
+    overflow: auto;
+    max-height: 320px;
+  }
+
+  .rows-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+  }
+
+  .rows-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    text-align: left;
+    color: var(--color-gray-500);
+    font-weight: 500;
+    padding: 0.4rem 0.875rem;
+    background: var(--color-gray-900, #0f172a);
+    border-bottom: 1px solid var(--glass-border);
+    white-space: nowrap;
+  }
+
+  .rows-table td {
+    text-align: left;
+    color: var(--color-gray-300);
+    padding: 0.3rem 0.875rem;
+    white-space: nowrap;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  }
+
+  /* Alinhamento decidido pela mascara, nao pelo tipo do dado — e o que
+     mantem chave surrogate a esquerda, junto das colunas de texto. */
+  .rows-table th.cell-num,
+  .rows-table td.cell-num {
+    text-align: right;
+  }
+
+  .rows-table .null-badge {
+    padding: 0.05rem 0.3rem;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--color-gray-600);
+    font-size: 0.65rem;
+  }
+
+  .rows-truncated {
+    margin: 0;
+    padding: 0.4rem 0.875rem 0.6rem;
+    font-size: 0.68rem;
+    color: var(--color-gray-600);
+    border-top: 1px solid var(--glass-border);
+  }
+
   /* token table inside detail */
   .token-table {
     width: 100%;

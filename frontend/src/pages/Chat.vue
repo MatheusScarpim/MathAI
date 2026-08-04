@@ -266,12 +266,12 @@
                             v-for="col in entry.result.columns"
                             :key="col"
                             :class="{
-                              number: isNumber(row[col]),
+                              number: isNumericCell(entry, col, row[col]),
                               'cell-null': row[col] === null || row[col] === undefined
                             }"
                           >
                             <span v-if="row[col] === null || row[col] === undefined" class="null-badge">null</span>
-                            <span v-else>{{ formatValue(row[col]) }}</span>
+                            <span v-else>{{ formatCell(row[col], formatOf(entry, col)) }}</span>
                           </td>
                         </tr>
                       </tbody>
@@ -375,7 +375,8 @@
 <script setup lang="ts">
 import { ref, inject, onMounted, onBeforeUnmount, watch, type Ref } from 'vue'
 import { api } from '../services/api'
-import type { AskResponse, PipelineStep } from '../types'
+import type { AskResponse, ColumnFormat, PipelineStep } from '../types'
+import { formatCell, isNumericFormat, toNumber } from '../utils/formatters'
 import PipelineDebug from '../components/PipelineDebug.vue'
 import BarChart from '../components/BarChart.vue'
 
@@ -549,6 +550,10 @@ async function ask() {
                 ...(entry.result ?? {}),
                 rows: parsed.rows,
                 columns: parsed.columns,
+                // Vem no mesmo evento das linhas de proposito: sem isso a
+                // tabela renderizaria crua durante o streaming e so se
+                // reformataria no `done`, piscando na frente do usuario.
+                columnFormats: parsed.columnFormats,
                 elapsedMs: parsed.elapsedMs
               } as any
               break
@@ -656,8 +661,29 @@ function isNumber(val: any): boolean {
   return typeof val === 'number'
 }
 
+/** Mascara da coluna, quando o backend derivou uma. */
+function formatOf(entry: ChatEntry, col: string): ColumnFormat | undefined {
+  return entry.result?.columnFormats?.[col]
+}
+
+/**
+ * Alinhamento da coluna.
+ *
+ * A mascara decide quando existe, e e por isso que chave surrogate para de
+ * alinhar a direita. Sem mascara (resposta de cache antigo) sobra o palpite
+ * antigo pelo `typeof` do dado.
+ */
 function isColumnNumeric(entry: ChatEntry, col: string): boolean {
+  const format = formatOf(entry, col)
+  if (format) return isNumericFormat(format)
   return !!entry.result?.rows?.some(r => typeof r[col] === 'number')
+}
+
+/** Alinhamento da celula, coerente com o cabecalho pela mesma razao. */
+function isNumericCell(entry: ChatEntry, col: string, val: unknown): boolean {
+  const format = formatOf(entry, col)
+  if (format) return isNumericFormat(format)
+  return isNumber(val)
 }
 
 function getInsights(entry: ChatEntry) {
@@ -667,16 +693,33 @@ function getInsights(entry: ChatEntry) {
   if (!rows || !columns || rows.length === 0) return []
 
   const chips: { text: string; type: string; iconPath: string }[] = []
-  const numericCols = columns.filter(col => rows.some(r => typeof r[col] === 'number'))
-  const textCols = columns.filter(col => rows.some(r => typeof r[col] === 'string'))
+
+  // A mascara decide o que e numero, pela mesma razao que decide na tabela.
+  // Antes daqui o chip usava `typeof r[col] === 'number'` por conta propria e
+  // contradizia a tabela logo acima: chave surrogate entrava na contagem de
+  // colunas numericas e saia "Max SK_PRODUTO: 1.234", enquanto a celula ja
+  // mostrava "1234". Sem mascara sobra o palpite antigo pelo tipo do dado.
+  const isNumericCol = (col: string): boolean => {
+    const format = formatOf(entry, col)
+    if (format) return isNumericFormat(format)
+    return rows.some(r => typeof r[col] === 'number')
+  }
+
+  const numericCols = columns.filter(isNumericCol)
+  const textCols = columns.filter(col => !isNumericCol(col) && rows.some(r => typeof r[col] === 'string'))
 
   if (numericCols.length > 0)
     chips.push({ text: `${numericCols.length} col. numérica${numericCols.length > 1 ? 's' : ''}`, type: 'num', iconPath: '<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>' })
 
   if (numericCols.length > 0) {
     const col = numericCols[0]
-    const vals = rows.map(r => r[col]).filter(v => typeof v === 'number') as number[]
-    chips.push({ text: `Máx ${col}: ${Math.max(...vals).toLocaleString('pt-BR')}`, type: 'stat', iconPath: '<polyline points="18 15 12 9 6 15"/>' })
+    // `toNumber` e nao `typeof`: mssql manda BIGINT/DECIMAL como string para
+    // nao perder precisao, e a coluna de dinheiro caia fora da conta.
+    const vals = rows.map(r => toNumber(r[col])).filter((v): v is number => v !== null)
+    if (vals.length > 0) {
+      const max = Math.max(...vals)
+      chips.push({ text: `Máx ${col}: ${formatCell(max, formatOf(entry, col))}`, type: 'stat', iconPath: '<polyline points="18 15 12 9 6 15"/>' })
+    }
   }
 
   if (textCols.length > 0) {
@@ -697,12 +740,6 @@ function getInsights(entry: ChatEntry) {
 
 function pluralize(count: number, singular: string, plural: string): string {
   return count === 1 ? singular : plural
-}
-
-function formatValue(val: any): string {
-  if (val === null || val === undefined) return '-'
-  if (typeof val === 'number') return val.toLocaleString('pt-BR')
-  return String(val)
 }
 
 function formatTime(timestamp: number): string {

@@ -30,6 +30,17 @@ export interface HistoryRecord {
   errorMessage?: string
   elapsedMs?: number
   rowCount?: number
+  /**
+   * Resultado gravado. O backend ja devolvia estes tres campos em
+   * `mapHistoryDoc`; o tipo e que nao os declarava, entao a tabela do historico
+   * nao tinha como ser escrita sem `any`.
+   *
+   * `columnFormats` e opcional porque item gravado antes do campo existir nao o
+   * tem — nesse caso `mapHistoryDoc` deriva a mascara pelo nome da coluna.
+   */
+  rows?: Record<string, unknown>[]
+  columns?: string[]
+  columnFormats?: Record<string, ColumnFormat>
   tokenUsage?: {
     sql?: { inputTokens: number; outputTokens: number; totalTokens: number }
     planner?: { inputTokens: number; outputTokens: number; totalTokens: number }
@@ -55,6 +66,29 @@ export interface ChartData {
   yKey: string
 }
 
+/**
+ * Duplicado de `@auraia/shared` porque o frontend nao depende do pacote —
+ * mesma razao pela qual `AskResponse` abaixo tambem e uma copia. Se um `kind`
+ * novo nascer no shared, ele precisa aparecer aqui E ganhar um `case` em
+ * `utils/formatters.ts`.
+ */
+export type ColumnFormatKind =
+  | 'currency'
+  | 'percent'
+  | 'fraction'
+  | 'integer'
+  | 'decimal'
+  | 'gram'
+  | 'date'
+  | 'datetime'
+  | 'text'
+
+export interface ColumnFormat {
+  kind: ColumnFormatKind
+  decimals?: number
+  suffix?: string
+}
+
 export interface AskResponse {
   ok: boolean
   data?: {
@@ -63,6 +97,8 @@ export interface AskResponse {
     mode?: AppMode
     rows: Record<string, unknown>[]
     columns: string[]
+    /** Mascara por nome de coluna. Ausente em resposta de versao antiga. */
+    columnFormats?: Record<string, ColumnFormat>
     elapsedMs: number
     chatId?: string
     historyId?: string
