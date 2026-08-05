@@ -27,3 +27,9 @@ pnpm-debug.log*
 Thumbs.db
 .idea/
 .vscode/
+
+# Scratch de ferramentas / orquestrador
+.openclaude/
+.cutcheck/
+.task*.json
+.test-task.json
