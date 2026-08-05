@@ -10,31 +10,168 @@ const forbiddenKeywords = [
   "infile", "dbms_", "utl_", "call", "set", "declare", "cursor", "bulk"
 ];
 
-const hasInlineComment = (sql: string): boolean =>
-  /\/\*/.test(sql) || /--/.test(sql);
+/**
+ * Result of walking the SQL text once, classifying every character as either
+ * executable code or an inert region (string literal, quoted identifier, comment).
+ *
+ * `code` has the same length as the input, with every inert region replaced by
+ * spaces. Keeping the length stable preserves token boundaries, so a value like
+ * `'%insert%'` can never be mistaken for the INSERT keyword, and a `;` or
+ * `LIMIT 9999` inside a literal can never trip the structural checks.
+ */
+type SqlScan = {
+  code: string;
+  hasComment: boolean;
+  unterminated: "string" | "identifier" | null;
+};
 
-const hasForbiddenKeyword = (sql: string): string | null => {
-  const lower = sql.toLowerCase();
+/** Oracle q-quote delimiters that close with a mirrored character. */
+const QQUOTE_PAIRS: Record<string, string> = { "[": "]", "{": "}", "(": ")", "<": ">" };
+
+const isIdentifierChar = (char: string | undefined): boolean =>
+  char !== undefined && /[A-Za-z0-9_$#]/.test(char);
+
+const scanSql = (sql: string, dbType: DbType): SqlScan => {
+  // MySQL treats \ as an escape inside strings; the other dialects we support
+  // run with standard-conforming strings where \ is a literal character.
+  const backslashEscapes = dbType === "mysql";
+  const hashComments = dbType === "mysql";
+  const bracketIdentifiers = dbType === "sqlserver";
+  // Backticks quote identifiers in MySQL only. Elsewhere a backtick is not a
+  // valid token at all, so treating one as a quote let a crafted pair blank out
+  // a region of real code - inert against the database, but it hid keywords
+  // from the blocklist, which is the one job this scan has.
+  const backtickIdentifiers = dbType === "mysql";
+  const qQuotes = dbType === "oracle";
+
+  let code = "";
+  let hasComment = false;
+  let unterminated: "string" | "identifier" | null = null;
+  let i = 0;
+
+  const blank = (from: number, to: number): void => {
+    code += " ".repeat(to - from);
+  };
+
+  while (i < sql.length) {
+    const char = sql[i]!;
+    const next = sql[i + 1];
+
+    if (char === "/" && next === "*") {
+      hasComment = true;
+      const end = sql.indexOf("*/", i + 2);
+      const stop = end === -1 ? sql.length : end + 2;
+      blank(i, stop);
+      i = stop;
+      continue;
+    }
+
+    if ((char === "-" && next === "-") || (hashComments && char === "#")) {
+      hasComment = true;
+      const newline = sql.indexOf("\n", i);
+      const stop = newline === -1 ? sql.length : newline;
+      blank(i, stop);
+      i = stop;
+      continue;
+    }
+
+    // Oracle alternative quoting: q'<delim>text<delim>'. The inner text may
+    // contain apostrophes, which is the whole point of the syntax. Without this
+    // branch the apostrophe in q'{it's}' reads as a terminator and everything
+    // after it is swallowed as an unterminated string, so a perfectly valid
+    // Oracle query gets rejected - the exact false positive this scan removes
+    // everywhere else.
+    if (qQuotes && (char === "q" || char === "Q") && next === "'" && !isIdentifierChar(sql[i - 1])) {
+      const delimiter = sql[i + 2];
+      if (delimiter !== undefined) {
+        const closer = QQUOTE_PAIRS[delimiter] ?? delimiter;
+        const end = sql.indexOf(`${closer}'`, i + 3);
+        if (end === -1) unterminated = "string";
+        const stop = end === -1 ? sql.length : end + 2;
+        blank(i, stop);
+        i = stop;
+        continue;
+      }
+    }
+
+    const opensQuote =
+      char === "'" ||
+      char === '"' ||
+      (backtickIdentifiers && char === "`") ||
+      (bracketIdentifiers && char === "[");
+
+    if (opensQuote) {
+      const closing = char === "[" ? "]" : char;
+      // '' and "" (and ]] in SQL Server) are escaped occurrences, not terminators.
+      const doubledEscapes = char !== "`";
+      let j = i + 1;
+      let closed = false;
+
+      while (j < sql.length) {
+        const inner = sql[j]!;
+        if (backslashEscapes && inner === "\\" && (char === "'" || char === '"')) {
+          j += 2;
+          continue;
+        }
+        if (inner === closing) {
+          if (doubledEscapes && sql[j + 1] === closing) {
+            j += 2;
+            continue;
+          }
+          closed = true;
+          j += 1;
+          break;
+        }
+        j += 1;
+      }
+
+      if (!closed) {
+        unterminated = char === "'" ? "string" : "identifier";
+        j = sql.length;
+      }
+
+      blank(i, j);
+      i = j;
+      continue;
+    }
+
+    code += char;
+    i += 1;
+  }
+
+  return { code, hasComment, unterminated };
+};
+
+const hasForbiddenKeyword = (code: string): string | null => {
   for (const keyword of forbiddenKeywords) {
     const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const pattern = keyword.endsWith("_")
-      ? new RegExp(`${escaped}`, "i")
+      ? new RegExp(escaped, "i")
       : new RegExp(`\\b${escaped}\\b`, "i");
-    if (pattern.test(lower)) return keyword;
+    if (pattern.test(code)) return keyword;
   }
   return null;
 };
 
 // ── Common validation shared by all dialects ──
 
-const validateCommon = (sql: string): ValidationResult => {
+const validateCommon = (sql: string, scan: SqlScan): ValidationResult => {
   const trimmed = sql.trim();
+  const code = scan.code.trim();
 
   if (!trimmed) {
     return { ok: false, error: { errorMessage: "SQL vazio retornado pela IA." } };
   }
 
-  if (hasInlineComment(trimmed)) {
+  if (scan.unterminated) {
+    const label = scan.unterminated === "string" ? "String" : "Identificador";
+    return {
+      ok: false,
+      error: { sql, errorMessage: `${label} nao fechado na query — verifique as aspas.` }
+    };
+  }
+
+  if (scan.hasComment) {
     return {
       ok: false,
       error: { sql, errorMessage: "Comentarios SQL nao sao permitidos (/* ou --)." }
@@ -48,26 +185,29 @@ const validateCommon = (sql: string): ValidationResult => {
     };
   }
 
-  const forbidden = hasForbiddenKeyword(trimmed);
+  const forbidden = hasForbiddenKeyword(code);
   if (forbidden) {
     return {
       ok: false,
-      error: { sql, errorMessage: `Keyword proibida detectada: ${forbidden}.` }
+      error: {
+        sql,
+        errorMessage: `Keyword proibida detectada: ${forbidden}. Apenas leitura eh permitida — reescreva como SELECT/WITH. Se "${forbidden}" eh um nome de coluna ou tabela, coloque entre aspas duplas.`
+      }
     };
   }
 
-  const semicolonIndex = trimmed.indexOf(";");
-  if (semicolonIndex !== -1 && semicolonIndex < trimmed.length - 1) {
+  const semicolonIndex = code.indexOf(";");
+  if (semicolonIndex !== -1 && semicolonIndex < code.length - 1) {
     return {
       ok: false,
       error: { sql, errorMessage: "Somente uma query eh permitida." }
     };
   }
 
-  if (/select\s+\*/i.test(trimmed)) {
+  if (/select\s+\*/i.test(code)) {
     return {
       ok: false,
-      error: { sql, errorMessage: "SELECT * nao eh permitido." }
+      error: { sql, errorMessage: "SELECT * nao eh permitido — liste as colunas explicitamente." }
     };
   }
 
@@ -110,11 +250,8 @@ const extractLimitPostgresql = (sql: string): number | null => {
 
 // ── Dialect-specific validators (only check row limits) ──
 
-const checkRowLimit = (
-  sql: string,
-  dbType: DbType
-): ValidationResult => {
-  const trimmed = sql.trim();
+const checkRowLimit = (code: string, sql: string, dbType: DbType): ValidationResult => {
+  const trimmed = code.trim();
 
   switch (dbType) {
     case "sqlserver": {
@@ -160,7 +297,10 @@ export const validateSql = (
   sql: string,
   dbType: DbType = "sqlserver"
 ): ValidationResult => {
-  const common = validateCommon(sql);
+  const scan = scanSql(sql, dbType);
+  const common = validateCommon(sql, scan);
   if (!common.ok) return common;
-  return checkRowLimit(sql, dbType);
+  return checkRowLimit(scan.code, sql, dbType);
 };
+
+export const __testing = { scanSql };
