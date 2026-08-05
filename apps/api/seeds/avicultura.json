@@ -1,0 +1,806 @@
+{
+  "name": "avicultura",
+  "description": "Vocabulario e curadoria de um schema de avicultura (matrizes e incubatorio). DADO, nao codigo: o motor nao conhece nenhum destes termos. `tableFacts` traz apenas o que a inferencia generica nao consegue saber — o grao em prosa e o desempate das tabelas com mais de uma data. As tabelas com uma unica data ficam de fora de proposito: a inferencia ja acerta.",
+  "vocabulary": {
+    "rateTerms": [
+      "eclosao",
+      "eclo",
+      "fertilidade",
+      "infertilidade",
+      "fertil",
+      "infertil",
+      "viab",
+      "viabilidade",
+      "postura",
+      "contamin",
+      "mort"
+    ],
+    "ratePhrases": ["ovo_ave", "ovo_inc_ave", "pinto_ave"],
+    "consumptionTerms": ["racao"],
+    "gramTerms": ["proteina", "lisina", "metionina", "cistina"],
+    "kcalTerms": ["calor"],
+    "countPrefixes": ["classif", "ovos"],
+    "countNouns": ["ovos", "ovo", "pintos", "pinto", "bandejas", "aves"],
+    "dimensionTerms": [
+      "granja",
+      "linhagem",
+      "nucleo",
+      "galpao",
+      "galinheiro",
+      "box",
+      "incubatorio",
+      "especie",
+      "espec",
+      "ave",
+      "est",
+      "maq",
+      "incubacao",
+      "estocagem"
+    ],
+    "keyNames": [
+      "cod_lote_num",
+      "chave_0",
+      "codigo_lote",
+      "codigo_lote_completo",
+      "codigo_lote_f",
+      "codigo_lote_m",
+      "lote",
+      "nro_lote",
+      "cod_lf",
+      "cod_lm"
+    ],
+    "sourceRules": [
+      { "term": "mort", "label": "mort", "match": "token" },
+      { "term": "ovosc", "label": "ovosc", "match": "token" },
+      { "term": "auditoria", "label": "auditoria", "match": "token" },
+      { "term": "transf", "label": "transferencia", "match": "token" },
+      { "term": "gra", "label": "granja", "match": "suffix" },
+      { "term": "inc", "label": "incubatorio", "match": "suffix" }
+    ],
+    "overlappingBuckets": {
+      "00a07": ["00a03", "04a07"],
+      "15a21": ["15a18", "19a21"]
+    },
+    "notes": [
+      "idade = semana de vida do lote (nunca ano, nunca data, nunca idade de pessoa)",
+      "_padrao e a meta da linhagem, nunca o resultado obtido",
+      "faixas de mortalidade embrionaria se contem: 00a07 = 00a03 + 04a07, 15a21 = 15a18 + 19a21"
+    ]
+  },
+  "tableFacts": {
+    "ubi.avfsDesempenho_Producao": {
+      "grain": "1 linha = lote x semana de idade (fase de producao)",
+      "eventDateColumn": "data"
+    },
+    "ubi.avfsDesempenho_Recria": {
+      "grain": "1 linha = lote x semana de idade (fase de recria)",
+      "eventDateColumn": "data"
+    },
+    "ubi.avfsPesagem_Recria": {
+      "grain": "1 linha = lote x semana de idade x sexo x box"
+    },
+    "ubi.avfsAproveitamento_OvoGranja_Inccubatorio": {
+      "grain": "1 linha = lote x dia de producao"
+    },
+    "ubi.avfsNutrientes_Racao": {
+      "grain": "1 linha = lote x semana de idade",
+      "periodJoinTable": "ubi.avfsDesempenho_Producao"
+    },
+    "ubi.avfsConsumo_Racao_Semana": {
+      "grain": "1 linha = lote x semana de idade",
+      "periodJoinTable": "ubi.avfsDesempenho_Producao"
+    },
+    "ubi.avfsProducao_Ovos_Semana": {
+      "grain": "1 linha = lote x semana de idade",
+      "periodJoinTable": "ubi.avfsDesempenho_Producao"
+    },
+    "ubi.cifsResumoEclosaoMortalidade": {
+      "grain": "1 linha = lote (resumo do lote inteiro)",
+      "eventDateColumn": null,
+      "periodJoinTable": "ubi.cifsResumo_Nascimento",
+      "periodJoinColumns": ["cod_lote_num"]
+    },
+    "ubi.cifsResumo_Nascimento": {
+      "grain": "1 linha = lote x incubacao x maquina",
+      "eventDateColumn": "dat_retirada"
+    },
+    "ubi.cifsPerdas_Transferencia": {
+      "grain": "1 linha = lote x incubacao",
+      "eventDateColumn": "dat_transferencia"
+    },
+    "ubi.cifsPerdaPesoIncub": {
+      "grain": "1 linha = lote x incubacao x maquina",
+      "eventDateColumn": "dat_incub"
+    },
+    "ubi.cifsOvos_Incubadora": {
+      "grain": "1 linha = lote x incubacao",
+      "eventDateColumn": "dat_incub"
+    },
+    "ubi.cifsSaldo_Ovos_Incubaveis": {
+      "grain": "1 linha = saldo pontual de ovos incubaveis"
+    },
+    "ubi.cifsSaldo_Ovos_Classificar": {
+      "grain": "1 linha = saldo pontual de ovos a classificar",
+      "eventDateColumn": "dat_rec"
+    }
+  },
+  "metrics": [
+    {
+      "id": "eclosao",
+      "label": "Taxa de eclosao",
+      "synonyms": ["eclosao", "eclodibilidade", "pct eclosao"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtd_pintos_nascidos",
+      "denominator": "qtd_ovos_incubados",
+      "precomputed": "eclosao_real",
+      "targetColumn": "eclosao_padrao",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": [
+        "o denominador e ovos INCUBADOS, nunca ovos recebidos nem incubaveis"
+      ]
+    },
+    {
+      "id": "eclosao_ovo_fertil",
+      "label": "Eclosao sobre ovo fertil",
+      "synonyms": ["eclosao ovo fertil", "eof", "eclosao fertil"],
+      "kind": "rate_only",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "column": "eclosao_ovo_fertil_real",
+      "targetColumn": "eclosao_ovo_fertil_padrao",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": [
+        "denominador sao os ovos FERTEIS, que nao existem como coluna — por isso nao ha par para recalcular"
+      ]
+    },
+    {
+      "id": "fertilidade",
+      "label": "Fertilidade (ovoscopia)",
+      "synonyms": ["fertilidade", "ovos ferteis"],
+      "kind": "rate_only",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "column": "pct_fertilidade_ovosc",
+      "targetColumn": "fertilidade_padrao",
+      "unit": "percent",
+      "provenance": "schema",
+      "pitfalls": [
+        "medida por AMOSTRA de ovoscopia, nao pelo lote inteiro: nao vale como contagem"
+      ]
+    },
+    {
+      "id": "infertilidade",
+      "label": "Infertilidade (ovoscopia)",
+      "synonyms": ["infertilidade", "ovos inferteis", "infertil"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtd_infertil_ovosc",
+      "denominator": "qtd_amostra_ovosc",
+      "targetColumn": "infertilidade_padrao",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": [
+        "o denominador e a amostra de ovoscopia (qtd_amostra_ovosc), nao a amostra de embriodiagnostico (qtd_amostra_mort)"
+      ]
+    },
+    {
+      "id": "aproveitamento_ovos",
+      "label": "Aproveitamento de ovos (incubatorio)",
+      "synonyms": ["aproveitamento de ovos", "aproveitamento ovos", "aprov ovo"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtd_ovos_incubaveis",
+      "denominator": "qtd_ovos_recebidos",
+      "precomputed": "aproveitamento_ovos_real",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": [
+        "e o aproveitamento medido no INCUBATORIO; o da granja e outra metrica e da numero diferente de proposito"
+      ]
+    },
+    {
+      "id": "ovos_nao_eclodidos",
+      "label": "Ovos nao eclodidos",
+      "synonyms": ["ovos nao eclodidos", "nao eclodidos"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtd_ovos_nao_eclodidos",
+      "denominator": "qtd_ovos_incubados",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": ["complemento da eclosao: os dois somados dao 1, nao os some junto"]
+    },
+    {
+      "id": "mortalidade_embrionaria_00a03",
+      "label": "Mortalidade embrionaria 00 a 03 dias",
+      "synonyms": ["mortalidade 00a03", "mort 00a03", "morte embrionaria inicial"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtd_00a03_mort",
+      "denominator": "qtd_amostra_mort",
+      "precomputed": "pct_00a03_mort",
+      "targetColumn": "mort_00a03_padrao",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "denominador nao confirmado: a tabela tem qtd_amostra_mort E qtd_ovos_incubados_mort; prefira a coluna pct_ ja calculada ate alguem do negocio confirmar qual e a base"
+      ]
+    },
+    {
+      "id": "mortalidade_embrionaria_04a07",
+      "label": "Mortalidade embrionaria 04 a 07 dias",
+      "synonyms": ["mortalidade 04a07", "mort 04a07"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtd_04a07_mort",
+      "denominator": "qtd_amostra_mort",
+      "precomputed": "pct_04a07_mort",
+      "targetColumn": "mort_04a07_padrao",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "denominador nao confirmado: ver mortalidade_embrionaria_00a03"
+      ]
+    },
+    {
+      "id": "mortalidade_embrionaria_00a07",
+      "label": "Mortalidade embrionaria 00 a 07 dias",
+      "synonyms": ["mortalidade 00a07", "mort 00a07"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtd_00a07_mort",
+      "denominator": "qtd_amostra_mort",
+      "precomputed": "pct_00a07_mort",
+      "targetColumn": "mort_00a07_padrao",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "JA CONTEM 00a03 e 04a07: somar os tres conta o mesmo embriao duas vezes",
+        "denominador nao confirmado: ver mortalidade_embrionaria_00a03"
+      ]
+    },
+    {
+      "id": "mortalidade_embrionaria_08a14",
+      "label": "Mortalidade embrionaria 08 a 14 dias",
+      "synonyms": ["mortalidade 08a14", "mort 08a14", "mortalidade embrionaria 08a14"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtd_08a14_mort",
+      "denominator": "qtd_amostra_mort",
+      "precomputed": "pct_08a14_mort",
+      "targetColumn": "mort_08a14_padrao",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": ["denominador nao confirmado: ver mortalidade_embrionaria_00a03"]
+    },
+    {
+      "id": "mortalidade_embrionaria_15a18",
+      "label": "Mortalidade embrionaria 15 a 18 dias",
+      "synonyms": ["mortalidade 15a18", "mort 15a18"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtd_15a18_mort",
+      "denominator": "qtd_amostra_mort",
+      "precomputed": "pct_15a18_mort",
+      "targetColumn": "mort_15a18_padrao",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": ["denominador nao confirmado: ver mortalidade_embrionaria_00a03"]
+    },
+    {
+      "id": "mortalidade_embrionaria_19a21",
+      "label": "Mortalidade embrionaria 19 a 21 dias",
+      "synonyms": ["mortalidade 19a21", "mort 19a21", "morte embrionaria tardia"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtd_19a21_mort",
+      "denominator": "qtd_amostra_mort",
+      "precomputed": "pct_19a21_mort",
+      "targetColumn": "mort_19a21_padrao",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": ["denominador nao confirmado: ver mortalidade_embrionaria_00a03"]
+    },
+    {
+      "id": "mortalidade_embrionaria_15a21",
+      "label": "Mortalidade embrionaria 15 a 21 dias",
+      "synonyms": ["mortalidade 15a21", "mort 15a21"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtd_15a21_mort",
+      "denominator": "qtd_amostra_mort",
+      "precomputed": "pct_15a21_mort",
+      "targetColumn": "mort_15a21_padrao",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "JA CONTEM 15a18 e 19a21: somar os tres conta o mesmo embriao duas vezes",
+        "denominador nao confirmado: ver mortalidade_embrionaria_00a03"
+      ]
+    },
+    {
+      "id": "contaminacao_embrionaria",
+      "label": "Contaminacao embrionaria",
+      "synonyms": ["contaminacao", "contaminados", "contamin"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtd_contamin_mort",
+      "denominator": "qtd_amostra_mort",
+      "precomputed": "pct_contamin_mort",
+      "targetColumn": "contamin_padrao",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "existe tambem qtd_contamin_ovosc, medido na ovoscopia e com outra base — nao os misture",
+        "denominador nao confirmado: ver mortalidade_embrionaria_00a03"
+      ]
+    },
+    {
+      "id": "bicado_vivo",
+      "label": "Bicado vivo",
+      "synonyms": ["bicado vivo", "bicviv", "bicados vivos"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtd_bicviv_mort",
+      "denominator": "qtd_amostra_mort",
+      "precomputed": "pct_bicviv_mort",
+      "targetColumn": "mort_bicviv_padrao",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": ["denominador nao confirmado: ver mortalidade_embrionaria_00a03"]
+    },
+    {
+      "id": "fungo_embrionario",
+      "label": "Fungo (embriodiagnostico)",
+      "synonyms": ["fungo", "fungos"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtd_fungo_mort",
+      "denominator": "qtd_amostra_mort",
+      "precomputed": "pct_fungo_mort",
+      "targetColumn": "mort_fungo_padrao",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "existe tambem qtd_fungo_ovosc, de outra base — nao os misture",
+        "denominador nao confirmado: ver mortalidade_embrionaria_00a03"
+      ]
+    },
+    {
+      "id": "anomalia_embrionaria",
+      "label": "Anomalia embrionaria",
+      "synonyms": ["anomalia", "anomalias"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtd_anomalia_mort",
+      "denominator": "qtd_amostra_mort",
+      "precomputed": "pct_anomalia_mort",
+      "targetColumn": "mort_anomalia_padrao",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": ["denominador nao confirmado: ver mortalidade_embrionaria_00a03"]
+    },
+    {
+      "id": "ovos_trincados_granja",
+      "label": "Ovos trincados (recebimento)",
+      "synonyms": ["ovos trincados", "trincados", "trinc"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtde_ovos_trinc",
+      "denominator": "qtde_ovos_recebidos",
+      "precomputed": "pct_ovos_trinc",
+      "targetColumn": "pct_ovos_trinc_padrao",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": [
+        "o denominador aqui e qtde_ovos_recebidos (com E), nao qtd_ovos_recebidos — sao colunas distintas na mesma tabela"
+      ]
+    },
+    {
+      "id": "ovos_quebrados_granja",
+      "label": "Ovos quebrados (recebimento)",
+      "synonyms": ["ovos quebrados", "quebrados", "queb"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtde_ovos_queb",
+      "denominator": "qtde_ovos_recebidos",
+      "precomputed": "pct_ovos_queb",
+      "targetColumn": "pct_ovos_queb_padrao",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": ["denominador e qtde_ovos_recebidos (com E), nao qtd_ovos_recebidos"]
+    },
+    {
+      "id": "ovos_cama",
+      "label": "Ovos de cama",
+      "synonyms": ["ovos de cama", "ovos cama"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumoEclosaoMortalidade",
+      "numerator": "qtde_ovos_cama",
+      "denominator": "qtde_ovos_recebidos",
+      "precomputed": "pct_ovos_cama",
+      "targetColumn": "pct_ovos_cama_padrao",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": ["denominador e qtde_ovos_recebidos (com E), nao qtd_ovos_recebidos"]
+    },
+    {
+      "id": "perda_peso_incubacao",
+      "label": "Perda de peso na incubacao",
+      "synonyms": ["perda de peso", "perda peso"],
+      "kind": "rate_only",
+      "table": "ubi.cifsPerdaPesoIncub",
+      "column": "perda_final",
+      "unit": "percent",
+      "provenance": "inferred",
+      "pitfalls": [
+        "ha perda_transf (ate a transferencia) e perda_final; qual das duas o negocio chama de 'perda de peso' nao esta confirmado",
+        "a meta vive em outra tabela (meta_perda_peso em ubi.cifsResumoEclosaoMortalidade)"
+      ]
+    },
+    {
+      "id": "transferencia",
+      "label": "Taxa de transferencia",
+      "synonyms": ["transferencia", "transferidos"],
+      "kind": "ratio",
+      "table": "ubi.cifsPerdas_Transferencia",
+      "numerator": "qtd_transferidos",
+      "denominator": "qtd_incubados",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": [
+        "qtd_incubados desta tabela e local: nao e o qtd_ovos_incubados do resumo do lote"
+      ]
+    },
+    {
+      "id": "ovos_contaminados_transferencia",
+      "label": "Ovos contaminados na transferencia",
+      "synonyms": ["contaminados na transferencia", "contaminados transferencia"],
+      "kind": "ratio",
+      "table": "ubi.cifsPerdas_Transferencia",
+      "numerator": "qtd_contaminados",
+      "denominator": "qtd_incubados",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": ["e a contaminacao vista na transferencia, nao a do embriodiagnostico"]
+    },
+    {
+      "id": "ovos_trincados_transferencia",
+      "label": "Ovos trincados na transferencia",
+      "synonyms": ["trincados na transferencia", "trincados transferencia"],
+      "kind": "ratio",
+      "table": "ubi.cifsPerdas_Transferencia",
+      "numerator": "qtd_trincados_transf",
+      "denominator": "qtd_incubados",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": [
+        "a tabela tem qtd_trincados E qtd_trincados_transf; esta metrica e a segunda"
+      ]
+    },
+    {
+      "id": "pintos_vendaveis",
+      "label": "Pintos vendaveis",
+      "synonyms": ["pintos vendaveis", "vendaveis"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumo_Nascimento",
+      "numerator": "qtd_pintos_vendaveis",
+      "denominator": "qtd_pintos_nascidos",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": [
+        "os cortes por sexo (femea/macho/misto) ja somam o total: nao some o total com eles"
+      ]
+    },
+    {
+      "id": "pintos_segunda",
+      "label": "Pintos de segunda",
+      "synonyms": ["pintos de segunda", "pintos segunda", "segunda qualidade"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumo_Nascimento",
+      "numerator": "qtd_pintos_segunda",
+      "denominator": "qtd_pintos_nascidos",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": ["refugo de qualidade, nao mortalidade"]
+    },
+    {
+      "id": "pintos_eliminados",
+      "label": "Pintos eliminados",
+      "synonyms": ["pintos eliminados", "eliminados"],
+      "kind": "ratio",
+      "table": "ubi.cifsResumo_Nascimento",
+      "numerator": "qtd_pintos_eliminados",
+      "denominator": "qtd_pintos_nascidos",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": ["qtd_pintos_mortos e outra coisa: morreu x foi eliminado"]
+    },
+    {
+      "id": "postura",
+      "label": "Postura",
+      "synonyms": ["postura", "producao ovos ave"],
+      "kind": "rate_only",
+      "table": "ubi.avfsDesempenho_Producao",
+      "column": "postura_obtida",
+      "targetColumn": "postura_padrao",
+      "unit": "percent",
+      "provenance": "schema",
+      "pitfalls": ["e percentual por semana de idade: media simples entre semanas mente"]
+    },
+    {
+      "id": "ovo_ave_alojada",
+      "label": "Ovos por ave alojada (semana)",
+      "synonyms": ["ovo ave alojada", "ovos ave alojada", "ovo ave"],
+      "kind": "rate_only",
+      "table": "ubi.avfsDesempenho_Producao",
+      "column": "ovo_ave_alojada",
+      "targetColumn": "ovo_ave_padrao",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": ["e o valor DA SEMANA; o acumulado do lote e ovo_ave_acum_obtido"]
+    },
+    {
+      "id": "ovo_ave_acumulado",
+      "label": "Ovos por ave alojada (acumulado)",
+      "synonyms": ["ovo ave acumulado", "ovos ave acumulado"],
+      "kind": "cumulative",
+      "table": "ubi.avfsDesempenho_Producao",
+      "column": "ovo_ave_acum_obtido",
+      "targetColumn": "ovo_ave_acum_padrao",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": ["ja e acumulado ate a semana da linha: somar entre semanas dupla-conta"]
+    },
+    {
+      "id": "ovo_incubavel_ave",
+      "label": "Ovos incubaveis por ave (semana)",
+      "synonyms": ["ovo inc ave", "ovos incubaveis ave"],
+      "kind": "rate_only",
+      "table": "ubi.avfsDesempenho_Producao",
+      "column": "ovo_inc_ave_obtido",
+      "targetColumn": "ovo_inc_ave_padrao",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": ["acumulado do lote e ovo_inc_ave_acum_obtido, outra coluna"]
+    },
+    {
+      "id": "ovo_incubavel_ave_acumulado",
+      "label": "Ovos incubaveis por ave (acumulado)",
+      "synonyms": ["ovo inc ave acumulado", "ovos incubaveis ave acumulado"],
+      "kind": "cumulative",
+      "table": "ubi.avfsDesempenho_Producao",
+      "column": "ovo_inc_ave_acum_obtido",
+      "targetColumn": "ovo_inc_ave_acum_padrao",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": ["acumulado: use MAX da ultima semana, nunca SUM"]
+    },
+    {
+      "id": "aproveitamento_ovo_granja",
+      "label": "Aproveitamento de ovo (granja)",
+      "synonyms": ["aproveitamento na granja", "aproveitamento granja"],
+      "kind": "ratio",
+      "table": "ubi.avfsDesempenho_Producao",
+      "numerator": "ovos_incubaveis_semana",
+      "denominator": "ovos_produzidos_semana",
+      "precomputed": "aprov_ovo_obtido",
+      "targetColumn": "aprov_ovo_padrao",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "o par incubaveis/produzidos e deducao do nome: aprov_ovo_obtido ja existe pronto e nao foi conferido contra o par",
+        "nao confundir com o aproveitamento medido no incubatorio, que da numero diferente de proposito"
+      ]
+    },
+    {
+      "id": "mortalidade_semanal_femea",
+      "label": "Mortalidade semanal de femeas (producao)",
+      "synonyms": ["mortalidade femea", "mortalidade semanal femea", "morte femea"],
+      "kind": "rate_only",
+      "table": "ubi.avfsDesempenho_Producao",
+      "column": "pct_morte_obtida_fem",
+      "targetColumn": "pct_morte_padrao_fem",
+      "unit": "percent",
+      "provenance": "schema",
+      "pitfalls": [
+        "e o percentual DA SEMANA; o do lote inteiro e pct_morte_obtida_fem_acum e nao se obtem somando este"
+      ]
+    },
+    {
+      "id": "mortalidade_acumulada_femea",
+      "label": "Mortalidade acumulada de femeas (producao)",
+      "synonyms": ["mortalidade acumulada femea", "morte acumulada femea"],
+      "kind": "cumulative",
+      "table": "ubi.avfsDesempenho_Producao",
+      "column": "pct_morte_obtida_fem_acum",
+      "targetColumn": "pct_morte_padrao_fem_acum",
+      "unit": "percent",
+      "provenance": "schema",
+      "pitfalls": ["acumulada ate a semana da linha: MAX, nunca SUM nem AVG entre semanas"]
+    },
+    {
+      "id": "mortalidade_semanal_macho",
+      "label": "Mortalidade semanal de machos (producao)",
+      "synonyms": ["mortalidade macho", "morte macho"],
+      "kind": "rate_only",
+      "table": "ubi.avfsDesempenho_Producao",
+      "column": "pct_morte_obtida_mac",
+      "targetColumn": "pct_morte_padrao_mac",
+      "unit": "percent",
+      "provenance": "schema",
+      "pitfalls": ["percentual da semana; o acumulado e pct_morte_obtida_mac_acum"]
+    },
+    {
+      "id": "mortalidade_acumulada_macho",
+      "label": "Mortalidade acumulada de machos (producao)",
+      "synonyms": ["mortalidade acumulada macho", "morte acumulada macho"],
+      "kind": "cumulative",
+      "table": "ubi.avfsDesempenho_Producao",
+      "column": "pct_morte_obtida_mac_acum",
+      "targetColumn": "pct_morte_padrao_mac_acum",
+      "unit": "percent",
+      "provenance": "schema",
+      "pitfalls": ["acumulada: MAX, nunca SUM"]
+    },
+    {
+      "id": "viabilidade_femea",
+      "label": "Viabilidade de femeas (producao)",
+      "synonyms": ["viabilidade femea", "viab femea", "viabilidade"],
+      "kind": "rate_only",
+      "table": "ubi.avfsDesempenho_Producao",
+      "column": "viab_obtida_fem",
+      "targetColumn": "viab_padrao_fem",
+      "unit": "percent",
+      "provenance": "schema",
+      "pitfalls": [
+        "a recria tem coluna de mesmo nome em ubi.avfsDesempenho_Recria: confirme a fase antes de responder"
+      ]
+    },
+    {
+      "id": "relacao_macho_femea",
+      "label": "Relacao macho/femea",
+      "synonyms": ["relacao macho femea", "relacao mf", "proporcao macho femea"],
+      "kind": "rate_only",
+      "table": "ubi.avfsDesempenho_Producao",
+      "column": "pct_relacao_mf",
+      "targetColumn": "pct_relacao_mf_padrao",
+      "unit": "percent",
+      "provenance": "schema",
+      "pitfalls": ["razao entre saldos: somar entre semanas nao significa nada"]
+    },
+    {
+      "id": "peso_ovo",
+      "label": "Peso medio do ovo",
+      "synonyms": ["peso do ovo", "peso ovo", "peso medio do ovo"],
+      "kind": "level",
+      "table": "ubi.avfsDesempenho_Producao",
+      "column": "peso_ovo_obtido",
+      "targetColumn": "peso_ovo_padrao",
+      "unit": "weight",
+      "provenance": "schema",
+      "pitfalls": [
+        "o incubatorio tem peso_medio_ovo_obtido em ubi.cifsResumoEclosaoMortalidade, medido em outro momento"
+      ]
+    },
+    {
+      "id": "peso_corporal_femea",
+      "label": "Peso corporal de femeas (producao)",
+      "synonyms": ["peso da femea", "peso corporal femea", "peso fem"],
+      "kind": "level",
+      "table": "ubi.avfsDesempenho_Producao",
+      "column": "peso_obtido_fem",
+      "targetColumn": "peso_padrao_fem",
+      "unit": "weight",
+      "provenance": "schema",
+      "pitfalls": ["media entre lotes ignora o tamanho do lote; pondere se o recorte for amplo"]
+    },
+    {
+      "id": "uniformidade_femea",
+      "label": "Uniformidade de femeas (producao)",
+      "synonyms": ["uniformidade femea", "unif femea", "uniformidade"],
+      "kind": "rate_only",
+      "table": "ubi.avfsDesempenho_Producao",
+      "column": "unif_obtida_fem",
+      "targetColumn": "unif_padrao_fem",
+      "unit": "percent",
+      "provenance": "schema",
+      "pitfalls": [
+        "na recria a coluna se chama uniformidade_fem e a meta unif_fem_pad — nomes diferentes, mesma ideia"
+      ]
+    },
+    {
+      "id": "consumo_racao_femea",
+      "label": "Consumo de racao por femea (g/ave/dia)",
+      "synonyms": ["consumo de racao femea", "grama femea", "racao femea"],
+      "kind": "level",
+      "table": "ubi.avfsDesempenho_Producao",
+      "column": "grama_obtida_fem",
+      "targetColumn": "grama_padrao_fem",
+      "unit": "gram",
+      "provenance": "inferred",
+      "pitfalls": [
+        "a unidade g/ave/dia e deducao do nome; existe grama_obtida_fem_sem ao lado, provavelmente o total da semana",
+        "somar entre semanas nao da o consumo do lote: e valor por ave por dia"
+      ]
+    },
+    {
+      "id": "saldo_femeas",
+      "label": "Saldo de femeas",
+      "synonyms": ["saldo de femeas", "saldo femea", "aves alojadas"],
+      "kind": "snapshot",
+      "table": "ubi.avfsDesempenho_Producao",
+      "column": "saldo_femea",
+      "unit": "count",
+      "provenance": "schema",
+      "pitfalls": [
+        "e o saldo NA semana, nao um fluxo: somar 52 semanas da 52x o plantel"
+      ]
+    },
+    {
+      "id": "viabilidade_recria_femea",
+      "label": "Viabilidade de femeas (recria)",
+      "synonyms": ["viabilidade na recria", "viabilidade recria"],
+      "kind": "rate_only",
+      "table": "ubi.avfsDesempenho_Recria",
+      "column": "viab_obtida_fem",
+      "targetColumn": "viab_padrao_fem",
+      "unit": "percent",
+      "provenance": "schema",
+      "pitfalls": ["mesma coluna existe na producao: a fase muda o numero"]
+    },
+    {
+      "id": "uniformidade_recria_femea",
+      "label": "Uniformidade de femeas (recria)",
+      "synonyms": ["uniformidade na recria", "uniformidade recria"],
+      "kind": "rate_only",
+      "table": "ubi.avfsDesempenho_Recria",
+      "column": "uniformidade_fem",
+      "targetColumn": "unif_fem_pad",
+      "unit": "percent",
+      "provenance": "schema",
+      "pitfalls": [
+        "na recria e uniformidade_fem/unif_fem_pad; na producao e unif_obtida_fem/unif_padrao_fem"
+      ]
+    },
+    {
+      "id": "peso_recria_femea",
+      "label": "Peso corporal de femeas (recria)",
+      "synonyms": ["peso na recria", "peso recria"],
+      "kind": "level",
+      "table": "ubi.avfsDesempenho_Recria",
+      "column": "peso_obtido_fem",
+      "targetColumn": "peso_padrao_fem",
+      "unit": "weight",
+      "provenance": "schema",
+      "pitfalls": ["a pesagem detalhada por box vive em ubi.avfsPesagem_Recria"]
+    },
+    {
+      "id": "ovos_rejeitados_granja",
+      "label": "Ovos rejeitados na granja",
+      "synonyms": ["ovos rejeitados", "rejeitados granja"],
+      "kind": "ratio",
+      "table": "ubi.avfsAproveitamento_OvoGranja_Inccubatorio",
+      "numerator": "qtd_ovos_rejeitados_gra",
+      "denominator": "qtd_ovos_produzidos_gra",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": [
+        "o sufixo _gra e medicao na granja; as colunas _inc sao a medicao do incubatorio sobre os mesmos ovos e divergem de proposito"
+      ]
+    },
+    {
+      "id": "ovos_aproveitados_granja",
+      "label": "Ovos aproveitados na granja",
+      "synonyms": ["ovos aproveitados", "aprov gra"],
+      "kind": "ratio",
+      "table": "ubi.avfsAproveitamento_OvoGranja_Inccubatorio",
+      "numerator": "qtd_ovos_aprov_gra",
+      "denominator": "qtd_ovos_produzidos_gra",
+      "unit": "fraction",
+      "provenance": "schema",
+      "pitfalls": ["a versao do incubatorio e qtd_ovos_aprov_inc sobre qtd_ovos_recebidos_inc"]
+    }
+  ]
+}

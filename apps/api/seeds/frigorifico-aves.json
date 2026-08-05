@@ -1,0 +1,465 @@
+{
+  "name": "frigorifico-aves",
+  "description": "Curadoria de um DW de frigorifico de aves em SQL Server (star schema Dim_/Fat_ + views operacionais VW_/VWKPI_). DADO, nao codigo. O bloco mais importante aqui e `vocabulary.dimensionPrefixes`: este schema usa prefixos hungaros (Sk_, Qn_, Ps_, Vl_, Pc_) que nenhuma convencao PT-BR generica reconhece, e sem eles as 224 chaves Sk_ do star schema sao classificadas como METRICA — um SUM(Sk_Filial) e formalmente valido e silenciosamente absurdo. `tableFacts` cobre as 18 tabelas com mais de uma data (as demais a inferencia ja acerta) e marca as tabelas que NAO respondem pergunta de negocio.",
+  "vocabulary": {
+    "dimensionPrefixes": [
+      "sk",
+      "id",
+      "nm",
+      "sg",
+      "nr",
+      "fl",
+      "ie"
+    ],
+    "countPrefixes": [
+      "qn"
+    ],
+    "weightPrefixes": [
+      "ps"
+    ],
+    "currencyTerms": [
+      "vl"
+    ],
+    "rateMarkers": [
+      "pc"
+    ],
+    "dimensionTerms": [
+      "empresa",
+      "filial",
+      "id",
+      "idsku",
+      "idabsorcao",
+      "iddriptest",
+      "idpontoregistro",
+      "idtipoave",
+      "idaveparte",
+      "fato",
+      "ano",
+      "ano2",
+      "trimestre",
+      "trimestre2",
+      "mes",
+      "mes2",
+      "dia",
+      "dia2",
+      "turno",
+      "almoxarifado",
+      "palete",
+      "lote",
+      "batch",
+      "tunel",
+      "balanca",
+      "integrado",
+      "transportador",
+      "motorista",
+      "linhagem",
+      "equipamento"
+    ],
+    "notes": [
+      "Prefixos deste schema: Sk_ = chave substituta (surrogate key) da dimensao, NUNCA um numero somavel; Id_ = codigo natural do sistema de origem; Nm_ = nome; Dt_ = data; Qn_ = quantidade; Ps_ = peso em kg; Vl_ = valor em R$; Fl_ = flag; Dr_ = duracao; Tp_ = TEMPERATURA (nunca 'tipo'); Pc_ = percentual; Nr_ = numero/identificador textual; Gn_ = generico/texto livre.",
+      "Dr_* e duracao, em minutos. Somar duracao entre linhas so faz sentido para tempo total de parada de um mesmo equipamento; para tempos por lote (Dr_Jejum, Dr_Viagem, Dr_EsperaPatio) o certo e AVG, porque cada linha e um lote diferente e a soma nao significa nada.",
+      "Tp_* e temperatura em graus. E nivel medido: AVG entre linhas, nunca SUM.",
+      "Peso: Ps_Bruto inclui a embalagem, Ps_Liquido nao, Ps_Padrao e o peso nominal declarado do produto e Ps_Venda e o peso faturado. Nao sao intercambiaveis e misturar dois deles no mesmo SUM devolve numero errado sem erro de SQL.",
+      "Giveaway e o excesso de peso dado ao cliente (Ps_Liquido acima do Ps_Padrao). E perda, nao producao: nunca some giveaway junto com peso produzido.",
+      "Fat_Estoques e Fat_Estoques_Historico sao SALDOS pontuais por data. Somar entre datas dupla-conta a mesma caixa em todos os dias em que ela esteve parada. Para 'estoque do mes' use o saldo da ultima data, nao a soma.",
+      "Rendimento de abate (peso produzido / peso vivo entrado) cruza Fat_Producao com Fat_EntradasAnimais. Nao existe coluna pronta: exige juncao por Sk_Filial + Dt_Transacao, e o resultado depende de as duas tabelas cobrirem o mesmo periodo. Na duvida, diga que precisa da juncao em vez de estimar por uma tabela so.",
+      "Fat_EntradasAnimais (plural) e o fato base de recepcao de aves. Fat_EntradaAnimais (singular) e uma visao derivada para analise de tempos e logistica. As duas descrevem os MESMOS lotes: nunca some as duas, e nunca junte uma com a outra.",
+      "Este DW concatena CamelCase depois do prefixo (Ps_LiquidoEstoqueComercial). O lexico casa em fronteira de _, entao radical solto (comercial, total, caixas, rendimento) NUNCA casa neste schema: a classificacao vem do prefixo, nao do radical. Nao adicione termos de radical esperando efeito.",
+      "Dr_* e Tp_* nao tem prefixo classificador no lexico e caem como metrica generica. Esta certo que sejam metrica, mas NENHUMA guarda protege: Dr_ pede AVG por lote e Tp_ pede AVG sempre. Vale so o que estas notas dizem."
+    ]
+  },
+  "tableFacts": {
+    "dbo.Fat_Producao": {
+      "grain": "1 linha = producao de um produto (Sk_Produto) numa filial, data e turno. E o fato de saida da industria: caixas e pesos produzidos.",
+      "eventDateColumn": "Dt_Transacao"
+    },
+    "dbo.Fat_Estoques": {
+      "grain": "1 linha = SALDO de um produto num almoxarifado numa data. Fotografia, nao movimento: cada data repete o saldo inteiro.",
+      "eventDateColumn": "Dt_Transacao"
+    },
+    "dbo.Fat_Estoques_Historico": {
+      "grain": "1 linha = saldo consolidado de um produto por data, separado em comercial e total. Mesma natureza de fotografia de Fat_Estoques.",
+      "eventDateColumn": "Dt_Transacao"
+    },
+    "dbo.Fat_EntradasAnimais": {
+      "grain": "1 linha = lote de aves recebido (Nr_LoteEntradaAnimal) de um integrado/propriedade, com transporte e peso vivo. Fato BASE de recepcao."
+    },
+    "dbo.Fat_EntradaAnimais": {
+      "grain": "1 linha = o MESMO lote de Fat_EntradasAnimais, em visao derivada para analise de tempos (jejum, espera no patio, viagem, pendura) com Ano/Trimestre/Mes/Dia ja explodidos para BI. NAO somar nem juntar com Fat_EntradasAnimais: sao a mesma realidade contada duas vezes."
+    },
+    "dbo.Fat_Pedidos_Venda": {
+      "grain": "1 linha = ITEM de pedido de venda (Id_PedidoVenda + Id_ItemPedidoVenda). Um pedido tem varias linhas: contar linhas nao conta pedidos, use COUNT(DISTINCT Id_PedidoVenda).",
+      "eventDateColumn": "Dt_PedidoVenda"
+    },
+    "dbo.Fat_Expedicao_Carga": {
+      "grain": "1 linha = carga de expedicao (Id_CargaExpedicao) fechada num veiculo. Grao de CARGA, nao de item: para produto, use Fat_Pedidos_Venda.",
+      "eventDateColumn": "Dt_Transacao"
+    },
+    "dbo.Fat_Pendura": {
+      "grain": "1 linha = registro de pendura de um lote numa linha de processo. Qn_VelocidadePendura e velocidade instantanea (aves/hora): AVG, nunca SUM.",
+      "eventDateColumn": "Dt_Transacao"
+    },
+    "dbo.Fat_Contagem": {
+      "grain": "1 linha = contagem de aves/ganchos num equipamento da linha, num instante. Qn_AnimaisPorHoraContagem e taxa instantanea: AVG, nunca SUM.",
+      "eventDateColumn": "Dt_Transacao"
+    },
+    "dbo.Fat_Contagem_Detalhes": {
+      "grain": "1 linha = intervalo detalhado de uma contagem (Dt_Inicio a Dt_Final), com grupo e cor. Detalhe de Fat_Contagem: somar os dois juntos dupla-conta.",
+      "eventDateColumn": "Dt_Transacao"
+    },
+    "dbo.Fat_ParadasEquipamentos": {
+      "grain": "1 linha = uma parada de um equipamento, do Dt_Inicio ao Dt_Final, com motivo. A duracao NAO tem coluna pronta: calcule DATEDIFF(MINUTE, Dt_InicioParadaEquipamento, Dt_FinalParadaEquipamento). Fl_TipoParadaEquipamento separa programada de nao programada.",
+      "eventDateColumn": "Dt_Transacao"
+    },
+    "dbo.Fat_OEE": {
+      "grain": "1 linha = OEE de um equipamento num dia. Ja traz producao nominal, programada, com e sem defeito e as paradas agregadas — nao recalcule a partir de Fat_ParadasEquipamentos, sao duas contagens da mesma coisa."
+    },
+    "dbo.Fat_Absorcao": {
+      "grain": "1 linha = medicao de absorcao de agua num ponto de registro (entrada e saida do chiller), com peso e temperatura antes e depois.",
+      "eventDateColumn": "Dt_Transacao"
+    },
+    "dbo.Fat_DripTest": {
+      "grain": "1 linha = um drip test de um produto: peso e temperatura no inicio e no fim do descongelamento controlado.",
+      "eventDateColumn": "Dt_Transacao"
+    },
+    "dbo.Fat_Descartes": {
+      "grain": "1 linha = descarte/condenacao de uma parte do animal por um motivo, num setor e turno. Gn_TipoCondenacao separa condenacao total de parcial."
+    },
+    "dbo.Fat_CapacidadesAlmoxarifados": {
+      "grain": "1 linha = capacidade instalada (peso e paletes) de um almoxarifado numa data. E CAPACIDADE, nao ocupacao: para ocupacao cruze com Fat_Estoques."
+    },
+    "dbo.VW_PRO006_TEMP": {
+      "grain": "1 linha = etiqueta/caixa individual produzida (ID_REGIPROD). Grao MUITO mais fino que Fat_Producao — a mesma producao aparece nas duas. Use Fat_Producao para pergunta agregada e esta view so para rastreabilidade de caixa/lote.",
+      "eventDateColumn": "DT_REGIPROD"
+    },
+    "dbo.VW_PRO049_TEMP": {
+      "grain": "1 linha = etiqueta/caixa individual com estoque, validade e desvio de peso. Mesmo grao de VW_PRO006_TEMP, com mais colunas. Nao junte as duas nem some junto com Fat_Producao.",
+      "eventDateColumn": "DT_REGIPROD"
+    },
+    "dbo.VWKPI_ABSORCAOBASE": {
+      "grain": "View de origem que alimenta Fat_Absorcao. Para pergunta de negocio use Fat_Absorcao, que ja esta conformado as dimensoes; esta view so serve para conferir a carga.",
+      "eventDateColumn": "DATAMONITORAMENTO"
+    },
+    "dbo.VWKPI_DRIPTESTBASE": {
+      "grain": "View de origem que alimenta Fat_DripTest. Para pergunta de negocio use Fat_DripTest; esta view so serve para conferir a carga.",
+      "eventDateColumn": "DATAMONITORAMENTO"
+    },
+    "dbo.Dw_CargaDados": {
+      "grain": "CONTROLE DE ETL: 1 linha = execucao de carga do DW. Nao contem dado de negocio nenhum — nunca responda pergunta de producao, venda ou estoque a partir dela.",
+      "eventDateColumn": "Dt_InicioCargaDados"
+    },
+    "dbo.tbl_Processamento": {
+      "grain": "CONTROLE DE ETL: 1 linha = execucao de uma fato. Sem dado de negocio.",
+      "eventDateColumn": "dt_Processamento"
+    },
+    "dbo.Exec_prod": {
+      "grain": "CONTROLE DE ETL: 1 linha = execucao do processamento de producao. Sem dado de negocio.",
+      "eventDateColumn": "dataProc"
+    },
+    "dbo.Dw_Sistema_Versao": {
+      "grain": "CONTROLE: versao dos objetos do DW. Sem dado de negocio."
+    },
+    "dbo.Tb_ListaFatos": {
+      "grain": "CONTROLE: lista de nomes de tabelas fato usada pelo ETL. Sem dado de negocio."
+    },
+    "dbo.Dim_Produtos_SubLinhas": {
+      "grain": "1 linha = sublinha de produto. As colunas Pc_* sao PERCENTUAIS DE REFERENCIA de rendimento da sublinha (inteiros, carcaca com e sem miudos), nao resultado medido: nunca some, e so use como parametro."
+    },
+    "dbo.Dim_Almoxarifados": {
+      "grain": "1 linha = almoxarifado. Fl_TipoEstocagemAlmoxarifado separa congelado de resfriado."
+    },
+    "dbo.Dim_LinhasProcessos": {
+      "grain": "1 linha = linha de processo. Fl_TipoLinhaProcesso separa a fase (primaria, cortes, etc)."
+    },
+    "dbo.Dim_StatusPedidos": {
+      "grain": "1 linha = um status possivel de pedido. Junte por Sk_StatusPedido."
+    },
+    "dbo.Fat_Descarte_Recuperacoes": {
+      "grain": "1 linha = recuperacao de descarte de um produto (Sk_Produto) numa filial, data e turno: peso e unidades que voltaram do descarte para o processo. E ganho recuperado, nao producao nova — nunca some com Fat_Producao.",
+      "eventDateColumn": "Dt_Transacao"
+    },
+    "dbo.Calendario": {
+      "grain": "1 linha = um dia. E a dimensao de tempo do DW, com o dia ja decomposto em ano, semestre, trimestre, bimestre, mes, semana e dia da semana. Nunca e fato: nao agregue nada daqui, use so para juntar por Dt_Transacao e para agrupar por periodo em prosa (Nm_Mes, Nr_SemanaAno).",
+      "eventDateColumn": "Dt_Transacao"
+    }
+  },
+  "metrics": [
+    {
+      "id": "mortalidade_transporte",
+      "label": "Mortalidade no transporte (DOA)",
+      "synonyms": [
+        "mortalidade",
+        "doa",
+        "morto na chegada",
+        "aves mortas"
+      ],
+      "kind": "ratio",
+      "table": "dbo.Fat_EntradasAnimais",
+      "numerator": "Qn_MortosEntradaAnimal",
+      "denominator": "Qn_CabecasEntradaAnimal",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "Denominador e Qn_CabecasEntradaAnimal (aves embarcadas), nao Qn_AbatidosEntradaAnimal (aves que chegaram vivas) — trocar os dois subestima a mortalidade.",
+        "Nunca AVG de uma taxa ja calculada por lote: lotes tem tamanhos diferentes e a media simples pesa igual um caminhao e uma carreta."
+      ]
+    },
+    {
+      "id": "quebra_peso_entrada",
+      "label": "Quebra de peso na recepcao",
+      "synonyms": [
+        "quebra",
+        "quebra de peso",
+        "perda de peso vivo"
+      ],
+      "kind": "ratio",
+      "table": "dbo.Fat_EntradasAnimais",
+      "numerator": "Ps_QuebraEntradaAnimal",
+      "denominator": "Ps_LiquidoEntradaAnimal",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "Confirmar se Ps_LiquidoEntradaAnimal ja esta liquido da quebra. Se estiver, o denominador correto e (Ps_LiquidoEntradaAnimal + Ps_QuebraEntradaAnimal) e a formula acima superestima."
+      ]
+    },
+    {
+      "id": "peso_medio_entrada",
+      "label": "Peso medio da ave na entrada",
+      "synonyms": [
+        "peso medio",
+        "peso medio da ave",
+        "pm ave"
+      ],
+      "kind": "ratio",
+      "table": "dbo.Fat_EntradasAnimais",
+      "numerator": "Ps_LiquidoEntradaAnimal",
+      "denominator": "Qn_AbatidosEntradaAnimal",
+      "precomputed": "Ps_MedioEntradaAnimal",
+      "unit": "weight",
+      "provenance": "inferred",
+      "pitfalls": [
+        "Ps_MedioEntradaAnimal ja vem calculado POR LOTE. AVG dessa coluna entre lotes de tamanhos diferentes da um numero que nao e o peso medio de nenhuma ave — para varios lotes, recalcule pelo par."
+      ]
+    },
+    {
+      "id": "giveaway",
+      "label": "Giveaway (excesso de peso doado)",
+      "synonyms": [
+        "giveaway",
+        "give away",
+        "excesso de peso"
+      ],
+      "kind": "ratio",
+      "table": "dbo.Fat_Producao",
+      "numerator": "Qn_GiveawayProducao",
+      "denominator": "Ps_PadraoProducao",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "MAPEAMENTO EM DUVIDA REAL: o numerador Qn_GiveawayProducao tem prefixo Qn_ (contagem) mas o denominador Ps_PadraoProducao e peso — a razao mistura grandezas. A mesma grandeza aparece como Ps_GiveawayEstoqueComercial / Ps_GiveawayEstoqueTotal em Fat_Estoques_Historico, o que sugere que giveaway e kg e o prefixo Qn_ e erro de nomenclatura do DW. Confirme antes de usar: se for kg, a formula esta certa; se for contagem de caixas fora do padrao, o certo e (Ps_LiquidoProducao - Ps_PadraoProducao) / Ps_PadraoProducao.",
+        "Giveaway e perda: nunca entre no mesmo SUM que peso produzido."
+      ]
+    },
+    {
+      "id": "oee_qualidade",
+      "label": "OEE - Qualidade",
+      "synonyms": [
+        "qualidade oee",
+        "indice de qualidade"
+      ],
+      "kind": "ratio",
+      "table": "dbo.Fat_OEE",
+      "numerator": "Qn_ProducaoSemDefeitoOEE",
+      "denominator": "(Qn_ProducaoSemDefeitoOEE + Qn_ProducaoComDefeitoOEE)",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "O OEE completo e disponibilidade x performance x qualidade. Este e so um dos tres fatores: nao apresente como 'o OEE'."
+      ]
+    },
+    {
+      "id": "oee_disponibilidade",
+      "label": "OEE - Disponibilidade",
+      "synonyms": [
+        "disponibilidade",
+        "disponibilidade oee"
+      ],
+      "kind": "ratio",
+      "table": "dbo.Fat_OEE",
+      "numerator": "(Dr_ProducaoProgramadaOEE - Dr_ParadasNaoProgramadasOEE)",
+      "denominator": "Dr_ProducaoProgramadaOEE",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "So paradas NAO programadas descontam disponibilidade. Dr_ParadasProgramadasOEE ja esta fora do tempo programado — subtrair as duas conta a mesma parada duas vezes.",
+        "Confirmar se Dr_ProducaoProgramadaOEE ja e liquido das paradas programadas."
+      ]
+    },
+    {
+      "id": "oee_performance",
+      "label": "OEE - Performance",
+      "synonyms": [
+        "performance",
+        "performance oee"
+      ],
+      "kind": "ratio",
+      "table": "dbo.Fat_OEE",
+      "numerator": "(Qn_ProducaoSemDefeitoOEE + Qn_ProducaoComDefeitoOEE)",
+      "denominator": "Qn_ProducaoNominalOEE",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "Qn_ProducaoNominalOEE e capacidade teorica, nao meta comercial. Se vier por hora e nao pelo periodo programado, a razao fica sem sentido — conferir a unidade antes de afirmar o numero."
+      ]
+    },
+    {
+      "id": "drip_test",
+      "label": "Drip test (perda por descongelamento)",
+      "synonyms": [
+        "drip",
+        "drip test",
+        "perda por descongelamento",
+        "gotejamento"
+      ],
+      "kind": "ratio",
+      "table": "dbo.Fat_DripTest",
+      "numerator": "(Ps_InicialDripTest - Ps_FinalDripTest)",
+      "denominator": "Ps_InicialDripTest",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "Valor negativo significa peso final maior que o inicial — e erro de medicao, nao ganho. Filtre ou sinalize em vez de somar.",
+        "Cada linha e um teste de amostra, nao um lote inteiro: a taxa representa a amostra e nao pode ser extrapolada para volume sem dizer isso."
+      ]
+    },
+    {
+      "id": "absorcao_agua",
+      "label": "Absorcao de agua no chiller",
+      "synonyms": [
+        "absorcao",
+        "absorcao de agua",
+        "ganho no chiller"
+      ],
+      "kind": "ratio",
+      "table": "dbo.Fat_Absorcao",
+      "numerator": "(Ps_ProdutoFinalAbsorcao - Ps_ProdutoInicioAbsorcao)",
+      "denominator": "Ps_ProdutoInicioAbsorcao",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "Ha limite legal de absorcao: o numero e regulatorio, nao so operacional. Nunca apresente a media do periodo sem dizer que ela esconde os pontos fora do limite.",
+        "Cada linha e uma medicao pontual num ponto de registro. Media entre pontos de registro diferentes mistura estagios distintos do chiller."
+      ]
+    },
+    {
+      "id": "atendimento_pedido",
+      "label": "Atendimento de pedido (fill rate)",
+      "synonyms": [
+        "atendimento",
+        "fill rate",
+        "nivel de servico"
+      ],
+      "kind": "ratio",
+      "table": "dbo.Fat_Pedidos_Venda",
+      "numerator": "Ps_VendaExpedidoPedidoVenda",
+      "denominator": "Ps_VendaPedidoPedidoVenda",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "Pedido cancelado entra com pedido > 0 e expedido = 0 e derruba o indicador. Filtrar por Sk_StatusPedido antes de responder.",
+        "O grao e ITEM de pedido. 'Percentual de pedidos atendidos' (por pedido, nao por peso) e outra conta e exige COUNT(DISTINCT Id_PedidoVenda)."
+      ]
+    },
+    {
+      "id": "corte_pedido",
+      "label": "Corte de pedido",
+      "synonyms": [
+        "corte",
+        "corte de pedido",
+        "pedido cortado"
+      ],
+      "kind": "ratio",
+      "table": "dbo.Fat_Pedidos_Venda",
+      "numerator": "Ps_VendaCortadoPedidoVenda",
+      "denominator": "Ps_VendaPedidoPedidoVenda",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "Corte e devolucao sao coisas diferentes: corte nunca saiu da fabrica, devolucao voltou. Nao some os dois."
+      ]
+    },
+    {
+      "id": "devolucao",
+      "label": "Devolucao",
+      "synonyms": [
+        "devolucao",
+        "devolvido",
+        "retorno de carga"
+      ],
+      "kind": "ratio",
+      "table": "dbo.Fat_Pedidos_Venda",
+      "numerator": "Ps_VendaDevolvidoPedidoVenda",
+      "denominator": "Ps_VendaExpedidoPedidoVenda",
+      "unit": "fraction",
+      "provenance": "inferred",
+      "pitfalls": [
+        "Denominador e o EXPEDIDO, nao o pedido: so pode voltar o que saiu.",
+        "A devolucao costuma ser lancada em data posterior a da venda. Filtrar por Dt_PedidoVenda subestima o mes corrente."
+      ]
+    },
+    {
+      "id": "estoque_saldo",
+      "label": "Saldo de estoque",
+      "synonyms": [
+        "estoque",
+        "saldo de estoque",
+        "estoque em kg"
+      ],
+      "kind": "snapshot",
+      "table": "dbo.Fat_Estoques",
+      "column": "Ps_LiquidoEstoque",
+      "unit": "weight",
+      "provenance": "inferred",
+      "pitfalls": [
+        "Saldo NAO se soma entre datas: a mesma caixa parada uma semana apareceria sete vezes. Para 'estoque do mes' use a ultima Dt_Transacao do mes.",
+        "Fl_EstoqueComercial separa o que esta disponivel para venda do total. 'Estoque' sem qualificar quase sempre quer dizer o comercial."
+      ]
+    },
+    {
+      "id": "velocidade_pendura",
+      "label": "Velocidade de pendura",
+      "synonyms": [
+        "velocidade",
+        "velocidade de pendura",
+        "aves por hora"
+      ],
+      "kind": "level",
+      "table": "dbo.Fat_Pendura",
+      "column": "Qn_VelocidadePendura",
+      "unit": "count",
+      "provenance": "inferred",
+      "pitfalls": [
+        "E velocidade instantanea (aves/hora), nao volume: SUM devolve um numero sem significado fisico.",
+        "Zeros de linha parada puxam a media para baixo. Decidir explicitamente se entram, e dizer qual escolha foi feita."
+      ]
+    },
+    {
+      "id": "temperatura_produto",
+      "label": "Temperatura do produto",
+      "synonyms": [
+        "temperatura",
+        "temperatura do produto"
+      ],
+      "kind": "level",
+      "table": "dbo.Fat_Absorcao",
+      "column": "Tp_ProdutoFinalAbsorcao",
+      "unit": "count",
+      "provenance": "inferred",
+      "pitfalls": [
+        "Temperatura e nivel medido: AVG, nunca SUM.",
+        "A unidade e grau Celsius, nao contagem — o catalogo nao tem unidade de temperatura, entao 'count' aqui e so um marcador. Nao apresente o numero com sufixo de contagem.",
+        "Para controle de processo a media esconde o que importa: o pico. Prefira MAX quando a pergunta e sobre conformidade."
+      ]
+    }
+  ]
+}

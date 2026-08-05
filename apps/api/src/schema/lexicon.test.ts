@@ -1,7 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { classifyColumn, OVERLAPPING_BUCKETS, type ColumnClass } from "./lexicon.js";
+import { classifyColumn as classifyWith, type ColumnClass } from "./lexicon.js";
 import { ALL_COLUMNS, REAL_SCHEMA } from "./realSchema.fixture.js";
+import { loadBundledSeed } from "./seedFile.js";
+import { resolveVocabulary } from "./vocabulary.js";
 
 /**
  * O banco tem 791 colunas em 14 views, com nomes abreviados em portugues e
@@ -10,7 +12,17 @@ import { ALL_COLUMNS, REAL_SCHEMA } from "./realSchema.fixture.js";
  *
  * Cada bloco abaixo cobre uma armadilha que ja produziu numero errado. Nao sao
  * testes de "a funcao roda" — sao testes de "este engano especifico nao volta".
+ *
+ * O motor nao conhece "eclosao" nem "racao": esses termos sao DADO e vem do
+ * seed do dominio, carregado aqui porque e contra ESTE banco que cada
+ * armadilha abaixo ja custou uma resposta errada. Que o motor sozinho
+ * continua generico e assunto de `vocabulary.test.ts`.
  */
+const VOCABULARY = resolveVocabulary(loadBundledSeed("avicultura").vocabulary);
+const OVERLAPPING_BUCKETS = VOCABULARY.overlappingBuckets;
+
+const classifyColumn = (name: string, type: string): ColumnClass =>
+  classifyWith(name, type, VOCABULARY);
 
 const c = (name: string, type = "int"): ColumnClass => classifyColumn(name, type);
 
@@ -108,6 +120,22 @@ describe("unit — taxa nao se soma, contagem nao se tira media", () => {
   it("saldo e tot sozinhos ainda sao contagem", () => {
     assert.equal(c("saldo", "int").unit, "count");
     assert.equal(c("tot_ovos_dia", "int").unit, "count");
+  });
+
+  it("`total_` tambem e prefixo de contagem, nao so `tot_`", () => {
+    // `prefixOrExact` casa nome exato ou `<termo>_`, entao `tot` nunca alcancava
+    // `total_caixas_produzidas`: a coluna caia no fallback por tipo e a tela
+    // mostrava "159.994,000000" caixas.
+    assert.equal(c("total_caixas_produzidas", "decimal").unit, "count");
+    assert.equal(c("total", "int").unit, "count");
+  });
+
+  it("mas radical de dinheiro nao vira contagem por causa do prefixo", () => {
+    // O prefixo de contagem e testado ANTES do radical de moeda, e sem a guarda
+    // somar faturamento sairia classificado como contagem de unidades.
+    assert.equal(c("total_valor_faturado", "decimal").unit, "currency");
+    assert.equal(c("saldo_custo_medio", "decimal").unit, "currency");
+    assert.equal(c("qtd_preco_praticado", "decimal").unit, "currency");
   });
 
   // A perda de peso na incubacao e medida comparando pesagens. As pesagens
