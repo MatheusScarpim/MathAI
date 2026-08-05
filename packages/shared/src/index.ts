@@ -69,14 +69,51 @@ export type AskRequest = {
   webhookUrl?: string;
 };
 
+/* ── Formatacao de coluna ────────────────────────────────── */
+
+/**
+ * Mascaras de exibicao. Lista fechada de proposito: e o contrato entre o que o
+ * backend deriva e o que o frontend sabe renderizar. Um `kind` novo aqui exige
+ * um `case` novo no formatador — e o compilador cobra.
+ */
+export const COLUMN_FORMAT_KINDS = [
+  "currency",
+  "percent",
+  "fraction",
+  "integer",
+  "decimal",
+  "gram",
+  "date",
+  "datetime",
+  "text"
+] as const;
+
+export type ColumnFormatKind = (typeof COLUMN_FORMAT_KINDS)[number];
+
+/**
+ * `percent` e `fraction` renderizam igual (`87,5%`) e diferem so na escala do
+ * dado gravado: `percent` ja vem 87.5, `fraction` vem 0.875 e multiplica por
+ * 100. Nenhuma heuristica sobre o NOME da coluna distingue os dois — por isso
+ * `fraction` so chega por curadoria de seed.
+ */
+export type ColumnFormat = {
+  kind: ColumnFormatKind;
+  /** Casas decimais. Ausente = default do `kind`. */
+  decimals?: number;
+  /** Unidade posposta ao numero, ex "g". */
+  suffix?: string;
+};
+
 export type AskSuccessResponse = {
-  sql: string;
+  sql?: string;
   rows: Record<string, unknown>[];
   columns: string[];
+  /** Mascara por nome de coluna do resultado. Ausente em respostas antigas. */
+  columnFormats?: Record<string, ColumnFormat>;
   elapsedMs: number;
   chatId?: string;
   historyId?: string;
-  summary?: string;
+  summary: string;
   translatedQuestion?: string;
   cacheHit?: boolean;
   responseLanguage?: "pt" | "en" | "es";
@@ -108,6 +145,11 @@ export type HistoryItem = {
   sql: string;
   httpRequest?: string;
   mode?: AppMode;
+  // A rota sempre devolveu estes tres; o tipo e que estava atrasado. Sem eles
+  // a History nao consegue remontar a tabela do resultado.
+  rows?: Record<string, unknown>[];
+  columns?: string[];
+  columnFormats?: Record<string, ColumnFormat>;
   summary?: string;
   createdAt: string;
   favorite: boolean;
@@ -169,6 +211,15 @@ export type InstructionResponse = {
 export type ColumnInfo = {
   name: string;
   type: string;
+};
+
+/**
+ * Coluna de um RESULTADO, nao do catalogo. `scale` vem do driver quando ele
+ * informa (Oracle informa; os outros nao) e e mais confiavel que curadoria a
+ * mao: `scale: 0` prova que a coluna e inteira.
+ */
+export type ResultColumnMeta = ColumnInfo & {
+  scale?: number | null;
 };
 
 export type ForeignKeyInfo = {

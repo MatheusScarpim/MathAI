@@ -1,6 +1,6 @@
 import { MongoClient, type Collection, type ObjectId } from "mongodb";
 import { config } from "./config.js";
-import type { AskErrorResponse, AskSuccessResponse, AppMode } from "@auraia/shared";
+import type { AskErrorResponse, AskSuccessResponse, AppMode, ColumnFormat } from "@auraia/shared";
 
 export type InstructionRecord = {
   _id?: ObjectId;
@@ -20,6 +20,13 @@ export type HistoryRecord = {
   mode?: AppMode;
   rows?: Record<string, unknown>[];
   columns?: string[];
+  /**
+   * Mascara de exibicao gravada junto com as linhas. Sem ela a History teria
+   * de rederivar a partir so dos nomes, sem o vocabulario do ambiente que
+   * valia na hora da pergunta. Opcional porque registros anteriores a este
+   * campo continuam validos.
+   */
+  columnFormats?: Record<string, ColumnFormat>;
   chart?: {
     type: "bar" | "line";
     data: Array<{ category: string | number; value: number | null }>;

@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { isNonEmptyString } from "@auraia/shared";
 import { ObjectId } from "mongodb";
 import { getHistoryCollection, type HistoryRecord } from "../core/mongo.js";
+import { resolveColumnFormatsFromNames } from "../schema/columnFormat.js";
 
 const mapHistoryDoc = (doc: HistoryRecord) => ({
   id: doc._id?.toString() ?? "",
@@ -12,6 +13,11 @@ const mapHistoryDoc = (doc: HistoryRecord) => ({
   mode: doc.mode,
   rows: doc.rows ?? [],
   columns: doc.columns ?? [],
+  // Registros gravados antes do campo existir nao tem mascara. Rederivar so
+  // pelos nomes e pior que o caminho normal — nao ha o vocabulario do
+  // ambiente aqui — mas evita que a History antiga volte a ser numero cru.
+  columnFormats:
+    doc.columnFormats ?? resolveColumnFormatsFromNames(doc.columns ?? [], { samples: doc.rows ?? [] }),
   chart: doc.chart,
   summary: doc.summary,
   createdAt: doc.createdAt.toISOString(),

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { isNonEmptyString, sanitizeErrorMessage } from "@auraia/shared";
+import { COLUMN_FORMAT_KINDS, isNonEmptyString, sanitizeErrorMessage } from "@auraia/shared";
+import { normalizeAskSuccessResponse } from "./askResponse.js";
 import { ObjectId } from "mongodb";
 import { answerQuestion } from "../pipeline/ask.js";
 import { getAdapter } from "../core/db.js";
@@ -41,6 +42,21 @@ const askSuccessResponseSchema = {
     sql: { type: "string" },
     rows: { type: "array", items: { type: "object", additionalProperties: true } },
     columns: { type: "array", items: { type: "string" } },
+    // Mapa chaveado pelo nome da coluna, entao as chaves nao dao para declarar
+    // uma a uma. `additionalProperties` com o shape da mascara e o que descreve
+    // isso em JSON Schema — sem ele o serializador do Fastify poda o objeto.
+    columnFormats: {
+      type: "object",
+      additionalProperties: {
+        type: "object",
+        properties: {
+          kind: { type: "string", enum: [...COLUMN_FORMAT_KINDS] },
+          decimals: { type: "number" },
+          suffix: { type: "string" }
+        },
+        required: ["kind"]
+      }
+    },
     elapsedMs: { type: "number" },
     chatId: { type: "string" },
     historyId: { type: "string" },
@@ -100,10 +116,10 @@ const askSuccessResponseSchema = {
           required: ["inputTokens", "outputTokens", "totalTokens"]
         }
       },
-      required: ["sql", "total"]
+      required: ["total"]
     }
   },
-  required: ["sql", "rows", "columns", "elapsedMs"]
+  required: ["rows", "columns", "elapsedMs", "summary"]
 } as const;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -145,11 +161,12 @@ const processAskJob = async (
       await sendWebhookNotification(processingId, { status: "failed", error: result.error });
       return;
     }
+    const data = normalizeAskSuccessResponse(result.data);
     await collection.updateOne(
       { _id: new ObjectId(processingId) },
-      { $set: { status: "completed", result: result.data, updatedAt: new Date() } }
+      { $set: { status: "completed", result: data, updatedAt: new Date() } }
     );
-    await sendWebhookNotification(processingId, { status: "completed", result: result.data });
+    await sendWebhookNotification(processingId, { status: "completed", result: data });
   } catch (error) {
     const failure = {
       errorMessage: sanitizeErrorMessage(
@@ -274,7 +291,7 @@ export default async function askRoutes(app: FastifyInstance) {
         return;
       }
 
-      reply.send(result.data);
+      reply.send(normalizeAskSuccessResponse(result.data));
     }
   );
 
@@ -349,7 +366,7 @@ export default async function askRoutes(app: FastifyInstance) {
         );
 
         if (result.ok) {
-          emit("done", result.data);
+          emit("done", normalizeAskSuccessResponse(result.data));
         } else {
           emit("error", result.error);
         }
@@ -477,7 +494,11 @@ export default async function askRoutes(app: FastifyInstance) {
         return;
       }
 
-      reply.send({ processingId, status: "completed", data: job.result });
+      reply.send({
+        processingId,
+        status: "completed",
+        data: normalizeAskSuccessResponse(job.result)
+      });
     }
   );
 
@@ -528,7 +549,7 @@ export default async function askRoutes(app: FastifyInstance) {
                 required: ["type", "data"]
               }
             },
-            required: ["sql", "rows", "columns", "elapsedMs"]
+            required: ["rows", "columns", "elapsedMs"]
           },
           400: errorResponseSchema
         }
