@@ -1,4 +1,10 @@
-import type { AskErrorResponse, AskSuccessResponse } from "@auraia/shared";
+import type {
+  AskErrorResponse,
+  AskSuccessResponse,
+  ColumnFormat,
+  ColumnFormatKind,
+  ResultColumnMeta
+} from "@auraia/shared";
 import { sanitizeErrorMessage } from "@auraia/shared";
 import { getAdapter } from "../core/db.js";
 import {
@@ -42,6 +48,11 @@ import { profileTables, type TableProfileMap } from "../agents/profiler.js";
 import { checkSemanticGuards, factsFromDictionary } from "../agents/sqlGuards.js";
 import { getDictionary, getVocabulary } from "../schema/dictionary.js";
 import type { DictionaryIndex } from "../schema/dictionaryOps.js";
+import { getSeed } from "../schema/seedStore.js";
+import { resolveColumnFormats } from "../schema/columnFormat.js";
+import { resolveColumnFormatsForEnvironment } from "../schema/columnFormatEnv.js";
+import type { DomainVocabulary } from "../schema/vocabulary.js";
+import type { MetricDefinition } from "../schema/metrics.js";
 import type { TableFacts } from "../schema/tableFacts.js";
 import { decomposeQuestion, combineSubQueries, type DecompositionPlan } from "../agents/planner.js";
 import { summarizeResult } from "../agents/summary.js";
@@ -58,6 +69,17 @@ type FewShotExample = {
   tags: string[];
   similarity: number;
 };
+
+/**
+ * O que vai para o Redis: a resposta mais o metadata das colunas.
+ *
+ * `columnsMeta` nao faz parte de `AskSuccessResponse` de proposito — o cliente
+ * nao tem uso para o tipo declarado pelo driver. Ele viaja aqui porque a
+ * mascara e recalculada na leitura do cache, e sem o `scale` a derivacao
+ * rebaixa as casas decimais em relacao a resposta fresca. Fica de fora do
+ * payload devolvido, na desestruturacao do hit.
+ */
+type CachedAsk = AskSuccessResponse & { columnsMeta?: ResultColumnMeta[] };
 
 const SEMANTIC_SIMILARITY_THRESHOLD = 0.92;
 const FEW_SHOT_SIMILARITY_THRESHOLD = 0.86;
@@ -421,7 +443,7 @@ export const answerQuestion = async (
 
   // Step 3: Check direct cache
   const cacheKey = getCacheKey(normalizedQuestion, resolvedChatId, language, resolvedSchemaLanguage, resolvedResponseLanguage, resolvedEnvironmentId);
-  const cached = await getCachedValue<AskSuccessResponse>(cacheKey);
+  const cached = await getCachedValue<CachedAsk>(cacheKey);
 
   // Step 4: Generate embedding (SchemaAgent) — skip history if new topic detected
   emit?.("step", { step: "embedding", label: "Gerando embedding..." });
@@ -451,14 +473,26 @@ export const answerQuestion = async (
 
   if (cached) {
     emit?.("step", { step: "cache_hit", label: "Resultado encontrado no cache!" });
+    const { columnsMeta: cachedMeta, ...cachedResponse } = cached;
+    const cachedRows = cached.rows ?? [];
+    const cachedColumns = cached.columns ?? [];
+    // A entrada de cache pode ter sido gravada por uma versao anterior da
+    // derivacao de mascara (TTL de 900s, chave sem versao). Recalcular aqui e
+    // barato porque getSeed/getVocabulary sao memoizados em processo.
+    //
+    // `cachedMeta` viaja no payload so para isto: sem ele a derivacao perde o
+    // `scale` do driver e a mesma coluna sai com menos casas no hit do que na
+    // resposta fresca. Ausente em entrada gravada antes deste campo existir.
+    const cachedFormats = await resolveColumnFormatsForEnvironment(resolvedEnvironmentId, cachedColumns, cachedRows, cachedMeta);
     const historyCollection = await getHistoryCollection();
     const historyResult = await historyCollection.insertOne({
       environmentId: resolvedEnvironmentId,
       question: normalizedQuestion,
       embeddingQuestion,
       sql: cached.sql ?? "",
-      rows: truncateRows(cached.rows ?? []),
-      columns: cached.columns ?? [],
+      rows: truncateRows(cachedRows),
+      columns: cachedColumns,
+      columnFormats: cachedFormats,
       chart: cached.chart,
       summary: cached.summary,
       createdAt: new Date(),
@@ -469,14 +503,17 @@ export const answerQuestion = async (
       responseLanguage: resolvedResponseLanguage,
       success: true,
       elapsedMs: cached.elapsedMs ?? 0,
-      rowCount: cached.rows?.length ?? 0,
+      rowCount: cachedRows.length,
       embedding: vector
     });
     return {
       ok: true,
       data: {
-        ...cached,
-        summary: ensureSummary(cached.summary, cached.rows?.length ?? 0, resolvedResponseLanguage),
+        // `cachedResponse` e o payload sem `columnsMeta`: o meta e detalhe do
+        // cache, nao contrato da resposta.
+        ...cachedResponse,
+        columnFormats: cachedFormats,
+        summary: ensureSummary(cached.summary, cachedRows.length, resolvedResponseLanguage),
         cacheHit: true,
         historyId: historyResult.insertedId.toString(),
         responseLanguage: resolvedResponseLanguage,
@@ -583,17 +620,50 @@ export const answerQuestion = async (
     facts: TableFacts[];
     dictionary: DictionaryIndex;
     overlappingBuckets: Readonly<Record<string, readonly string[]>>;
+    notes: readonly string[];
   } | null = null;
+  // O catalogo de metricas e independente das guardas: um ambiente pode ter
+  // seed com formulas antes de ter dicionario ingerido. Por isso vive fora do
+  // `if (facts.length > 0)` acima.
+  let seedMetrics: readonly MetricDefinition[] = [];
+  // Hoistados pelo mesmo motivo que `seedMetrics`: a mascara de exibicao e
+  // calculada na hora de montar a resposta, fora deste try. Sem seed valem as
+  // convencoes PT-BR embutidas.
+  let formatVocabulary: DomainVocabulary | undefined;
+  let seedColumnFormats: Readonly<Record<string, ColumnFormatKind>> = {};
   try {
-    const [dictionary, vocabulary] = await Promise.all([
+    const [dictionary, vocabulary, seed] = await Promise.all([
       getDictionary(resolvedEnvironmentId),
-      getVocabulary(resolvedEnvironmentId)
+      getVocabulary(resolvedEnvironmentId),
+      getSeed(resolvedEnvironmentId)
     ]);
     const facts = factsFromDictionary(dictionary);
-    if (facts.length > 0) {
-      semanticGuards = { facts, dictionary, overlappingBuckets: vocabulary.overlappingBuckets };
+    // As notes nao dependem do ingest: sao prosa do seed. Um ambiente recem
+    // semeado, ainda sem dicionario, precisa levar a legenda do banco para o
+    // prompt — com `facts` vazio nenhuma guarda dispara, e so as notes saem.
+    if (facts.length > 0 || vocabulary.notes.length > 0) {
+      semanticGuards = {
+        facts,
+        dictionary,
+        overlappingBuckets: vocabulary.overlappingBuckets,
+        notes: vocabulary.notes
+      };
     }
+    seedMetrics = seed.metrics;
+    formatVocabulary = vocabulary;
+    seedColumnFormats = seed.columnFormats;
   } catch { /* sem dicionario as guardas ficam caladas, nao quebram a pergunta */ }
+
+  /** Mascara de cada coluna do resultado. Ver `schema/columnFormat.ts`. */
+  const formatsFor = (
+    result: { columns: string[]; columnsMeta?: ResultColumnMeta[] },
+    rows: readonly Record<string, unknown>[]
+  ): Record<string, ColumnFormat> =>
+    resolveColumnFormats(result.columnsMeta ?? result.columns.map((name) => ({ name, type: "" })), {
+      vocabulary: formatVocabulary,
+      overrides: seedColumnFormats,
+      samples: rows
+    });
 
   const guardSql = (candidate: string): ClassifiedError | null =>
     semanticGuards
@@ -620,6 +690,7 @@ export const answerQuestion = async (
         const elapsedMs = Date.now() - start;
         const rowCount = result.recordset?.length ?? 0;
         const columns = result.columns;
+        const columnFormats = formatsFor(result, result.recordset ?? []);
 
         // Run chart + summary in parallel to reduce end-to-end latency.
         const chartEnabled = agentsCfg.chart.enabled !== false;
@@ -666,6 +737,7 @@ export const answerQuestion = async (
           sql: semanticMatch.sql,
           rows: truncateRows(result.recordset ?? []),
           columns,
+          columnFormats,
           chart,
           summary,
           createdAt: new Date(), favorite: false, tags: [], chatId: resolvedChatId,
@@ -678,7 +750,7 @@ export const answerQuestion = async (
         });
 
         const responseData: AskSuccessResponse = {
-          sql: semanticMatch.sql, rows: result.recordset ?? [], columns, elapsedMs,
+          sql: semanticMatch.sql, rows: result.recordset ?? [], columns, columnFormats, elapsedMs,
           chatId: resolvedChatId, historyId: historyResult.insertedId.toString(),
           summary, cacheHit: true, chart, responseLanguage: resolvedResponseLanguage,
           translatedQuestion: schemaQuestion,
@@ -687,7 +759,7 @@ export const answerQuestion = async (
             total: { inputTokens: summaryUsage.prompt_tokens ?? 0, outputTokens: summaryUsage.completion_tokens ?? 0, totalTokens: summaryUsage.total_tokens ?? 0 }
           }
         };
-        await setCachedValue(cacheKey, responseData);
+        await setCachedValue(cacheKey, { ...responseData, columnsMeta: result.columnsMeta });
         await setSemanticEntry(resolvedChatId, resolvedResponseLanguage, resolvedSchemaLanguage, { embedding: vector, sql: semanticMatch.sql, question: normalizedQuestion, createdAt: new Date().toISOString() }, resolvedEnvironmentId);
         return { ok: true, data: responseData };
       } catch { /* Fall back to LLM generation */ }
@@ -803,7 +875,7 @@ export const answerQuestion = async (
     let decompositionFailed = false;
 
     for (const subQ of decompositionPlan.subQuestions) {
-      const subPrompt = buildPrompt(subQ.question, context, null, fewShotExamples, null, null, resolvedSchemaLanguage, currentPeriodText, tableProfiles, null, semanticGuards);
+      const subPrompt = buildPrompt(subQ.question, context, null, fewShotExamples, null, null, resolvedSchemaLanguage, currentPeriodText, tableProfiles, null, semanticGuards, seedMetrics);
       const subPromptWithPeriod = periodHint
         ? `${subPrompt}\n\n${resolvedSchemaLanguage === "en" ? `Fixed period from chat history: ${periodHint}` : resolvedSchemaLanguage === "es" ? `Periodo fijo del historial del chat: ${periodHint}` : `Periodo fixo do historico do chat: ${periodHint}`}`
         : subPrompt;
@@ -849,7 +921,8 @@ export const answerQuestion = async (
           const elapsedMs = Date.now() - start;
           const rowCount = queryResult.recordset?.length ?? 0;
           const columns = queryResult.columns;
-          emit?.("rows", { rows: queryResult.recordset ?? [], columns, elapsedMs });
+          const columnFormats = formatsFor(queryResult, queryResult.recordset ?? []);
+          emit?.("rows", { rows: queryResult.recordset ?? [], columns, columnFormats, elapsedMs });
 
           emit?.("step", { step: "summarizing", label: "Gerando resumo..." });
           const chartEnabled2 = agentsCfg.chart.enabled !== false;
@@ -893,7 +966,7 @@ export const answerQuestion = async (
           const historyResult = await historyCollection.insertOne({
             environmentId: resolvedEnvironmentId,
             question: normalizedQuestion, embeddingQuestion, sql,
-            rows: truncateRows(queryResult.recordset ?? []), columns, chart, summary,
+            rows: truncateRows(queryResult.recordset ?? []), columns, columnFormats, chart, summary,
             createdAt: new Date(), favorite: false, tags: [], chatId: resolvedChatId,
             language: resolvedSchemaLanguage, responseLanguage: resolvedResponseLanguage,
             success: true, elapsedMs, rowCount, embedding: vector,
@@ -907,7 +980,7 @@ export const answerQuestion = async (
           });
 
           const responseData: AskSuccessResponse = {
-            sql, rows: queryResult.recordset ?? [], columns, elapsedMs,
+            sql, rows: queryResult.recordset ?? [], columns, columnFormats, elapsedMs,
             chatId: resolvedChatId, historyId: historyResult.insertedId.toString(),
             summary, cacheHit: false, chart, responseLanguage: resolvedResponseLanguage,
             translatedQuestion: schemaQuestion,
@@ -919,7 +992,7 @@ export const answerQuestion = async (
               total: { inputTokens: (plannerUsage.prompt_tokens ?? 0) + (sqlMiniUsage.prompt_tokens ?? 0) + (sqlLargeUsage.prompt_tokens ?? 0) + (summaryUsage.prompt_tokens ?? 0), outputTokens: (plannerUsage.completion_tokens ?? 0) + (sqlMiniUsage.completion_tokens ?? 0) + (sqlLargeUsage.completion_tokens ?? 0) + (summaryUsage.completion_tokens ?? 0), totalTokens: (plannerUsage.total_tokens ?? 0) + (sqlMiniUsage.total_tokens ?? 0) + (sqlLargeUsage.total_tokens ?? 0) + (summaryUsage.total_tokens ?? 0) }
             }
           };
-          await setCachedValue(cacheKey, responseData);
+          await setCachedValue(cacheKey, { ...responseData, columnsMeta: queryResult.columnsMeta });
           await setSemanticEntry(resolvedChatId, resolvedResponseLanguage, resolvedSchemaLanguage, { embedding: vector, sql, question: normalizedQuestion, createdAt: new Date().toISOString() }, resolvedEnvironmentId);
 
           if (shouldLogPrompts()) {
@@ -944,7 +1017,7 @@ export const answerQuestion = async (
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const isRetry = attempt > 0 && lastClassifiedError && lastReflection && lastSql;
 
-    const prompt = buildPrompt(schemaQuestion, context, historySnippet, fewShotExamples, lastError, lastSql, resolvedSchemaLanguage, currentPeriodText, tableProfiles, rawPeriod.range ?? null, semanticGuards);
+    const prompt = buildPrompt(schemaQuestion, context, historySnippet, fewShotExamples, lastError, lastSql, resolvedSchemaLanguage, currentPeriodText, tableProfiles, rawPeriod.range ?? null, semanticGuards, seedMetrics);
     const promptWithPeriod = periodHint
       ? `${prompt}\n\n${resolvedSchemaLanguage === "en" ? `Fixed period from chat history: ${periodHint}` : resolvedSchemaLanguage === "es" ? `Periodo fijo del historial del chat: ${periodHint}` : `Periodo fixo do historico do chat: ${periodHint}`}`
       : prompt;
@@ -1067,7 +1140,8 @@ export const answerQuestion = async (
       const elapsedMs = Date.now() - start;
       const rowCount = queryResult.recordset?.length ?? 0;
       const columns = queryResult.columns;
-      emit?.("rows", { rows: queryResult.recordset ?? [], columns, elapsedMs });
+      const columnFormats = formatsFor(queryResult, queryResult.recordset ?? []);
+      emit?.("rows", { rows: queryResult.recordset ?? [], columns, columnFormats, elapsedMs });
 
       emit?.("step", { step: "summarizing", label: "Gerando resumo..." });
       const chartEnabled2 = agentsCfg.chart.enabled !== false;
@@ -1115,6 +1189,7 @@ export const answerQuestion = async (
         sql,
         rows: truncateRows(queryResult.recordset ?? []),
         columns,
+        columnFormats,
         chart,
         summary,
         createdAt: new Date(), favorite: false, tags: [], chatId: resolvedChatId,
@@ -1130,7 +1205,7 @@ export const answerQuestion = async (
       });
 
       const responseData: AskSuccessResponse = {
-        sql, rows: queryResult.recordset ?? [], columns, elapsedMs,
+        sql, rows: queryResult.recordset ?? [], columns, columnFormats, elapsedMs,
         chatId: resolvedChatId, historyId: historyResult.insertedId.toString(),
         summary, cacheHit: false, chart, responseLanguage: resolvedResponseLanguage,
         translatedQuestion: schemaQuestion,
@@ -1142,7 +1217,7 @@ export const answerQuestion = async (
           total: { inputTokens: (plannerUsage.prompt_tokens ?? 0) + sqlMiniUsage.prompt_tokens + sqlLargeUsage.prompt_tokens + summaryUsage.prompt_tokens, outputTokens: (plannerUsage.completion_tokens ?? 0) + sqlMiniUsage.completion_tokens + sqlLargeUsage.completion_tokens + summaryUsage.completion_tokens, totalTokens: (plannerUsage.total_tokens ?? 0) + sqlMiniUsage.total_tokens + sqlLargeUsage.total_tokens + summaryUsage.total_tokens }
         }
       };
-      await setCachedValue(cacheKey, responseData);
+      await setCachedValue(cacheKey, { ...responseData, columnsMeta: queryResult.columnsMeta });
       await setSemanticEntry(resolvedChatId, resolvedResponseLanguage, resolvedSchemaLanguage, { embedding: vector, sql, question: normalizedQuestion, createdAt: new Date().toISOString() }, resolvedEnvironmentId);
 
       // Log total tokens

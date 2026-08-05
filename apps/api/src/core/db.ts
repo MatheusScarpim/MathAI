@@ -3,6 +3,7 @@ import sql from "mssql";
 import OracleDB from "oracledb";
 import mysql from "mysql2/promise";
 import pg from "pg";
+import type { ResultColumnMeta } from "@auraia/shared";
 import { getEnvironment, type DbType } from "./appConfig.js";
 
 let oracleClientInitialized = false;
@@ -35,6 +36,12 @@ const ensureOracleDriverMode = (): void => {
 export type QueryResult<T = Record<string, unknown>> = {
   recordset: T[];
   columns: string[];
+  /**
+   * Tipo declarado de cada coluna, quando o driver informa. Opcional porque a
+   * maioria dos consumidores le so `recordset` — quem precisa de mascara de
+   * exibicao usa isto, e degrada para classificacao por nome quando falta.
+   */
+  columnsMeta?: ResultColumnMeta[];
 };
 
 export interface DbAdapter {
@@ -44,7 +51,39 @@ export interface DbAdapter {
   getDbType(): DbType;
 }
 
+/**
+ * Colunas de um resultado quando o driver nao entrega metadata: sobra o nome
+ * das chaves da primeira linha, e nenhum tipo. A mascara de exibicao ainda
+ * funciona por nome, so perde o refino de casas decimais.
+ */
+const metaFromNames = (columns: readonly string[]): ResultColumnMeta[] =>
+  columns.map((name) => ({ name, type: "" }));
+
 // ================== SQL Server Adapter ==================
+
+/**
+ * `recordset.columns` do mssql traz o tipo como a CLASSE do driver
+ * (`sql.Decimal`), nao como string — `declaration` e o nome SQL dela.
+ */
+const mssqlColumns = (
+  recordset: { columns?: Record<string, unknown> } | undefined,
+  firstRow: Record<string, unknown> | undefined
+): { columns: string[]; columnsMeta: ResultColumnMeta[] } => {
+  const declared = recordset?.columns;
+  if (declared) {
+    const columnsMeta = Object.entries(declared).map(([name, raw]) => {
+      const col = raw as { type?: { declaration?: string }; scale?: number };
+      return {
+        name,
+        type: col?.type?.declaration ?? "",
+        ...(typeof col?.scale === "number" ? { scale: col.scale } : {})
+      };
+    });
+    return { columns: columnsMeta.map((c) => c.name), columnsMeta };
+  }
+  const columns = firstRow ? Object.keys(firstRow) : [];
+  return { columns, columnsMeta: metaFromNames(columns) };
+};
 
 class SqlServerAdapter implements DbAdapter {
   private pool: sql.ConnectionPool | null = null;
@@ -72,7 +111,13 @@ class SqlServerAdapter implements DbAdapter {
       database: this.database,
       options: {
         encrypt: true,
-        trustServerCertificate: true
+        trustServerCertificate: true,
+        // `DATE`/`DATETIME` do SQL Server nao carregam fuso: sao data de
+        // calendario. O default do driver (`useUTC: true`) le esses valores como
+        // se fossem UTC, entao 2026-03-04 volta como meia-noite UTC e qualquer
+        // formatacao local em fuso negativo imprime 03/03. Lendo no fuso do
+        // processo o dia atravessa intacto.
+        useUTC: false
       },
       pool: {
         max: 5,
@@ -89,24 +134,22 @@ class SqlServerAdapter implements DbAdapter {
     if (!this.pool) await this.connect();
     try {
       const result = await this.pool!.request().query<T>(sqlText);
-      const columns = result.recordset?.columns
-        ? Object.keys(result.recordset.columns)
-        : result.recordset?.[0]
-          ? Object.keys(result.recordset[0] as Record<string, unknown>)
-          : [];
-      return { recordset: result.recordset ?? [], columns };
+      const { columns, columnsMeta } = mssqlColumns(
+        result.recordset,
+        result.recordset?.[0] as Record<string, unknown> | undefined
+      );
+      return { recordset: result.recordset ?? [], columns, columnsMeta };
     } catch (error: unknown) {
       const code = (error as { code?: string }).code;
       if (code === "ECONNCLOSED" || code === "ENOTOPEN") {
         this.pool = null;
         await this.connect();
         const result = await this.pool!.request().query<T>(sqlText);
-        const columns = result.recordset?.columns
-          ? Object.keys(result.recordset.columns)
-          : result.recordset?.[0]
-            ? Object.keys(result.recordset[0] as Record<string, unknown>)
-            : [];
-        return { recordset: result.recordset ?? [], columns };
+        const { columns, columnsMeta } = mssqlColumns(
+          result.recordset,
+          result.recordset?.[0] as Record<string, unknown> | undefined
+        );
+        return { recordset: result.recordset ?? [], columns, columnsMeta };
       }
       throw error;
     }
@@ -172,13 +215,17 @@ class OracleAdapter implements DbAdapter {
       });
 
       const rows = (result.rows ?? []) as T[];
-      const columns = result.metaData
-        ? result.metaData.map((col: { name: string }) => col.name)
-        : rows.length > 0
-          ? Object.keys(rows[0] as Record<string, unknown>)
-          : [];
+      // Unico driver da casa que informa `scale`. `scale: 0` prova coluna
+      // inteira e e mais confiavel que qualquer palpite pelo nome.
+      const columnsMeta: ResultColumnMeta[] = result.metaData
+        ? result.metaData.map((col) => ({
+            name: col.name,
+            type: col.dbTypeName ?? "",
+            ...(typeof col.scale === "number" ? { scale: col.scale } : {})
+          }))
+        : metaFromNames(rows.length > 0 ? Object.keys(rows[0] as Record<string, unknown>) : []);
 
-      return { recordset: rows, columns };
+      return { recordset: rows, columns: columnsMeta.map((c) => c.name), columnsMeta };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const isNneError =
@@ -248,12 +295,13 @@ class MySQLAdapter implements DbAdapter {
     await this.pool!.query("SET SESSION MAX_EXECUTION_TIME=20000");
     const [rows, fields] = await this.pool!.query(sqlText);
     const recordset = Array.isArray(rows) ? (rows as T[]) : [];
-    const columns = Array.isArray(fields)
-      ? fields.map((f) => f.name)
-      : recordset.length > 0
-        ? Object.keys(recordset[0] as Record<string, unknown>)
-        : [];
-    return { recordset, columns };
+    // `columnType` do mysql2 e um codigo numerico, nao nome de tipo — passar
+    // como string mentiria para o lexico. Fica so o nome; a classificacao por
+    // nome nao depende do tipo.
+    const columnsMeta: ResultColumnMeta[] = Array.isArray(fields)
+      ? fields.map((f) => ({ name: f.name, type: "" }))
+      : metaFromNames(recordset.length > 0 ? Object.keys(recordset[0] as Record<string, unknown>) : []);
+    return { recordset, columns: columnsMeta.map((c) => c.name), columnsMeta };
   }
 
   async close(): Promise<void> {
@@ -305,12 +353,12 @@ class PostgreSQLAdapter implements DbAdapter {
     if (!this.pool) await this.connect();
     const result = await this.pool!.query(sqlText);
     const recordset = (result.rows ?? []) as T[];
-    const columns = result.fields
-      ? result.fields.map((f) => f.name)
-      : recordset.length > 0
-        ? Object.keys(recordset[0] as Record<string, unknown>)
-        : [];
-    return { recordset, columns };
+    // `dataTypeID` do pg e um OID, que so vira nome de tipo consultando
+    // `pg_type`. Nao vale uma ida ao banco por consulta: o nome basta.
+    const columnsMeta: ResultColumnMeta[] = result.fields
+      ? result.fields.map((f) => ({ name: f.name, type: "" }))
+      : metaFromNames(recordset.length > 0 ? Object.keys(recordset[0] as Record<string, unknown>) : []);
+    return { recordset, columns: columnsMeta.map((c) => c.name), columnsMeta };
   }
 
   async close(): Promise<void> {

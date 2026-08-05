@@ -1,11 +1,14 @@
-import type { AskErrorResponse, AskSuccessResponse, ApiAuthConfig } from "@auraia/shared";
+import type { AskErrorResponse, AskSuccessResponse, ApiAuthConfig, ColumnFormat } from "@auraia/shared";
 import { sanitizeErrorMessage } from "@auraia/shared";
+import { resolveColumnFormatsFromNames } from "../schema/columnFormat.js";
+import { resolveColumnFormatsForEnvironment } from "../schema/columnFormatEnv.js";
+import { getSeed, getVocabulary } from "../schema/seedStore.js";
 import {
   getHistoryCollection,
   getInstructionsCollection,
   getSettingsCollection
 } from "../core/mongo.js";
-import { validateHttpRequest } from "./httpValidation.js";
+import { validateHttpRequest, resolveAllowedMethods } from "./httpValidation.js";
 import { executeHttpPlan } from "./httpExecutor.js";
 import { ensureEndpointCollection } from "../core/qdrant.js";
 import {
@@ -15,7 +18,7 @@ import {
   setCachedValue,
   setSemanticEntry
 } from "../core/cache.js";
-import { getAppConfig, type AppConfig } from "../core/appConfig.js";
+import { getAppConfig, getEnvironment, type AppConfig } from "../core/appConfig.js";
 
 import { searchRelevantEndpoints, expandEndpoints, searchEndpointsByText } from "../agents/endpoint.js";
 import { buildHttpPrompt, generateHttpRequest } from "../agents/http.js";
@@ -23,6 +26,7 @@ import { summarizeResult } from "../agents/summary.js";
 import { inferChart, inferChartWithLLM } from "../agents/chart.js";
 import { translateText } from "../agents/translation.js";
 import { getAgentsConfig } from "../core/agentConfig.js";
+import { parseYearRange } from "../helpers/period.js";
 import type { StepEmitter } from "./ask.js";
 
 /* ── Types ───────────────────────────────────────────────── */
@@ -51,6 +55,25 @@ const shouldLogPrompts = (): boolean => {
 
 const truncate = (value: string, max: number): string =>
   value.length > max ? `${value.slice(0, max)}...` : value;
+
+const fallbackSummary = (
+  rowCount: number,
+  language: "pt" | "en" | "es"
+): string => {
+  if (language === "en") {
+    return rowCount === 0 ? "No results were found for this question." : `The request returned ${rowCount} result${rowCount === 1 ? "" : "s"}.`;
+  }
+  if (language === "es") {
+    return rowCount === 0 ? "No se encontraron resultados para esta pregunta." : `La solicitud devolvio ${rowCount} resultado${rowCount === 1 ? "" : "s"}.`;
+  }
+  return rowCount === 0 ? "Nenhum resultado foi encontrado para esta pergunta." : `A requisicao retornou ${rowCount} resultado${rowCount === 1 ? "" : "s"}.`;
+};
+
+const ensureSummary = (
+  summary: string | undefined,
+  rowCount: number,
+  language: "pt" | "en" | "es"
+): string => summary?.trim() || fallbackSummary(rowCount, language);
 
 const cosineSimilarity = (a: number[], b: number[]): number => {
   const length = Math.min(a.length, b.length);
@@ -223,45 +246,97 @@ const loadFewShotExamples = async (
 
 /* ── Main API-mode answerer ──────────────────────────────── */
 
+export type AnswerQuestionApiOptions = {
+  normalizedQuestion: string;
+  embeddingQuestion: string;
+  concreteQuestion: string;
+  vector: number[];
+  resolvedChatId: string;
+  language: "pt" | "en" | "es";
+  resolvedSchemaLanguage: "pt" | "en" | "es";
+  resolvedResponseLanguage: "pt" | "en" | "es";
+  /** Environment whose API config, Qdrant collection and cache namespace apply. */
+  environmentId?: string;
+  emit?: StepEmitter;
+};
+
 export const answerQuestionApi = async (
-  normalizedQuestion: string,
-  embeddingQuestion: string,
-  concreteQuestion: string,
-  vector: number[],
-  resolvedChatId: string,
-  language: "pt" | "en" | "es",
-  resolvedSchemaLanguage: "pt" | "en" | "es",
-  resolvedResponseLanguage: "pt" | "en" | "es",
-  emit?: StepEmitter
+  options: AnswerQuestionApiOptions
 ): Promise<AskResult> => {
-  await ensureEndpointCollection();
-  const appConfig = await getAppConfig();
+  const {
+    normalizedQuestion,
+    embeddingQuestion,
+    concreteQuestion,
+    vector,
+    resolvedChatId,
+    language,
+    resolvedSchemaLanguage,
+    resolvedResponseLanguage,
+    environmentId,
+    emit
+  } = options;
+
+  await ensureEndpointCollection(environmentId);
+
+  // Resolving through getAppConfig() regardless of environmentId silently fell
+  // back to environments[0], so a request aimed at the second API environment
+  // was answered against the first one's host and credentials.
+  const appConfig = environmentId
+    ? await getEnvironment(environmentId)
+    : await getAppConfig();
+
+  if (environmentId && !appConfig) {
+    return {
+      ok: false,
+      error: { errorMessage: `Ambiente ${environmentId} nao encontrado.` }
+    };
+  }
+
   if (!appConfig || appConfig.mode !== "api") {
-    return { ok: false, error: { errorMessage: "Modo API nao configurado." } };
+    return {
+      ok: false,
+      error: {
+        errorMessage: environmentId
+          ? `Ambiente ${environmentId} nao esta configurado no modo API.`
+          : "Modo API nao configurado."
+      }
+    };
   }
 
   const baseUrl = appConfig.apiBaseUrl ?? "";
   const readOnly = appConfig.apiReadOnly ?? true;
+  const allowedMethods = resolveAllowedMethods(appConfig.apiIngestMethods, readOnly);
   const auth = buildAuthConfig(appConfig);
   const agentsCfg = await getAgentsConfig();
 
   const schemaQuestion = embeddingQuestion;
   const displayQuestion = normalizedQuestion;
-  const cacheKey = getCacheKey(normalizedQuestion, resolvedChatId, language, resolvedSchemaLanguage, resolvedResponseLanguage);
+  // API mode has no SQL for `extractYearsFromSql` to read, so the summary only
+  // learns the interval if it is passed explicitly. The rewritten question can
+  // lose the interval syntax, hence the raw text first.
+  const detectedRange = parseYearRange(normalizedQuestion) ?? parseYearRange(schemaQuestion);
+  const cacheKey = getCacheKey(normalizedQuestion, resolvedChatId, language, resolvedSchemaLanguage, resolvedResponseLanguage, environmentId);
 
   // Check direct cache (already done in ask.ts for DB mode, but the key differs by mode via prefix)
   const cached = await getCachedValue<AskSuccessResponse>(cacheKey);
   if (cached) {
     emit?.("step", { step: "cache_hit", label: "Resultado encontrado no cache!" });
+    const cachedRows = cached.rows ?? [];
+    const cachedColumns = cached.columns ?? [];
+    // Ver `schema/columnFormatEnv.ts`: entrada gravada por uma versao anterior
+    // da derivacao traria a mascara velha por todo o TTL.
+    const cachedFormats = await resolveColumnFormatsForEnvironment(environmentId, cachedColumns, cachedRows);
     const historyCollection = await getHistoryCollection();
     const historyResult = await historyCollection.insertOne({
+      environmentId,
       question: normalizedQuestion,
       embeddingQuestion,
       sql: "",
       httpRequest: cached.httpRequest,
       mode: "api",
-      rows: cached.rows ?? [],
-      columns: cached.columns ?? [],
+      rows: cachedRows,
+      columns: cachedColumns,
+      columnFormats: cachedFormats,
       chart: cached.chart,
       summary: cached.summary,
       createdAt: new Date(),
@@ -272,13 +347,15 @@ export const answerQuestionApi = async (
       responseLanguage: resolvedResponseLanguage,
       success: true,
       elapsedMs: cached.elapsedMs ?? 0,
-      rowCount: cached.rows?.length ?? 0,
+      rowCount: cachedRows.length,
       embedding: vector
     });
     return {
       ok: true,
       data: {
         ...cached,
+        columnFormats: cachedFormats,
+        summary: ensureSummary(cached.summary, cachedRows.length, resolvedResponseLanguage),
         cacheHit: true,
         mode: "api",
         historyId: historyResult.insertedId.toString(),
@@ -288,10 +365,37 @@ export const answerQuestionApi = async (
     };
   }
 
+  /**
+   * Mascara de exibicao das colunas. Ver `schema/columnFormat.ts`.
+   *
+   * Aqui nao existe driver para informar tipo — a resposta e JSON — entao o
+   * lexico classifica so pelo nome da chave e, quando nao reconhece nada, o
+   * valor da primeira linha decide. A curadoria do seed continua valendo:
+   * `columnFormats` e chaveado por nome, e nome de campo de API tambem e nome.
+   */
+  const [formatVocabulary, formatSeed] = await Promise.all([
+    getVocabulary(environmentId),
+    getSeed(environmentId)
+  ]);
+  const formatsFor = (
+    columns: readonly string[],
+    rows: readonly Record<string, unknown>[]
+  ): Record<string, ColumnFormat> =>
+    resolveColumnFormatsFromNames(columns, {
+      vocabulary: formatVocabulary,
+      overrides: formatSeed.columnFormats,
+      samples: rows
+    });
+
   // Step 5: Search relevant endpoints
   emit?.("step", { step: "searching_endpoints", label: "Buscando endpoints relevantes..." });
   const endpointReferenceCount = await getTableReferenceCount();
-  const initialEndpoints = await searchRelevantEndpoints(vector, embeddingQuestion, endpointReferenceCount);
+  const initialEndpoints = await searchRelevantEndpoints(
+    vector,
+    embeddingQuestion,
+    endpointReferenceCount,
+    environmentId
+  );
   if (initialEndpoints.length === 0) {
     return {
       ok: false,
@@ -303,7 +407,7 @@ export const answerQuestionApi = async (
   }
 
   // Step 6: Expand endpoint context
-  const context = await expandEndpoints(initialEndpoints);
+  const context = await expandEndpoints(initialEndpoints, environmentId);
   const historySnippet = await buildHistorySnippet(resolvedChatId, resolvedSchemaLanguage);
 
   // Step 7: Load instructions
@@ -329,7 +433,7 @@ export const answerQuestionApi = async (
     if (lastError && attempt > 0) {
       try {
         emit?.("step", { step: "searching_endpoints", label: "Buscando endpoints para corrigir erro..." });
-        const errorEndpoints = await searchEndpointsByText(lastError, 5);
+        const errorEndpoints = await searchEndpointsByText(lastError, 5, environmentId);
         if (errorEndpoints.length > 0) {
           const existingKeys = new Set(
             [...currentContext.endpoints, ...currentContext.relatedEndpoints]
@@ -364,7 +468,7 @@ export const answerQuestionApi = async (
       prompt,
       instructionText,
       resolvedSchemaLanguage,
-      readOnly,
+      allowedMethods,
       useMini,
       useMini
     );
@@ -378,7 +482,7 @@ export const answerQuestionApi = async (
 
     if (useMini && result.escalated) {
       forceLargeModel = true;
-      result = await generateHttpRequest(prompt, instructionText, resolvedSchemaLanguage, readOnly, false, false);
+      result = await generateHttpRequest(prompt, instructionText, resolvedSchemaLanguage, allowedMethods, false, false);
       if (result.usage) {
         httpUsage = {
           prompt_tokens: (httpUsage.prompt_tokens ?? 0) + (result.usage.prompt_tokens ?? 0),
@@ -392,7 +496,7 @@ export const answerQuestionApi = async (
     lastRequest = planJson;
 
     // Validate
-    const validation = validateHttpRequest(result.plan, baseUrl, readOnly);
+    const validation = validateHttpRequest(result.plan, baseUrl, readOnly, allowedMethods);
     if (!validation.ok) {
       lastError = validation.error.errorMessage;
       continue;
@@ -409,7 +513,8 @@ export const answerQuestionApi = async (
       const rowCount = execResult.recordset?.length ?? 0;
       const columns = execResult.columns;
       const rows = execResult.recordset ?? [];
-      emit?.("rows", { rows, columns, elapsedMs });
+      const columnFormats = formatsFor(columns, rows);
+      emit?.("rows", { rows, columns, columnFormats, elapsedMs });
 
       // Summarize + Chart
       emit?.("step", { step: "summarizing", label: "Gerando resumo..." });
@@ -421,7 +526,7 @@ export const answerQuestionApi = async (
           ? inferChartWithLLM(displayQuestion, rows, columns, resolvedResponseLanguage)
           : Promise.resolve(undefined),
         summaryEnabled
-          ? summarizeResult(schemaQuestion, planJson, columns, rows, resolvedSchemaLanguage)
+          ? summarizeResult(schemaQuestion, planJson, columns, rows, resolvedSchemaLanguage, detectedRange)
           : Promise.resolve({ summary: undefined, usage: undefined })
       ];
       const [chartResult, summaryResultSettled] = await Promise.allSettled(parallelTasks);
@@ -443,7 +548,11 @@ export const answerQuestionApi = async (
             total_tokens: (summaryUsage.total_tokens ?? 0) + (settled.usage.total_tokens ?? 0)
           };
         }
+      } else if (summaryEnabled && summaryResultSettled.status === "rejected") {
+        console.warn("[summary-failed] usando fallback:", summaryResultSettled.reason);
       }
+
+      summary = ensureSummary(summary, rowCount, resolvedResponseLanguage);
 
       if (summary && resolvedSchemaLanguage !== resolvedResponseLanguage && agentsCfg.translation.enabled !== false) {
         try {
@@ -454,6 +563,7 @@ export const answerQuestionApi = async (
       // Save history
       const historyCollection = await getHistoryCollection();
       const historyResult = await historyCollection.insertOne({
+        environmentId,
         question: normalizedQuestion,
         embeddingQuestion,
         sql: "",
@@ -461,6 +571,7 @@ export const answerQuestionApi = async (
         mode: "api",
         rows,
         columns,
+        columnFormats,
         chart,
         summary,
         createdAt: new Date(),
@@ -486,6 +597,7 @@ export const answerQuestionApi = async (
         mode: "api",
         rows,
         columns,
+        columnFormats,
         elapsedMs,
         chatId: resolvedChatId,
         historyId: historyResult.insertedId.toString(),
@@ -538,6 +650,7 @@ export const answerQuestionApi = async (
 
   const historyCollection = await getHistoryCollection();
   const historyResult = await historyCollection.insertOne({
+    environmentId,
     question: normalizedQuestion,
     embeddingQuestion,
     sql: "",
