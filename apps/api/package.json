@@ -4,9 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:shared": "tsc -p ../../packages/shared/tsconfig.json",
+    "predev": "npm run build:shared",
     "dev": "tsx watch src/index.ts",
+    "prebuild": "npm run build:shared",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "pretest": "npm run build:shared",
+    "test": "tsx --test \"src/**/*.test.ts\" \"eval/**/*.test.ts\"",
+    "eval": "tsx eval/run.ts",
+    "eval:diff": "tsx eval/diff.ts",
+    "eval:bootstrap": "tsx eval/bootstrap.ts",
+    "eval:typecheck": "tsc -p eval/tsconfig.json",
     "backfill:history": "tsx src/backfill-history.ts"
   },
   "dependencies": {
