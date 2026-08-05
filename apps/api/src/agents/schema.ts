@@ -175,6 +175,12 @@ const scoreTableMatch = (questionTokens: string[], table: TableChunk): number =>
   return score;
 };
 
+/**
+ * Upper bound for the "no vector, no lexical hit" rescue path below. Beyond
+ * this the full schema would be too large to rerank or prompt with.
+ */
+const LEXICAL_FALLBACK_MAX_TABLES = 40;
+
 export const searchRelevantTables = async (
   vector: number[],
   question: string,
@@ -188,19 +194,23 @@ export const searchRelevantTables = async (
   // Fetch more candidates than needed for reranking (~15)
   const candidateLimit = Math.max(15, safeMaxTables + 7);
 
+  // An empty vector means embeddings are unavailable; Qdrant would reject the
+  // search outright, so fall back to the lexical matches computed below.
   const collectionName = getSchemaCollectionName(environmentId);
-  const search = await qdrant.search(collectionName, {
-    vector,
-    limit: candidateLimit,
-    with_payload: true
-  });
+  const search = vector.length
+    ? await qdrant.search(collectionName, {
+        vector,
+        limit: candidateLimit,
+        with_payload: true
+      })
+    : [];
 
   const semanticResults = search
     .map((point) => point.payload as TableChunk)
     .filter((payload) => Boolean(payload?.tableFullName));
 
   const questionTokens = tokenize(question);
-  const allTables = await loadSchemaGraph();
+  const allTables = await loadSchemaGraph(environmentId);
   const lexicalMatches = questionTokens.length
     ? allTables
         .map((table) => ({
@@ -219,6 +229,20 @@ export const searchRelevantTables = async (
   }
   for (const table of lexicalMatches) {
     if (!merged.has(table.tableFullName)) {
+      merged.set(table.tableFullName, table);
+    }
+  }
+
+  // Without embeddings the only signal left is lexical overlap, and a
+  // perfectly answerable question ("compare o faturamento de 2023 com 2024")
+  // can name no table or column at all. Rather than reporting the schema as
+  // unindexed, hand the whole (small) schema to the reranker and let the LLM
+  // choose. Bounded so a large schema never blows up the prompt.
+  if (!merged.size && !vector.length && allTables.length && allTables.length <= LEXICAL_FALLBACK_MAX_TABLES) {
+    console.warn(
+      `[schema-search] sem vetor e sem match lexical para "${question.slice(0, 60)}" — usando as ${allTables.length} tabelas do schema`
+    );
+    for (const table of allTables) {
       merged.set(table.tableFullName, table);
     }
   }
@@ -307,15 +331,35 @@ const shouldLogPrompts = (): boolean => {
   return flag === "1" || flag === "true" || flag === "yes";
 };
 
+/**
+ * Returns an empty vector when the embeddings endpoint is unavailable.
+ *
+ * Embeddings only power optimizations: semantic cache, few-shot retrieval and
+ * the semantic half of table search. None of them are required to answer a
+ * question, so a provider without a /embeddings route (DeepSeek, for one)
+ * must degrade the pipeline to its lexical path instead of failing the whole
+ * request with a 404. Every consumer of this value already treats an empty
+ * array as "no semantic signal".
+ */
 export const generateEmbedding = async (
   text: string
 ): Promise<number[]> => {
   const client = await getOpenAI();
   const embeddingModel = await getEmbeddingModel();
-  const embedding = await client.embeddings.create({
-    model: embeddingModel,
-    input: text
-  });
+  let embedding;
+  try {
+    embedding = await client.embeddings.create({
+      model: embeddingModel,
+      input: text
+    });
+  } catch (error) {
+    const status = (error as { status?: number })?.status;
+    const message = (error as { message?: string })?.message ?? String(error);
+    console.warn(
+      `[embedding-unavailable] modelo=${embeddingModel} status=${status ?? "?"} — seguindo apenas com busca lexical: ${message}`
+    );
+    return [];
+  }
   if (shouldLogPrompts() && embedding.usage) {
     console.info(`[tokens] embedding | input=${embedding.usage.prompt_tokens} total=${embedding.usage.total_tokens}`);
   }

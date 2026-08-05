@@ -1,6 +1,6 @@
 import type { EndpointChunk, EndpointParameter } from "@auraia/shared";
 import { getOpenAI, EMBEDDING_MODEL } from "../core/openai.js";
-import { qdrant, ensureEndpointCollection } from "../core/qdrant.js";
+import { qdrant, ensureEndpointCollection, getEndpointCollectionName } from "../core/qdrant.js";
 import { createHash } from "crypto";
 import YAML from "js-yaml";
 
@@ -220,9 +220,11 @@ const toUuid = (value: string): string => {
 };
 
 export const ingestEndpointsToQdrant = async (
-  endpoints: ParsedEndpoint[]
+  endpoints: ParsedEndpoint[],
+  environmentId?: string
 ): Promise<number> => {
-  await ensureEndpointCollection();
+  await ensureEndpointCollection(environmentId);
+  const collectionName = getEndpointCollectionName(environmentId);
 
   const batchSize = 20;
   for (let i = 0; i < endpoints.length; i += batchSize) {
@@ -258,7 +260,7 @@ export const ingestEndpointsToQdrant = async (
       };
     });
 
-    await qdrant.upsert("endpoint_chunks", {
+    await qdrant.upsert(collectionName, {
       wait: true,
       points
     });
@@ -269,28 +271,42 @@ export const ingestEndpointsToQdrant = async (
 
 /* ── Endpoint Graph (from Qdrant) ────────────────────────── */
 
-let cachedEndpoints: { endpoints: EndpointChunk[]; loadedAt: number } | null =
-  null;
+// Keyed by collection name: a single module-level slot would let one
+// environment's endpoint graph answer questions for another.
+const cachedEndpoints = new Map<
+  string,
+  { endpoints: EndpointChunk[]; loadedAt: number }
+>();
 
-export const clearEndpointCache = (): void => {
-  cachedEndpoints = null;
+/**
+ * Invalidates the cached endpoint graph. With an `environmentId`, drops only
+ * that environment; without one, drops every environment - callers that react
+ * to a config or settings change want a full flush.
+ */
+export const clearEndpointCache = (environmentId?: string): void => {
+  if (environmentId === undefined) {
+    cachedEndpoints.clear();
+    return;
+  }
+  cachedEndpoints.delete(getEndpointCollectionName(environmentId));
 };
 
-export const loadEndpointGraph = async (): Promise<EndpointChunk[]> => {
-  if (
-    cachedEndpoints &&
-    Date.now() - cachedEndpoints.loadedAt < 5 * 60 * 1000
-  ) {
-    return cachedEndpoints.endpoints;
+export const loadEndpointGraph = async (
+  environmentId?: string
+): Promise<EndpointChunk[]> => {
+  const collectionName = getEndpointCollectionName(environmentId);
+  const cached = cachedEndpoints.get(collectionName);
+  if (cached && Date.now() - cached.loadedAt < 5 * 60 * 1000) {
+    return cached.endpoints;
   }
 
-  await ensureEndpointCollection();
+  await ensureEndpointCollection(environmentId);
 
   const endpoints: EndpointChunk[] = [];
   let offset: string | number | undefined;
 
   do {
-    const result = await qdrant.scroll("endpoint_chunks", {
+    const result = await qdrant.scroll(collectionName, {
       limit: 100,
       offset,
       with_payload: true,
@@ -307,6 +323,6 @@ export const loadEndpointGraph = async (): Promise<EndpointChunk[]> => {
       typeof next === "string" || typeof next === "number" ? next : undefined;
   } while (offset !== undefined);
 
-  cachedEndpoints = { endpoints, loadedAt: Date.now() };
+  cachedEndpoints.set(collectionName, { endpoints, loadedAt: Date.now() });
   return endpoints;
 };

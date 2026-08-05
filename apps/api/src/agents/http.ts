@@ -160,22 +160,42 @@ export const buildHttpPrompt = (
 
 /* ── System Prompt ───────────────────────────────────────── */
 
-const buildHttpSystemContent = (
-  instructionText: string,
-  language: "pt" | "en" | "es",
-  readOnly: boolean
+const ALL_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+
+/**
+ * Mirrors the validator's allowlist into the prompt. Telling the model "GET
+ * only" while the environment also permits POST wastes a round-trip: the plan
+ * comes back GET-shaped, fails, and gets retried.
+ */
+const buildMethodRule = (
+  allowedMethods: string[],
+  language: "pt" | "en" | "es"
 ): string => {
-  const methodRule = readOnly
-    ? language === "en"
-      ? "You MUST only use GET requests. Never use POST, PUT, PATCH, or DELETE."
-      : language === "es"
-        ? "SOLO puedes usar solicitudes GET. Nunca uses POST, PUT, PATCH o DELETE."
-        : "Voce DEVE usar apenas requisicoes GET. Nunca use POST, PUT, PATCH ou DELETE."
-    : language === "en"
+  const allowsEverything = ALL_METHODS.every((m) => allowedMethods.includes(m));
+  if (allowsEverything) {
+    return language === "en"
       ? "You may use any HTTP method as needed."
       : language === "es"
         ? "Puedes usar cualquier metodo HTTP segun sea necesario."
         : "Voce pode usar qualquer metodo HTTP conforme necessario.";
+  }
+
+  const allowed = allowedMethods.join(", ");
+  const forbidden = ALL_METHODS.filter((m) => !allowedMethods.includes(m)).join(", ");
+
+  return language === "en"
+    ? `You MUST only use these HTTP methods: ${allowed}. Never use: ${forbidden}.`
+    : language === "es"
+      ? `SOLO puedes usar estos metodos HTTP: ${allowed}. Nunca uses: ${forbidden}.`
+      : `Voce DEVE usar apenas estes metodos HTTP: ${allowed}. Nunca use: ${forbidden}.`;
+};
+
+const buildHttpSystemContent = (
+  instructionText: string,
+  language: "pt" | "en" | "es",
+  allowedMethods: string[]
+): string => {
+  const methodRule = buildMethodRule(allowedMethods, language);
 
   const base =
     language === "en"
@@ -207,7 +227,7 @@ export const generateHttpRequest = async (
   prompt: string,
   instructionText: string,
   language: "pt" | "en" | "es",
-  readOnly: boolean,
+  allowedMethods: string[],
   useMini: boolean,
   allowEscalation: boolean
 ): Promise<GenerateHttpResult> => {
@@ -216,7 +236,7 @@ export const generateHttpRequest = async (
     ? (agentsCfg.sql.modelMini ?? agentsCfg.http.model)
     : agentsCfg.http.model;
 
-  const system = buildHttpSystemContent(instructionText, language, readOnly);
+  const system = buildHttpSystemContent(instructionText, language, allowedMethods);
   const systemWithEscalation = allowEscalation
     ? `${system}\nIf unsure you can produce a correct request plan, reply with only: ESCALATE`
     : system;

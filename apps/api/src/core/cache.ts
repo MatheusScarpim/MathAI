@@ -84,6 +84,8 @@ export const findSemanticSql = async (
   threshold: number,
   environmentId?: string
 ): Promise<{ sql: string; similarity: number; question: string } | null> => {
+  // No embedding means no semantic signal to compare against.
+  if (!embedding.length) return null;
   const redis = await getRedisClient();
   if (!redis) return null;
   const key = getSemanticCacheKey(chatId, language, schemaLanguage, environmentId);

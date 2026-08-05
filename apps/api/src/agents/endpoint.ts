@@ -1,5 +1,5 @@
 import type { EndpointChunk } from "@auraia/shared";
-import { qdrant } from "../core/qdrant.js";
+import { qdrant, getEndpointCollectionName } from "../core/qdrant.js";
 import { loadEndpointGraph } from "../pipeline/swagger.js";
 
 /* ── Types ───────────────────────────────────────────────── */
@@ -62,13 +62,14 @@ const scoreEndpointMatch = (
 export const searchRelevantEndpoints = async (
   vector: number[],
   question: string,
-  maxEndpoints: number = 8
+  maxEndpoints: number = 8,
+  environmentId?: string
 ): Promise<EndpointChunk[]> => {
   const safeMax = Number.isFinite(maxEndpoints)
     ? Math.max(1, Math.min(30, Math.floor(maxEndpoints)))
     : 8;
 
-  const search = await qdrant.search("endpoint_chunks", {
+  const search = await qdrant.search(getEndpointCollectionName(environmentId), {
     vector,
     limit: Math.max(3, safeMax + 2),
     with_payload: true
@@ -81,7 +82,7 @@ export const searchRelevantEndpoints = async (
   const questionTokens = tokenize(question);
   if (!questionTokens.length) return semanticResults;
 
-  const allEndpoints = await loadEndpointGraph();
+  const allEndpoints = await loadEndpointGraph(environmentId);
   const lexicalMatches = allEndpoints
     .map((ep) => ({ ep, score: scoreEndpointMatch(questionTokens, ep) }))
     .filter((item) => item.score >= 2)
@@ -105,12 +106,13 @@ export const searchRelevantEndpoints = async (
 
 export const searchEndpointsByText = async (
   text: string,
-  max: number = 5
+  max: number = 5,
+  environmentId?: string
 ): Promise<EndpointChunk[]> => {
   const tokens = tokenize(text);
   if (!tokens.length) return [];
 
-  const allEndpoints = await loadEndpointGraph();
+  const allEndpoints = await loadEndpointGraph(environmentId);
   return allEndpoints
     .map((ep) => ({ ep, score: scoreEndpointMatch(tokens, ep) }))
     .filter((item) => item.score >= 1)
@@ -122,9 +124,10 @@ export const searchEndpointsByText = async (
 /* ── Expand (related endpoints by path prefix / tags) ──── */
 
 export const expandEndpoints = async (
-  initial: EndpointChunk[]
+  initial: EndpointChunk[],
+  environmentId?: string
 ): Promise<ExpandedEndpointContext> => {
-  const allEndpoints = await loadEndpointGraph();
+  const allEndpoints = await loadEndpointGraph(environmentId);
   const initialKeys = new Set(initial.map((e) => `${e.method}:${e.path}`));
 
   const initialPrefixes = initial.map((ep) => {

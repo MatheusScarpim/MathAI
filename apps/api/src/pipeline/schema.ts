@@ -1,6 +1,11 @@
 import type { ColumnInfo, ForeignKeyInfo, TableChunk } from "@auraia/shared";
 import { getOpenAI, EMBEDDING_MODEL } from "../core/openai.js";
-import { qdrant, ensureSchemaCollection, getSchemaCollectionName } from "../core/qdrant.js";
+import {
+  qdrant,
+  ensureSchemaCollection,
+  getSchemaCollectionName,
+  VECTOR_SIZE_BY_MODEL
+} from "../core/qdrant.js";
 import { createHash } from "crypto";
 import type { DbAdapter } from "../core/db.js";
 
@@ -466,15 +471,41 @@ export const ingestSchemaToQdrant = async (
   await ensureSchemaCollection(environmentId);
   const collectionName = getSchemaCollectionName(environmentId);
 
+  const vectorSize = VECTOR_SIZE_BY_MODEL[EMBEDDING_MODEL] ?? 1536;
+  const zeroVector = (): number[] => new Array<number>(vectorSize).fill(0);
+  let embeddingsUnavailable = false;
+
   const batchSize = 20;
   for (let i = 0; i < tables.length; i += batchSize) {
     const batch = tables.slice(i, i + batchSize);
     const texts = batch.map(buildChunkText);
-    const client = await getOpenAI();
-    const embeddings = await client.embeddings.create({
-      model: EMBEDDING_MODEL,
-      input: texts
-    });
+
+    // Providers such as DeepSeek expose chat completions but no /embeddings.
+    // Aborting the whole ingest there would leave Qdrant empty, which also
+    // kills the lexical fallback in searchRelevantTables (it scrolls the same
+    // collection). Indexing with placeholder vectors keeps schema retrieval
+    // working in lexical-only mode.
+    let vectors: number[][];
+    if (embeddingsUnavailable) {
+      vectors = texts.map(zeroVector);
+    } else {
+      try {
+        const client = await getOpenAI();
+        const embeddings = await client.embeddings.create({
+          model: EMBEDDING_MODEL,
+          input: texts
+        });
+        vectors = texts.map((_, index) => embeddings.data[index]?.embedding ?? zeroVector());
+      } catch (error) {
+        const status = (error as { status?: number })?.status;
+        const message = (error as { message?: string })?.message ?? String(error);
+        console.warn(
+          `[ingest-embedding-unavailable] modelo=${EMBEDDING_MODEL} status=${status ?? "?"} — indexando sem vetores, busca sera lexical: ${message}`
+        );
+        embeddingsUnavailable = true;
+        vectors = texts.map(zeroVector);
+      }
+    }
 
     const points = batch.map((table, index) => {
       const payload: TableChunk = {
@@ -487,7 +518,7 @@ export const ingestSchemaToQdrant = async (
 
       return {
         id: toUuid(table.fullName),
-        vector: embeddings.data[index]?.embedding ?? [],
+        vector: vectors[index] ?? zeroVector(),
         payload
       };
     });

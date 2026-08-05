@@ -17,7 +17,7 @@ export const DEFAULT_AGENTS_CONFIG: AgentsConfig = {
   },
   summary: {
     model: "gpt-4o-mini",
-    temperature: 0.2,
+    temperature: 0.5,
     enabled: true
   },
   translation: {
