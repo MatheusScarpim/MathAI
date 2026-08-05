@@ -67,6 +67,11 @@ export default async function settingsRoutes(app: FastifyInstance) {
     }
 
     const current = await getAgentsConfig();
+    const currentPlanner = current.planner ?? {
+      model: "gpt-5-mini",
+      temperature: 0,
+      enabled: true
+    };
 
     const next: AgentsConfig = {
       sql: {
@@ -103,6 +108,19 @@ export default async function settingsRoutes(app: FastifyInstance) {
       },
       embedding: {
         model: isNonEmptyString(body.embedding?.model) ? body.embedding!.model : current.embedding.model
+      },
+      planner: {
+        model: isNonEmptyString(body.planner?.model)
+          ? body.planner!.model
+          : currentPlanner.model,
+        temperature:
+          body.planner?.temperature !== undefined
+            ? body.planner.temperature
+            : currentPlanner.temperature,
+        enabled:
+          typeof body.planner?.enabled === "boolean"
+            ? body.planner.enabled
+            : currentPlanner.enabled
       }
     };
 

@@ -3,6 +3,7 @@ import { isNonEmptyString } from "@auraia/shared";
 import { closeAdapter, testConnection } from "../core/db.js";
 import { clearSchemaCache } from "../pipeline/schema.js";
 import { clearSchemaCollection } from "../core/qdrant.js";
+import { normalizeIngestMethods } from "../pipeline/httpValidation.js";
 import {
   listEnvironments,
   getEnvironment,
@@ -33,6 +34,7 @@ type EnvironmentBody = {
   apiAuthUsername?: string;
   apiAuthPassword?: string;
   apiReadOnly?: boolean;
+  apiIngestMethods?: string[];
   swaggerUrl?: string;
   swaggerContent?: string;
 };
@@ -49,6 +51,7 @@ const sanitizeEnvironment = (env: EnvironmentConfig) => ({
   apiBaseUrl: env.apiBaseUrl,
   apiAuthType: env.apiAuthType,
   apiReadOnly: env.apiReadOnly,
+  apiIngestMethods: env.apiIngestMethods,
   swaggerUrl: env.swaggerUrl,
   configuredAt: env.configuredAt
 });
@@ -100,6 +103,7 @@ export default async function environmentsRoutes(app: FastifyInstance) {
       apiAuthUsername: body.apiAuthUsername,
       apiAuthPassword: body.apiAuthPassword,
       apiReadOnly: body.apiReadOnly,
+      apiIngestMethods: normalizeIngestMethods(body.apiIngestMethods),
       swaggerUrl: body.swaggerUrl?.trim(),
       swaggerContent: body.swaggerContent,
       configuredAt: new Date()
@@ -136,6 +140,8 @@ export default async function environmentsRoutes(app: FastifyInstance) {
     if (body.apiAuthUsername !== undefined) updates.apiAuthUsername = body.apiAuthUsername;
     if (body.apiAuthPassword !== undefined) updates.apiAuthPassword = body.apiAuthPassword;
     if (body.apiReadOnly !== undefined) updates.apiReadOnly = body.apiReadOnly;
+    if (body.apiIngestMethods !== undefined)
+      updates.apiIngestMethods = normalizeIngestMethods(body.apiIngestMethods);
     if (body.swaggerUrl !== undefined) updates.swaggerUrl = body.swaggerUrl.trim();
     if (body.swaggerContent !== undefined) updates.swaggerContent = body.swaggerContent;
 

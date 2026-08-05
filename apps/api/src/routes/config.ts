@@ -4,6 +4,7 @@ import { isNonEmptyString, sanitizeErrorMessage } from "@auraia/shared";
 import { closeAdapter, testConnection } from "../core/db.js";
 import { clearSchemaCache } from "../pipeline/schema.js";
 import { clearEndpointCache } from "../pipeline/swagger.js";
+import { normalizeIngestMethods } from "../pipeline/httpValidation.js";
 import {
   clearConfigCache,
   getAppConfig,
@@ -31,6 +32,7 @@ type SaveConfigBody = {
   apiAuthUsername?: string;
   apiAuthPassword?: string;
   apiReadOnly?: boolean;
+  apiIngestMethods?: string[];
   swaggerUrl?: string;
   swaggerContent?: string;
 };
@@ -72,6 +74,7 @@ export default async function configRoutes(app: FastifyInstance) {
       apiBaseUrl: appConfig.apiBaseUrl,
       apiAuthType: appConfig.apiAuthType,
       apiReadOnly: appConfig.apiReadOnly,
+      apiIngestMethods: appConfig.apiIngestMethods,
       swaggerUrl: appConfig.swaggerUrl
     });
   });
@@ -167,6 +170,7 @@ export default async function configRoutes(app: FastifyInstance) {
         apiAuthUsername: body.apiAuthUsername,
         apiAuthPassword: body.apiAuthPassword,
         apiReadOnly: body.apiReadOnly ?? true,
+        apiIngestMethods: normalizeIngestMethods(body.apiIngestMethods),
         swaggerUrl: body.swaggerUrl,
         swaggerContent: body.swaggerContent,
         configuredAt: new Date()

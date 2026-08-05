@@ -26,6 +26,13 @@ export type AppConfig = {
   swaggerUrl?: string;
   swaggerContent?: string;
   apiReadOnly?: boolean;
+  /**
+   * HTTP methods this environment may index from its swagger spec *and*
+   * execute. Absent means `["GET"]` - see `resolveAllowedMethods`. Listing
+   * "POST" here is the explicit opt-in that declares "POST is a query in this
+   * API", which is what lets it through `apiReadOnly`.
+   */
+  apiIngestMethods?: string[];
   configuredAt: Date;
 };
 
@@ -148,6 +155,7 @@ const decryptEnvironment = (doc: StoredEnvironment): EnvironmentConfig => {
     swaggerUrl: doc.swaggerUrl,
     swaggerContent: doc.swaggerContent,
     apiReadOnly: doc.apiReadOnly,
+    apiIngestMethods: doc.apiIngestMethods,
     configuredAt: doc.configuredAt
   };
 };
@@ -183,6 +191,7 @@ const encryptEnvironment = (env: EnvironmentConfig): StoredEnvironment => {
     swaggerUrl: env.swaggerUrl,
     swaggerContent: env.swaggerContent,
     apiReadOnly: env.apiReadOnly,
+    apiIngestMethods: env.apiIngestMethods,
     iv: iv.toString("hex"),
     configuredAt: env.configuredAt ?? new Date()
   };

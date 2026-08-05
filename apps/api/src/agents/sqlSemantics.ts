@@ -24,6 +24,12 @@ export type SemanticContext = {
   facts: readonly TableFacts[];
   dictionary: DictionaryIndex;
   overlappingBuckets: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Avisos em prosa do seed do ambiente. Valem para o schema inteiro, entao
+   * saem antes dos blocos por tabela — sao a legenda que o resto pressupoe.
+   * Passam intocados: quem escreveu decidiu a caixa e a enfase.
+   */
+  notes: readonly string[];
 };
 
 type Language = "pt" | "en" | "es";
@@ -455,6 +461,20 @@ export const buildSemanticsSection = (
   if (!semantics) return null;
 
   const blocks: string[] = [];
+
+  // Primeiro de tudo: sao convencoes do banco inteiro, e os blocos por tabela
+  // abaixo pressupoem essa legenda (o que um prefixo significa, que unidade
+  // uma coluna carrega). Depois delas, ja seria tarde.
+  if (semantics.notes.length) {
+    const header = pick(
+      language,
+      "Convencoes deste banco:",
+      "Conventions in this database:",
+      "Convenciones de esta base:"
+    );
+    blocks.push([header, ...semantics.notes.map((n) => `  - ${n}`)].join("\n"));
+  }
+
   for (const table of context.tables) {
     const facts = semantics.facts.find(
       (f) => f.tableFullName.toLowerCase() === table.tableFullName.toLowerCase()

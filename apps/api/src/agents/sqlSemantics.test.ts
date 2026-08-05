@@ -73,7 +73,8 @@ const semantics = (
   return {
     facts: [tableFacts],
     dictionary: buildDictionaryIndex(records),
-    overlappingBuckets
+    overlappingBuckets,
+    notes: []
   };
 };
 
@@ -91,7 +92,8 @@ describe("E4 — sem dicionario o comportamento e o de antes", () => {
     const empty: SemanticContext = {
       facts: [],
       dictionary: buildDictionaryIndex([]),
-      overlappingBuckets: {}
+      overlappingBuckets: {},
+      notes: []
     };
     assert.equal(pruneContext(ctx, "pergunta", empty), ctx);
   });
@@ -103,6 +105,42 @@ describe("E4 — sem dicionario o comportamento e o de antes", () => {
   it("devolve null quando o dicionario nao tem nada a dizer sobre a tabela", () => {
     const s = semantics({ a: cls() });
     assert.equal(buildSemanticsSection(context(table(["a"])), s, "pt"), null);
+  });
+
+  it("notes do seed saem no prompt com a caixa original", () => {
+    const nota = "Ps_Liquido NUNCA soma com Ps_Bruto; para agregar use AVG";
+    const s = { ...semantics({ a: cls() }), notes: [nota] };
+    const out = buildSemanticsSection(context(table(["a"])), s, "pt") ?? "";
+    // Literal: a nota existe justamente para carregar o nome exato da coluna
+    // e a enfase da regra. Baixar a caixa destruiria as duas coisas.
+    assert.ok(out.includes(nota));
+  });
+
+  it("notes sozinhas ja produzem bloco, mesmo sem fato nem dicionario", () => {
+    const s: SemanticContext = {
+      facts: [],
+      dictionary: buildDictionaryIndex([]),
+      overlappingBuckets: {},
+      notes: ["convencao qualquer"]
+    };
+    const out = buildSemanticsSection(context(table(["a"])), s, "pt");
+    assert.ok(out !== null && out.includes("convencao qualquer"));
+  });
+
+  it("notes vem ANTES dos blocos por tabela", () => {
+    const s = { ...semantics({ a: cls({ cumulative: true }) }), notes: ["legenda primeiro"] };
+    const out = buildSemanticsSection(context(table(["a"])), s, "pt") ?? "";
+    const iNota = out.indexOf("legenda primeiro");
+    const iTabela = out.indexOf(TABLE);
+    assert.ok(iNota >= 0 && iTabela >= 0, "esperava nota e bloco de tabela na saida");
+    assert.ok(iNota < iTabela, "a legenda do banco precisa preceder o que ela explica");
+  });
+
+  it("sem notes o comportamento de antes fica igual", () => {
+    const s = semantics({ a: cls({ cumulative: true }) });
+    const out = buildSemanticsSection(context(table(["a"])), s, "pt") ?? "";
+    assert.ok(!out.includes("Convencoes deste banco"));
+    assert.ok(out.includes(TABLE));
   });
 });
 
@@ -323,7 +361,8 @@ describe("E4 — coerencia entre poda e bloco", () => {
     const s: SemanticContext = {
       facts: [semOrigem, semAlvo],
       dictionary: buildDictionaryIndex(records),
-      overlappingBuckets: {}
+      overlappingBuckets: {},
+      notes: []
     };
 
     const pruned = pruneContext({ tables: [origem, destino], joins: [] }, "pergunta", s);
@@ -378,7 +417,8 @@ describe("E4 — avisos cujas pontas estao em tabelas diferentes", () => {
     const s: SemanticContext = {
       facts: [],
       dictionary: buildDictionaryIndex(records),
-      overlappingBuckets
+      overlappingBuckets,
+      notes: []
     };
     const ctx = {
       tables: [
@@ -469,7 +509,8 @@ describe("E4 — o invariante vale no schema real", () => {
   const s: SemanticContext = {
     facts: FACTS,
     dictionary: buildDictionaryIndex(records),
-    overlappingBuckets: VOCABULARY.overlappingBuckets
+    overlappingBuckets: VOCABULARY.overlappingBuckets,
+    notes: []
   };
 
   const fullContext = {

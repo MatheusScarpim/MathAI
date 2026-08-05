@@ -11,6 +11,37 @@ import {
   pruneContext,
   type SemanticContext
 } from "./sqlSemantics.js";
+import {
+  findMetrics,
+  metricColumns,
+  renderMetricsSection,
+  type MetricDefinition
+} from "../schema/metrics.js";
+
+/**
+ * Metricas que sobreviveram a poda do E4.
+ *
+ * A poda corta coluna que a pergunta nao pediu. Se a formula cita uma coluna
+ * que sumiu do schema impresso, o prompt manda somar algo que o modelo nao
+ * esta vendo — e ele inventa o nome. Entao a regra e a mesma do E3: na duvida,
+ * silencio. Metrica com qualquer coluna podada simplesmente nao entra.
+ */
+const metricsVisibleIn = (
+  context: ExpandedContext,
+  matched: readonly MetricDefinition[]
+): MetricDefinition[] => {
+  const visible = new Map<string, Set<string>>(
+    context.tables.map((t) => [
+      t.tableFullName.toLowerCase(),
+      new Set(t.columns.map((c) => c.name.toLowerCase()))
+    ])
+  );
+  return matched.filter((m) => {
+    const cols = visible.get(m.table.toLowerCase());
+    if (!cols) return false;
+    return metricColumns(m).every((c) => cols.has(c.toLowerCase()));
+  });
+};
 
 type FewShotExample = {
   question: string;
@@ -83,13 +114,17 @@ export const buildPrompt = (
   currentPeriod: string | null = null,
   tableProfiles?: TableProfileMap,
   periodRange: YearRange | null = null,
-  semantics: SemanticContext | null = null
+  semantics: SemanticContext | null = null,
+  metrics: readonly MetricDefinition[] = []
 ): string => {
   // Poda antes de montar o schema: o bloco semantico so pode citar coluna que
   // sobreviveu, senao o prompt avisa sobre algo que o modelo nao esta vendo.
   // Sem dicionario `pruneContext` devolve a mesma referencia.
   const context = pruneContext(rawContext, question, semantics);
   const semanticsSection = buildSemanticsSection(context, semantics, language);
+  const metricsSection = renderMetricsSection(
+    metricsVisibleIn(context, findMetrics(question, metrics))
+  );
 
   const includeForeignKeys = context.joins.length === 0;
   const tableDetails = context.tables
@@ -180,6 +215,11 @@ export const buildPrompt = (
   // de ler a lista para saber de quem se fala.
   if (semanticsSection) {
     lines.push(semanticsSection);
+  }
+  // Depois das guardas: elas dizem o que NAO fazer, o catalogo diz o que
+  // fazer. A definicao positiva vem por ultimo para ser a que o modelo lembra.
+  if (metricsSection) {
+    lines.push(metricsSection);
   }
   if (joins) {
     lines.push(joinsLabel, joins);
